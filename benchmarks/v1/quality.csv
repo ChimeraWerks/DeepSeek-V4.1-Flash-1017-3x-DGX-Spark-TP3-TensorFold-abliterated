@@ -1,0 +1,8 @@
+category,score_percent
+arithmetic,100
+reasoning,100
+tracking,100
+gsm8k,97.5
+mmlu,94
+qa,92
+overall,97.3

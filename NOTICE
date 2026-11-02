@@ -1,0 +1,17 @@
+DeepSeek-V4.1-Flash-1017 on 3x NVIDIA DGX Spark (TP3)
+Copyright 2026 ChimeraWerks
+
+Original work in this repository is licensed under the Apache License, Version 2.0 (LICENSE).
+
+Third-party code keeps its own license and notices:
+
+  engine/tensorfold/   TensorFold (Apache-2.0, earlier code MIT) with the BertholomusAI dsv41 family,
+                       Mia's AI Lab and LakyFx changes. See engine/tensorfold/NOTICE,
+                       engine/tensorfold/THIRD_PARTY_NOTICES.md and engine/tensorfold/LICENSES/.
+  serving/             Serving API; files imported from LakyFx (MIT) are listed in
+                       serving/UPSTREAM.json with the notice in serving/LICENSES/LakyFx-MIT.txt.
+
+Model weights are not in this repository; they are published separately at
+https://huggingface.co/ChimeraWerks/DeepSeek-V4.1-Flash-1017-EXL3-3.84bpw-abliterated
+under DeepSeek's MIT license for DeepSeek-V4.1-Flash-1017. See THIRD_PARTY_NOTICES.md, CREDITS.md and
+docs/model-card.md.

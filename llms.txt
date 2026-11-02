@@ -1,0 +1,43 @@
+# DeepSeek V4.1 Flash 1017 on three DGX Spark systems
+
+> Run abliterated DeepSeek V4.1 Flash 1017 in EXL3 format at 3.84 bits per weight with TensorFold tensor parallelism 3 (TP3) on three NVIDIA DGX Spark GB10 systems.
+
+v1.1 (2026-11-02) is the first public release. Engine 14803a3 runs 8M KV, C16, graph cap 128, R48, top_k 20 and spill 256 GiB with serving API 0.1.5. Historical v1 uses 7d5b4d8/10M; its October 30 speed suite used cebcf1e.
+
+Prefill (v1.1, 2026-11-02, cold, one request): 3,560 tok/s at 4K, 3,833 at 32K, 3,721 at 128K; a 131,090-token prompt reads in 35.4 s.
+
+Decode (v1.1): 126 tok/s single-stream code and 84 prose (greedy); 254 and 263 tok/s aggregate at 16 streams.
+
+Fidelity: mean KL 0.0784 and 92.0% top-1 agreement against official DeepSeek-V4.1-Flash-1017 logits (65 cuts of 2,048 tokens), the lowest of every pack scored on the same panel, including an unedited 3.5 bpw EXL3 quant (0.0872). Refusals: 0 of 100 HarmBench prompts refused in chat (98 answered, 2 partial); 0 of 50 XSTest safe prompts refused. Quality: AIME 2025 97.5% (117 of 120, 4 repeats, thinking on); GPQA-Diamond 90.5% (1,434 of 1,584, 8 repeats, thinking on); IFEval 88.7% (prompt-level strict); LiveCodeBench v6 88.0%; MMLU-Pro 88.0% (500-item subset).
+
+Text serving uses a 1,048,576-token context. The historical serving suite measures through 32K; the November 2 native prefill suite reaches 131,090 tokens. The 3.84 bpw value excludes the output head.
+
+Repository code is Apache-2.0; third-party code keeps its own licenses. Weights: https://huggingface.co/ChimeraWerks/DeepSeek-V4.1-Flash-1017-EXL3-3.84bpw-abliterated
+
+## Start here
+
+- [Overview](README.md): Prefill, decode, fidelity, TP3 layout, DGX Spark prerequisites (firmware, kernel, memory, clocks), quick start and what this build adds.
+- [Reproduction](docs/reproduction.md): Cluster settings and lifecycle commands.
+- [Runtime assets](docs/runtime-assets.md): Kernel kit and Engram tables: pinned sources, SHA-256s, disk and staging.
+- [Topology](docs/topology.md): Three-node roles, RoCE links and private API access.
+- [Model card](docs/model-card.md): Lineage, refusal removal and local weight preparation.
+
+## Configuration and measurements
+
+- [Release manifest](release/manifest.json): Engine, API, weight identity and production settings.
+- [Weight provenance](release/weight-provenance.md): Source revisions, tensor groups and bitrate definition.
+- [Benchmarks](benchmarks/README.md): Method, measurements and CSV data.
+- [Fidelity data](benchmarks/v1/fidelity.csv): KL divergence and top-1 agreement versus the official model for this release and other EXL3 quants and abliterations.
+- [Refusal data](benchmarks/v1/refusal.csv): HarmBench and XSTest results per weight set and mode.
+- [Tuning](docs/tuning.md): Engine settings, sampling and measured tradeoffs.
+- [How v1 was built](docs/how-v1-was-built.md): Weight selection and runtime development.
+
+## Operations and attribution
+
+- [Serving API](serving/README.md): Client requests, authentication and operator settings.
+- [Troubleshooting](docs/troubleshooting.md): Readiness, memory, sampling and peer failures.
+- [Security](SECURITY.md): Private access, credentials and vulnerability reporting.
+- [Changelog](CHANGELOG.md): Production dates and runtime updates.
+- [Credits](CREDITS.md): Contributors, revisions and licenses.
+- [Citation](CITATION.cff): Citation metadata.
+- [Third-party notices](THIRD_PARTY_NOTICES.md): Component licenses and retained notice locations.

@@ -1,0 +1,117 @@
+{
+  "repository": "https://github.com/LakyFx/deepseek-v41-flash-exl3-tp3-spark",
+  "revision": "21f9a280803b7e34f5b7abad3c479d9c6077ec0d",
+  "license": "MIT",
+  "files": [
+    {
+      "path": "src/chimera_sparks/laky/vision_jobs.py",
+      "upstream_path": "gateway/laguna_gateway/vision_jobs.py",
+      "upstream_sha256": "bf154ab2f1d0a9de4a86cb405207c0d78582ee4b8400ea3c0ebd1db4644f3ee1"
+    },
+    {
+      "path": "src/chimera_sparks/laky/vision_control.py",
+      "upstream_path": "gateway/laguna_gateway/vision_control.py",
+      "upstream_sha256": "daab6554485cc7aa0dcc7c668c4c170783983713c132723f10747e46788082e3"
+    },
+    {
+      "path": "src/chimera_sparks/laky/vision_result.py",
+      "upstream_path": "gateway/laguna_gateway/vision_result.py",
+      "upstream_sha256": "73e44c0b6fa9f4bda7d261f74715483e1cc7b63b669267867fb35270abdb3e17"
+    },
+    {
+      "path": "src/chimera_sparks/laky/vision_diagnostics.py",
+      "upstream_path": "gateway/laguna_gateway/vision_diagnostics.py",
+      "upstream_sha256": "5a3780f77e1f1e8a83664f62175982a3b4dabd0c9f7fbac311462d33c24c70a7"
+    },
+    {
+      "path": "src/chimera_sparks/laky/vision_jobs_operator.py",
+      "upstream_path": "gateway/laguna_gateway/vision_jobs_operator.py",
+      "upstream_sha256": "0903e3089394d9f00c53199afaa52e30542e56c810f706b7f77295066ebbcb32"
+    },
+    {
+      "path": "src/chimera_sparks/laky/media_admission.py",
+      "upstream_path": "gateway/laguna_gateway/media_admission.py",
+      "upstream_sha256": "8ed780b895b4f95c251b3006e0c0c36f2a96df8fd12226bc59b3e5b1a395fee5"
+    },
+    {
+      "path": "src/chimera_sparks/laky/media_types.py",
+      "upstream_path": "gateway/laguna_gateway/media_types.py",
+      "upstream_sha256": "5fbde0ce7716bc9dd463a0f1d458d2b15ce3ee6fd9ab563a09ad05627bebc3ec"
+    },
+    {
+      "path": "src/chimera_sparks/laky/stream_validation.py",
+      "upstream_path": "gateway/laguna_gateway/stream_validation.py",
+      "upstream_sha256": "4e76d146ba651a56124dc271d68dbc06ed999d5b75eef55346bc943d01967a43"
+    },
+    {
+      "path": "src/chimera_sparks/laky/queue.py",
+      "upstream_path": "gateway/laguna_gateway/queue.py",
+      "upstream_sha256": "2b301959def764fc8a7eafc3fb6f6e7df1cb6361ff44f7b6edee75b5fb9e26c4"
+    },
+    {
+      "path": "src/chimera_sparks/laky/body_limit.py",
+      "upstream_path": "gateway/laguna_gateway/body_limit.py",
+      "upstream_sha256": "205138734116420cc0b397f0e93e71de71c0e7a0e29d09a569e042dbfb80f061"
+    },
+    {
+      "path": "src/chimera_sparks/assets/native_launch.py",
+      "upstream_path": "tensorfold/launch.py",
+      "upstream_revision": "b4e476d60f01fda564d760c5906ac1358390c728",
+      "upstream_sha256": "ce59f47bac662b7e3d76069fc11d1cb84f62b15fd5d150858be676230db08b37"
+    },
+    {
+      "path": "src/chimera_sparks/laky/compaction.py",
+      "upstream_path": "gateway/laguna_gateway/compaction.py",
+      "upstream_sha256": "0443c2599b743cdfe11bf4a52983de81676868b2f6935dd18775904187ac56ae"
+    },
+    {
+      "path": "src/chimera_sparks/laky/responses_checkpoint.py",
+      "upstream_path": "gateway/laguna_gateway/responses_checkpoint.py",
+      "upstream_sha256": "27af0fdba0073abf1343e0c747a581449c5e6ed4d799414301072d4688285494"
+    },
+    {
+      "path": "src/chimera_sparks/laky/chat_checkpoint.py",
+      "upstream_path": "gateway/laguna_gateway/chat_checkpoint.py",
+      "upstream_sha256": "4af696ab2439674c1595c7deb059c68b59b261970ded1dc625474d2ad2799a17"
+    },
+    {
+      "path": "src/chimera_sparks/laky/cache.py",
+      "upstream_path": "gateway/laguna_gateway/cache.py",
+      "upstream_sha256": "bfc17dccd136762e36ce5700a20651268d056f427f52e846982cb15d0b5f3c51"
+    },
+    {
+      "path": "src/chimera_sparks/laky/checkpoint_policy.py",
+      "upstream_path": "gateway/laguna_gateway/policy.py",
+      "upstream_sha256": "a216a58c5cfbe0d01c5f4283162905e30dfe006c6f8ffad5b774bfa5152fba6a",
+      "extracted_symbol": "coalesce_instruction_messages"
+    }
+  ],
+  "adaptations": {
+    "vision_jobs.py": "Private FULL-synchronous ledger; count UTF-8 bytes; freeze recipe-resolved generation defaults while preserving explicit budgets and original-input identity",
+    "vision_result.py": "Import the recipe transport error class; preserve upstream drain/termination semantics",
+    "other imported modules": "Retain upstream logic and add provenance headers; integration lives outside the imported modules",
+    "compaction.py": "Use recipe settings and isolated instruction-coalescing helper; pin accepted Responses system/developer input items with original roles/content/order; legacy summary and shadow modes remain unreachable.",
+    "checkpoint_policy.py": "Extract only coalesce_instruction_messages; preserve its logic and retain the upstream MIT notice."
+  },
+  "additional_lineage": [
+    {
+      "author": "Robert Wojciechowski",
+      "source": "MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks",
+      "commit": "2fd7809571e4d34f46a055dabf11caed9b145988",
+      "parts": [
+        "0023 prompt memory",
+        "0020 bounded failure-exit idea, independently adapted to TP3"
+      ]
+    },
+    {
+      "author": "Robert Wojciechowski",
+      "commit": "534c96b22c9cc35f0961df759725a973eb252b06",
+      "part": "writable overlay index, independently implemented"
+    },
+    {
+      "author": "MiaAI-Lab maintainers",
+      "commit": "7ed798810d3dc9aa0b45bed1ab7429c7e906d068",
+      "part": "bounded log retention idea, native implementation"
+    }
+  ]
+}

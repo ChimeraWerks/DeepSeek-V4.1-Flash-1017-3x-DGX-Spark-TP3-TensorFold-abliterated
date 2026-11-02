@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 520" width="1000" height="520" font-family="Inter, 'SF Pro Display', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0.35" y2="1"><stop offset="0" stop-color="#0A1033"/><stop offset="1" stop-color="#03050F"/></linearGradient>
+  <radialGradient id="nebula" cx="0.88" cy="0.0" r="0.75"><stop offset="0" stop-color="#8A55E6" stop-opacity="0.30"/><stop offset="0.55" stop-color="#4B3BB8" stop-opacity="0.07"/><stop offset="1" stop-color="#4B3BB8" stop-opacity="0"/></radialGradient>
+  <radialGradient id="ember" cx="0.0" cy="1.0" r="0.65"><stop offset="0" stop-color="#F7936F" stop-opacity="0.15"/><stop offset="1" stop-color="#F7936F" stop-opacity="0"/></radialGradient>
+  <linearGradient id="fold" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#F7936F"/><stop offset="0.5" stop-color="#B86CEC"/><stop offset="1" stop-color="#5E8FF0"/></linearGradient>
+  <linearGradient id="foldv" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#5E8FF0"/><stop offset="0.55" stop-color="#B86CEC"/><stop offset="1" stop-color="#F7936F"/></linearGradient>
+  <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#B86CEC" stop-opacity="0.30"/><stop offset="1" stop-color="#5E8FF0" stop-opacity="0"/></linearGradient>
+  <linearGradient id="meshfade" x1="1" y1="0" x2="0.35" y2="0.8"><stop offset="0" stop-color="#FFFFFF" stop-opacity="1"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></linearGradient>
+  <mask id="meshmask"><rect width="100%" height="100%" fill="url(#meshfade)"/></mask>
+  <filter id="glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="7"/></filter>
+  <filter id="halo" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="3.5"/></filter>
+</defs>
+<rect width="1000" height="520" rx="22" fill="url(#bg)"/>
+<rect width="1000" height="520" rx="22" fill="url(#nebula)"/>
+<rect width="1000" height="520" rx="22" fill="url(#ember)"/>
+<g mask="url(#meshmask)" opacity="0.5"><path d="M459 3L522 -22 M459 3L454 50 M459 3L514 51 M522 -22L575 -12 M522 -22L514 51 M522 -22L589 44 M575 -12L637 -20 M575 -12L589 44 M575 -12L645 44 M637 -20L689 -12 M637 -20L645 44 M637 -20L703 52 M689 -12L754 -11 M689 -12L703 52 M689 -12L757 36 M754 -11L811 -22 M754 -11L757 36 M754 -11L827 54 M811 -22L900 -12 M811 -22L827 54 M811 -22L895 47 M900 -12L956 -3 M900 -12L895 47 M900 -12L961 39 M956 -3L1015 -22 M956 -3L961 39 M956 -3L1008 43 M1015 -22L1008 43 M454 50L514 51 M454 50L455 97 M454 50L494 95 M514 51L589 44 M514 51L494 95 M514 51L555 100 M589 44L645 44 M589 44L555 100 M589 44L639 115 M645 44L703 52 M645 44L639 115 M645 44L694 102 M703 52L757 36 M703 52L694 102 M703 52L756 101 M757 36L827 54 M757 36L756 101 M757 36L838 107 M827 54L895 47 M827 54L838 107 M827 54L883 95 M895 47L961 39 M895 47L883 95 M895 47L966 112 M961 39L1008 43 M961 39L966 112 M961 39L1032 99 M1008 43L1032 99 M455 97L494 95 M455 97L446 176 M455 97L511 176 M494 95L555 100 M494 95L511 176 M494 95L560 177 M555 100L639 115 M555 100L560 177 M555 100L620 162 M639 115L694 102 M639 115L620 162 M639 115L683 173 M694 102L756 101 M694 102L683 173 M694 102L771 177 M756 101L838 107 M756 101L771 177 M756 101L839 177 M838 107L883 95 M838 107L839 177 M838 107L893 178 M883 95L966 112 M883 95L893 178 M883 95L965 160 M966 112L1032 99 M966 112L965 160 M966 112L1037 161 M1032 99L1037 161 M446 176L511 176 M446 176L433 210 M446 176L507 214 M511 176L560 177 M511 176L507 214 M511 176L588 235 M560 177L620 162 M560 177L588 235 M560 177L626 211 M620 162L683 173 M620 162L626 211 M620 162L701 213 M683 173L771 177 M683 173L701 213 M683 173L766 231 M771 177L839 177 M771 177L766 231 M771 177L819 220 M839 177L893 178 M839 177L819 220 M839 177L906 220 M893 178L965 160 M893 178L906 220 M893 178L950 233 M965 160L1037 161 M965 160L950 233 M965 160L1031 233 M1037 161L1031 233 M433 210L507 214 M433 210L451 278 M433 210L515 289 M507 214L588 235 M507 214L515 289 M507 214L577 273 M588 235L626 211 M588 235L577 273 M588 235L629 277 M626 211L701 213 M626 211L629 277 M626 211L710 282 M701 213L766 231 M701 213L710 282 M701 213L766 289 M766 231L819 220 M766 231L766 289 M766 231L814 284 M819 220L906 220 M819 220L814 284 M819 220L886 282 M906 220L950 233 M906 220L886 282 M906 220L968 273 M950 233L1031 233 M950 233L968 273 M950 233L1036 268 M1031 233L1036 268 M451 278L515 289 M515 289L577 273 M577 273L629 277 M629 277L710 282 M710 282L766 289 M766 289L814 284 M814 284L886 282 M886 282L968 273 M968 273L1036 268" stroke="#7F8CE8" stroke-opacity="0.22" stroke-width="0.8" fill="none"/><g fill="#C9B6F2" fill-opacity="0.55"><circle cx="459" cy="3" r="2.0"/><circle cx="522" cy="-22" r="2.0"/><circle cx="575" cy="-12" r="2.0"/><circle cx="637" cy="-20" r="1.1"/><circle cx="689" cy="-12" r="1.1"/><circle cx="754" cy="-11" r="2.0"/><circle cx="811" cy="-22" r="1.4"/><circle cx="900" cy="-12" r="1.4"/><circle cx="956" cy="-3" r="2.0"/><circle cx="1015" cy="-22" r="1.4"/><circle cx="454" cy="50" r="1.1"/><circle cx="514" cy="51" r="1.4"/><circle cx="589" cy="44" r="1.4"/><circle cx="645" cy="44" r="1.1"/><circle cx="703" cy="52" r="1.1"/><circle cx="757" cy="36" r="2.0"/><circle cx="827" cy="54" r="1.4"/><circle cx="895" cy="47" r="1.1"/><circle cx="961" cy="39" r="2.0"/><circle cx="1008" cy="43" r="1.1"/><circle cx="455" cy="97" r="1.1"/><circle cx="494" cy="95" r="2.0"/><circle cx="555" cy="100" r="1.4"/><circle cx="639" cy="115" r="2.0"/><circle cx="694" cy="102" r="1.4"/><circle cx="756" cy="101" r="1.1"/><circle cx="838" cy="107" r="1.4"/><circle cx="883" cy="95" r="2.0"/><circle cx="966" cy="112" r="1.4"/><circle cx="1032" cy="99" r="1.4"/><circle cx="446" cy="176" r="2.0"/><circle cx="511" cy="176" r="2.0"/><circle cx="560" cy="177" r="2.0"/><circle cx="620" cy="162" r="2.0"/><circle cx="683" cy="173" r="2.0"/><circle cx="771" cy="177" r="1.1"/><circle cx="839" cy="177" r="2.0"/><circle cx="893" cy="178" r="2.0"/><circle cx="965" cy="160" r="1.4"/><circle cx="1037" cy="161" r="1.4"/><circle cx="433" cy="210" r="1.1"/><circle cx="507" cy="214" r="1.1"/><circle cx="588" cy="235" r="1.1"/><circle cx="626" cy="211" r="1.4"/><circle cx="701" cy="213" r="1.4"/><circle cx="766" cy="231" r="1.1"/><circle cx="819" cy="220" r="2.0"/><circle cx="906" cy="220" r="1.4"/><circle cx="950" cy="233" r="2.0"/><circle cx="1031" cy="233" r="1.4"/><circle cx="451" cy="278" r="1.4"/><circle cx="515" cy="289" r="2.0"/><circle cx="577" cy="273" r="1.4"/><circle cx="629" cy="277" r="1.4"/><circle cx="710" cy="282" r="1.4"/><circle cx="766" cy="289" r="1.4"/><circle cx="814" cy="284" r="1.4"/><circle cx="886" cy="282" r="1.4"/><circle cx="968" cy="273" r="1.1"/><circle cx="1036" cy="268" r="1.4"/></g></g>
+<rect x="0.5" y="0.5" width="999" height="519" rx="22" fill="none" stroke="#2A3366"/>
+<rect x="44" y="34" width="28" height="3" rx="1.5" fill="url(#fold)"/>
+<text x="80" y="38" fill="#B86CEC" font-size="12" font-weight="700" letter-spacing="2">PREFILL PORT</text>
+<text x="44" y="74" fill="#F4F5FF" font-size="28" font-weight="800" letter-spacing="-0.6">Seven steps, +822 tok/s at 32K</text>
+<text x="44" y="100" fill="#959CC4" font-size="14">How the LakyFx 1.2.8 prefill port reached three ranks, step by step on the same weights</text>
+<text x="956" y="78" fill="url(#fold)" font-size="50" font-weight="800" letter-spacing="-1.5" text-anchor="end">+27%</text>
+<text x="956" y="100" fill="#C9CEEA" font-size="11.5" font-weight="700" letter-spacing="1.6" text-anchor="end">32K PREFILL</text>
+<line x1="96" x2="956" y1="376.0" y2="376.0" stroke="#1A2149"/>
+<text x="82.0" y="380.0" fill="#5F6790" font-size="12" font-weight="400" text-anchor="end">3,000</text>
+<line x1="96" x2="956" y1="316.0" y2="316.0" stroke="#1A2149"/>
+<text x="82.0" y="320.0" fill="#5F6790" font-size="12" font-weight="400" text-anchor="end">3,250</text>
+<line x1="96" x2="956" y1="256.0" y2="256.0" stroke="#1A2149"/>
+<text x="82.0" y="260.0" fill="#5F6790" font-size="12" font-weight="400" text-anchor="end">3,500</text>
+<line x1="96" x2="956" y1="196.0" y2="196.0" stroke="#1A2149"/>
+<text x="82.0" y="200.0" fill="#5F6790" font-size="12" font-weight="400" text-anchor="end">3,750</text>
+<path d="M119.7 400.0V379.4Q119.7 373.4 125.7 373.4H173.9Q179.9 373.4 179.9 379.4V400.0Z" fill="#3D477D"/>
+<text x="149.8" y="359.4" fill="#F4F5FF" font-size="16" font-weight="800" text-anchor="middle">3,011</text>
+<text x="149.8" y="426.0" fill="#C9CEEA" font-size="12" font-weight="600" text-anchor="middle">Port flags</text>
+<text x="149.8" y="442.0" fill="#5F6790" font-size="12" font-weight="400" text-anchor="middle">off</text>
+<rect x="227.2" y="341.9" width="60.2" height="31.4" rx="3" fill="url(#fold)"/>
+<line x1="179.9" x2="227.2" y1="373.4" y2="373.4" stroke="#959CC4" stroke-dasharray="2 3"/>
+<text x="257.2" y="315.9" fill="#F7936F" font-size="14" font-weight="800" text-anchor="middle">+131</text>
+<text x="257.2" y="331.9" fill="#959CC4" font-size="12" font-weight="600" text-anchor="middle">3,142</text>
+<text x="257.2" y="426.0" fill="#C9CEEA" font-size="12" font-weight="600" text-anchor="middle">Read-ahead,</text>
+<text x="257.2" y="442.0" fill="#5F6790" font-size="12" font-weight="400" text-anchor="middle">ragged, masked</text>
+<rect x="334.6" y="263.0" width="60.2" height="79.0" rx="3" fill="url(#fold)"/>
+<line x1="287.3" x2="334.6" y1="341.9" y2="341.9" stroke="#959CC4" stroke-dasharray="2 3"/>
+<text x="364.8" y="237.0" fill="#F7936F" font-size="14" font-weight="800" text-anchor="middle">+329</text>
+<text x="364.8" y="253.0" fill="#959CC4" font-size="12" font-weight="600" text-anchor="middle">3,471</text>
+<text x="364.8" y="426.0" fill="#C9CEEA" font-size="12" font-weight="600" text-anchor="middle">All 1.2.8 flags,</text>
+<text x="364.8" y="442.0" fill="#5F6790" font-size="12" font-weight="400" text-anchor="middle">4K rows</text>
+<rect x="442.1" y="250.0" width="60.2" height="13.0" rx="3" fill="url(#fold)"/>
+<line x1="394.8" x2="442.1" y1="263.0" y2="263.0" stroke="#959CC4" stroke-dasharray="2 3"/>
+<text x="472.2" y="224.0" fill="#F7936F" font-size="14" font-weight="800" text-anchor="middle">+54</text>
+<text x="472.2" y="240.0" fill="#959CC4" font-size="12" font-weight="600" text-anchor="middle">3,525</text>
+<text x="472.2" y="426.0" fill="#C9CEEA" font-size="12" font-weight="600" text-anchor="middle">6K logical</text>
+<text x="472.2" y="442.0" fill="#5F6790" font-size="12" font-weight="400" text-anchor="middle">rows</text>
+<rect x="549.6" y="236.6" width="60.2" height="13.4" rx="3" fill="url(#fold)"/>
+<line x1="502.3" x2="549.6" y1="250.0" y2="250.0" stroke="#959CC4" stroke-dasharray="2 3"/>
+<text x="579.8" y="210.6" fill="#F7936F" font-size="14" font-weight="800" text-anchor="middle">+56</text>
+<text x="579.8" y="226.6" fill="#959CC4" font-size="12" font-weight="600" text-anchor="middle">3,581</text>
+<text x="579.8" y="426.0" fill="#C9CEEA" font-size="12" font-weight="600" text-anchor="middle">8K logical</text>
+<text x="579.8" y="442.0" fill="#5F6790" font-size="12" font-weight="400" text-anchor="middle">rows</text>
+<rect x="657.1" y="211.6" width="60.2" height="25.0" rx="3" fill="url(#fold)"/>
+<line x1="609.9" x2="657.1" y1="236.6" y2="236.6" stroke="#959CC4" stroke-dasharray="2 3"/>
+<text x="687.2" y="185.6" fill="#F7936F" font-size="14" font-weight="800" text-anchor="middle">+104</text>
+<text x="687.2" y="201.6" fill="#959CC4" font-size="12" font-weight="600" text-anchor="middle">3,685</text>
+<text x="687.2" y="426.0" fill="#C9CEEA" font-size="12" font-weight="600" text-anchor="middle">Shared-range kernel</text>
+<text x="687.2" y="442.0" fill="#5F6790" font-size="12" font-weight="400" text-anchor="middle">+ aliasing</text>
+<rect x="764.6" y="203.2" width="60.2" height="8.4" rx="3" fill="url(#fold)"/>
+<line x1="717.4" x2="764.6" y1="211.6" y2="211.6" stroke="#959CC4" stroke-dasharray="2 3"/>
+<text x="794.8" y="177.2" fill="#F7936F" font-size="14" font-weight="800" text-anchor="middle">+35</text>
+<text x="794.8" y="193.2" fill="#959CC4" font-size="12" font-weight="600" text-anchor="middle">3,720</text>
+<text x="794.8" y="426.0" fill="#C9CEEA" font-size="12" font-weight="600" text-anchor="middle">Exact shared</text>
+<text x="794.8" y="442.0" fill="#5F6790" font-size="12" font-weight="400" text-anchor="middle">split</text>
+<path d="M872.1 400.0V182.1Q872.1 176.1 878.1 176.1H926.4Q932.4 176.1 932.4 182.1V400.0Z" fill="url(#foldv)" opacity="0.6" filter="url(#glow)"/>
+<path d="M872.1 400.0V182.1Q872.1 176.1 878.1 176.1H926.4Q932.4 176.1 932.4 182.1V400.0Z" fill="url(#foldv)"/>
+<text x="902.2" y="162.1" fill="#F4F5FF" font-size="22" font-weight="800" text-anchor="middle">3,833</text>
+<text x="902.2" y="426.0" fill="#F4F5FF" font-size="12" font-weight="700" text-anchor="middle">v1.1</text>
+<text x="902.2" y="442.0" fill="#F4F5FF" font-size="12" font-weight="600" text-anchor="middle">release</text>
+<line x1="96" x2="956" y1="400" y2="400" stroke="#2A3366"/>
+<text x="82.0" y="404.0" fill="#5F6790" font-size="12" font-weight="400" text-anchor="end">2,900</text>
+<text x="96.0" y="478.0" fill="#5F6790" font-size="12" font-weight="400" text-anchor="start">Axis starts at 2,900 tok/s. Every step matched the reference replies (8 long, 12 short greedy checks).</text>
+</svg>

@@ -1,0 +1,15 @@
+{
+  "installation": "chimera-sparks",
+  "env_file": "./credentials.env",
+  "api": {
+    "upstream": "http://127.0.0.1:8003",
+    "host": "127.0.0.1",
+    "port": 18002,
+    "context_tokens": 1048576,
+    "engine_streams": 16,
+    "max_concurrency": 16,
+    "state_dir": "~/.local/state/chimera-sparks",
+    "clients": {"default": "SPARK_API_KEY"},
+    "sampling": {"temperature": 1.0, "top_p": 1.0, "top_k": 20, "presence_penalty": 0.0}
+  }
+}

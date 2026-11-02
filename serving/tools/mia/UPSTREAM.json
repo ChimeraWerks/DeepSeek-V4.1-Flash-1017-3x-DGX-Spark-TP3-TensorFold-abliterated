@@ -1,0 +1,32 @@
+{
+  "repository": "MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks",
+  "revision": "2fd7809571e4d34f46a055dabf11caed9b145988",
+  "author": "Robert Wojciechowski",
+  "files": {
+    "exact.py": {
+      "upstream_sha256": "5594b2eb4962353e35c261c7d191a7cc901a76b116e451185977b59b3ce2be73"
+    },
+    "spill_check.py": {
+      "upstream_sha256": "bad626bff2eca939aeca7fe86401c9cf0f68bb60289d03d0e4cab9742f2b072c"
+    },
+    "kv_shard_check_e2e.py": {
+      "upstream_sha256": "84cacd24183d9aeec2e506319a65bd0464d56d753cbd527a44aaca4393a453cf"
+    },
+    "resume_bench.py": {
+      "upstream_sha256": "4da3c1e992f6e7b6b92eadbe0889bbbcda0ae5091aeb949e3d27a8f511b04f13"
+    },
+    "checklib.py": {
+      "upstream_sha256": "ee67d5cca783946c3e94797be8fcefe0908dad053131aa7f1aa60d2702a974f2"
+    },
+    "client.py": {
+      "upstream_sha256": "61fdb0b0b91033a34222fe284176d5d0e8aa00548e6fd7082602efca6b0c7255"
+    }
+  },
+  "adaptations": {
+    "kv_shard_check_e2e.py": "--parts 3 records three owner decodes; ownership and idle require all three parts; mixed samples require every reported owner live.",
+    "spill_check.py": "Require exact per-rank counter and directory sets for commits, pictures, floor, recovery and cleanup; strict streaming token hashes and terminal completion; rank2 fault target.",
+    "checklib.py": "Explicit credentials and origin-scoped redirects; stream completion validation; descriptor-relative no-follow filesystem operations require matching isolated test-store marker and reject absolute paths, traversal, symlinks and hardlinks.",
+    "exact.py": "Reuse checklib explicit API_KEY/--api-key-file selection, origin-scoped opener and redacted errors/logs/receipts; no implicit credential files.",
+    "client.py": "Remove import-time credential reads/global opener; authenticate only the configured origin via checklib."
+  }
+}

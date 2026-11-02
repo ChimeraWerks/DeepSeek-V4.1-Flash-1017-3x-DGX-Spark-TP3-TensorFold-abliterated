@@ -1,0 +1,368 @@
+{
+  "schema": "chimera.ds1017.runtime-assets.v1",
+  "kit": {
+    "repo": "ChimeraWerks/DeepSeek-V4.1-Flash-1017-EXL3-3.84bpw-abliterated",
+    "revision": "5a612f9b090c8d841fcf2c97b22e166ba27cab25",
+    "files": {
+      "runtime/tensorfold-kernels.tar.gz": {
+        "bytes": 39844643,
+        "sha256": "3e94bac39a953165b05930fc9ef91c905f6238e92640fab3dd984973d761f341",
+        "upstream": "https://github.com/LakyFx/deepseek-v41-flash-exl3-tp3-spark/blob/b4e476d60f01fda564d760c5906ac1358390c728/tensorfold/artifacts/tensorfold-kernels.tar.gz"
+      },
+      "runtime/rope/rope-plain-cos.f32": {
+        "bytes": 422576128,
+        "sha256": "66a47d6f185bdb2962ca0ffe13952ab70409dc15ea52f721a8e09189e5f26fe6"
+      },
+      "runtime/rope/rope-plain-sin.f32": {
+        "bytes": 422576128,
+        "sha256": "4ca39e36077fced64beab67b879470deb8f641a1cc26b5d227835c8c09812ecb"
+      },
+      "runtime/rope/rope-compressed-cos.f32": {
+        "bytes": 422576128,
+        "sha256": "e02d894c119fc61a26d2aea51488b87d35e4b33f4e266b8335e75aca5155b921"
+      },
+      "runtime/rope/rope-compressed-sin.f32": {
+        "bytes": 422576128,
+        "sha256": "d3a39e5b47a1d36ba9c20bfacbdf8803f3df4b7fcf7a0f947e6ef008f0a0aa2b"
+      }
+    },
+    "rope": {
+      "rows": 3301376,
+      "half": 32,
+      "rope_json_sha256": "a65f518bfbe1ba49c8cc4ff2b7c1b340bc090d4df9efebba92138af65c2c5a6c",
+      "base_tables": "https://huggingface.co/bertholomus/DeepSeek-V4.1-Flash-TensorFold-TP2-2xGB10/tree/19a442293f4d724439e9d725c83f0ea2affb9908/kit",
+      "reference_commit": "8b1fe210d5e0d68e0cdb3b14755c135465c9ffa8",
+      "pool": 3300000
+    },
+    "staged_files": [
+      {
+        "sha256": "de40bcdd71f24430ba82752ef385093be962adbf845a1c97db39161597d5dc28",
+        "path": "engram-token-map.json"
+      },
+      {
+        "sha256": "b95aefed5e9430212f5601f9fd2c3daa0fcaf6fc12f2ad90727c0ee3d17ac23e",
+        "path": "engram.json"
+      },
+      {
+        "sha256": "a65f518bfbe1ba49c8cc4ff2b7c1b340bc090d4df9efebba92138af65c2c5a6c",
+        "path": "rope.json"
+      },
+      {
+        "sha256": "0cbdebfbffed15722f096d6b8290933135d4393d0920059f7bcad4789f19387b",
+        "path": "vision/gate_bias_vl.safetensors"
+      },
+      {
+        "sha256": "f4c685d57fd29554ce221947c6b8a92d239bb4e3b4bb723f407d3d59e16c338f",
+        "path": "vision/torch_fmha_sm120.cubin"
+      }
+    ]
+  },
+  "engram": {
+    "repo": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+    "revision": "1bae0e1088993b9b82de08f59de5be5a34e42170",
+    "files": {
+      "model-00047-of-00048.safetensors": {
+        "bytes": 101535150936,
+        "sha256": "76a05106ece259be83d1bfea0dcb54f23377864ee60fd321690f35e6698a2af5"
+      },
+      "model-00048-of-00048.safetensors": {
+        "bytes": 101537926640,
+        "sha256": "9dc51433e195bc78b5ad846b68643cc0351d3b174e5e4309222d3b7402c83afd"
+      }
+    },
+    "layout": "https://huggingface.co/LakyFx/DeepSeek-V4.1-Flash-1017-EXL3-3.5bpw-TensorFold/tree/8621801c1fc74aece1fa83e67c6ade3fde1e7894/engram-tp3",
+    "ranks": [
+      {
+        "source_json_sha256": "26a270251ec065b7dd7ca16f59d0ba20bd75ad8bb640dedc6afff45d5f76b6c6",
+        "source_json": {
+          "copied_payload_bytes": 67585364880,
+          "files": {
+            "model-00047-of-00048.safetensors": {
+              "allocated_bytes": 33792241664,
+              "header_bytes": 664,
+              "header_sha256": "9055d06658af74f431f6675f6880f187b24a3f648b3f70ae949edc328b7702fc",
+              "original_full_source_sha256": "76a05106ece259be83d1bfea0dcb54f23377864ee60fd321690f35e6698a2af5",
+              "ranges": [
+                {
+                  "bytes": 32768225280,
+                  "offset": 664,
+                  "row_range": [
+                    0,
+                    128000880
+                  ],
+                  "sha256": "74f0d282701ca2fa83f3a64233f78aa0a820925d2347898a1ae4a4141bd7421f",
+                  "tensor": "layers.1.engram.embed.weight"
+                },
+                {
+                  "bytes": 1024007040,
+                  "offset": 98305579672,
+                  "row_range": [
+                    0,
+                    128000880
+                  ],
+                  "sha256": "2ab1a142271b4e428e74f13dcbcade6f39e172cdb141a3850fdd35862316348d",
+                  "tensor": "layers.1.engram.embed.scale"
+                }
+              ],
+              "size": 101535150936,
+              "source": "/work/ds41f-1017/source/model-00047-of-00048.safetensors"
+            },
+            "model-00048-of-00048.safetensors": {
+              "allocated_bytes": 33793142784,
+              "header_bytes": 672,
+              "header_sha256": "ffc9da89096525ea191d967531f8063db66327b0880a9d2f4d7d73a42d641f28",
+              "original_full_source_sha256": "9dc51433e195bc78b5ad846b68643cc0351d3b174e5e4309222d3b7402c83afd",
+              "ranges": [
+                {
+                  "bytes": 32769098240,
+                  "offset": 672,
+                  "row_range": [
+                    0,
+                    128004290
+                  ],
+                  "sha256": "01f240bbc2beec0f0695ee536fc110f6515d0a8f80a6615819b1a72e6d343296",
+                  "tensor": "layers.14.engram.embed.weight"
+                },
+                {
+                  "bytes": 1024034320,
+                  "offset": 98308271264,
+                  "row_range": [
+                    0,
+                    128004290
+                  ],
+                  "sha256": "fd0a9d0f4e2ded0cec309b02832e2255c90c041edcab98486be06836f6e03e9e",
+                  "tensor": "layers.14.engram.embed.scale"
+                }
+              ],
+              "size": 101537926640,
+              "source": "/work/ds41f-1017/source/model-00048-of-00048.safetensors"
+            }
+          },
+          "original_revision": "1bae0e1088993b9b82de08f59de5be5a34e42170",
+          "output_is_full_model": false,
+          "qualified": false,
+          "rank": 0,
+          "schema": "ds41f.1017.engram-sparse-plan.v1",
+          "source_receipt_sha256": "94c668aea3989eb81bc21909e0d04ace49f414f3990b8aa1c1e8d3967f1925e0",
+          "status": "OWNED_RANGES_CPU_BITWISE_VERIFIED_NOT_GPU_QUALIFIED",
+          "world": 3
+        },
+        "serving_source": {
+          "files": {
+            "model-00047-of-00048.safetensors": {
+              "size": 101535150936
+            },
+            "model-00048-of-00048.safetensors": {
+              "size": 101537926640
+            }
+          },
+          "original_manifest_sha256": "26a270251ec065b7dd7ca16f59d0ba20bd75ad8bb640dedc6afff45d5f76b6c6",
+          "original_repo": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+          "original_revision": "1bae0e1088993b9b82de08f59de5be5a34e42170",
+          "output_is_full_model": false,
+          "qualification_scope": "EXISTING_CPU_RANGE_RECEIPTS_NOT_NEW_GPU_QUALIFICATION",
+          "qualified": false,
+          "range_provenance_sha256": "6579c7798606583a10cf5d19408099b075c4664b900f4fbfb10a65631de950d6",
+          "rank": 0,
+          "schema": "ds1017.engram-serving-source.v2",
+          "world": 3
+        },
+        "serving_source_sha256": "20a694f349c2696b5f77076bee6e0d769a65c60a8aeb5a537251a99486d6882f"
+      },
+      {
+        "source_json_sha256": "fddd219913ae7cf19364dd7ba57070e42640a172f4d97c781865cbc8fab3fa8d",
+        "source_json": {
+          "copied_payload_bytes": 67586045472,
+          "files": {
+            "model-00047-of-00048.safetensors": {
+              "allocated_bytes": 33792552960,
+              "header_bytes": 664,
+              "header_sha256": "9055d06658af74f431f6675f6880f187b24a3f648b3f70ae949edc328b7702fc",
+              "original_full_source_sha256": "76a05106ece259be83d1bfea0dcb54f23377864ee60fd321690f35e6698a2af5",
+              "ranges": [
+                {
+                  "bytes": 32768525824,
+                  "offset": 32768225944,
+                  "row_range": [
+                    128000880,
+                    256002934
+                  ],
+                  "sha256": "573a99fd3a71b3d01e46298243b1cb107538186055733edeb52d68baecee3a64",
+                  "tensor": "layers.1.engram.embed.weight"
+                },
+                {
+                  "bytes": 1024016432,
+                  "offset": 99329586712,
+                  "row_range": [
+                    128000880,
+                    256002934
+                  ],
+                  "sha256": "8ee45e22f558f86364fcb1ae14d39e8a357107589dbfce1ce98f54dffacdc92e",
+                  "tensor": "layers.1.engram.embed.scale"
+                }
+              ],
+              "size": 101535150936,
+              "source": "/work/ds41f-1017/source/model-00047-of-00048.safetensors"
+            },
+            "model-00048-of-00048.safetensors": {
+              "allocated_bytes": 33793515520,
+              "header_bytes": 672,
+              "header_sha256": "ffc9da89096525ea191d967531f8063db66327b0880a9d2f4d7d73a42d641f28",
+              "original_full_source_sha256": "9dc51433e195bc78b5ad846b68643cc0351d3b174e5e4309222d3b7402c83afd",
+              "ranges": [
+                {
+                  "bytes": 32769457664,
+                  "offset": 32769098912,
+                  "row_range": [
+                    128004290,
+                    256009984
+                  ],
+                  "sha256": "41d65cb767619e470d0ddda993350266cc41babda45b73b137f1101076707447",
+                  "tensor": "layers.14.engram.embed.weight"
+                },
+                {
+                  "bytes": 1024045552,
+                  "offset": 99332305584,
+                  "row_range": [
+                    128004290,
+                    256009984
+                  ],
+                  "sha256": "62eee53fae87ccb36552859c4d70ada728e5c9fc02d83c2213d7f3bde14b338e",
+                  "tensor": "layers.14.engram.embed.scale"
+                }
+              ],
+              "size": 101537926640,
+              "source": "/work/ds41f-1017/source/model-00048-of-00048.safetensors"
+            }
+          },
+          "original_revision": "1bae0e1088993b9b82de08f59de5be5a34e42170",
+          "output_is_full_model": false,
+          "qualified": false,
+          "rank": 1,
+          "schema": "ds41f.1017.engram-sparse-plan.v1",
+          "source_receipt_sha256": "94c668aea3989eb81bc21909e0d04ace49f414f3990b8aa1c1e8d3967f1925e0",
+          "status": "OWNED_RANGES_CPU_BITWISE_VERIFIED_NOT_GPU_QUALIFIED",
+          "world": 3
+        },
+        "serving_source": {
+          "files": {
+            "model-00047-of-00048.safetensors": {
+              "size": 101535150936
+            },
+            "model-00048-of-00048.safetensors": {
+              "size": 101537926640
+            }
+          },
+          "original_manifest_sha256": "fddd219913ae7cf19364dd7ba57070e42640a172f4d97c781865cbc8fab3fa8d",
+          "original_repo": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+          "original_revision": "1bae0e1088993b9b82de08f59de5be5a34e42170",
+          "output_is_full_model": false,
+          "qualification_scope": "EXISTING_CPU_RANGE_RECEIPTS_NOT_NEW_GPU_QUALIFICATION",
+          "qualified": false,
+          "range_provenance_sha256": "00a807c40deab70f89b405d76da91eb3ed63d8c8eb1f89ddb552d096b82111e6",
+          "rank": 1,
+          "schema": "ds1017.engram-serving-source.v2",
+          "world": 3
+        },
+        "serving_source_sha256": "f9393d92cdf18f8d3ee31086d915d7ffe7e34b15276edfe38f487469ba6d481b"
+      },
+      {
+        "source_json_sha256": "f87c458600dffcb4a6d86041e9cda352fdf46a3991ac90860db53886c5eeb980",
+        "source_json": {
+          "copied_payload_bytes": 67586622048,
+          "files": {
+            "model-00047-of-00048.safetensors": {
+              "allocated_bytes": 33792864256,
+              "header_bytes": 664,
+              "header_sha256": "9055d06658af74f431f6675f6880f187b24a3f648b3f70ae949edc328b7702fc",
+              "original_full_source_sha256": "76a05106ece259be83d1bfea0dcb54f23377864ee60fd321690f35e6698a2af5",
+              "ranges": [
+                {
+                  "bytes": 32768827904,
+                  "offset": 65536751768,
+                  "row_range": [
+                    256002934,
+                    384006168
+                  ],
+                  "sha256": "4ee49b4c1aee9d0aea5d9bfc8e9264a41f00c6373513df589a1408384f1bb03f",
+                  "tensor": "layers.1.engram.embed.weight"
+                },
+                {
+                  "bytes": 1024025872,
+                  "offset": 100353603144,
+                  "row_range": [
+                    256002934,
+                    384006168
+                  ],
+                  "sha256": "28029370615fd7ecd7919148ad7c5e6da5d2ea9b698f74fa0ad4c42d4e46ba64",
+                  "tensor": "layers.1.engram.embed.scale"
+                }
+              ],
+              "size": 101535150936,
+              "source": "/work/ds41f-1017/source/model-00047-of-00048.safetensors"
+            },
+            "model-00048-of-00048.safetensors": {
+              "allocated_bytes": 33793777664,
+              "header_bytes": 672,
+              "header_sha256": "ffc9da89096525ea191d967531f8063db66327b0880a9d2f4d7d73a42d641f28",
+              "original_full_source_sha256": "9dc51433e195bc78b5ad846b68643cc0351d3b174e5e4309222d3b7402c83afd",
+              "ranges": [
+                {
+                  "bytes": 32769714688,
+                  "offset": 65538556576,
+                  "row_range": [
+                    256009984,
+                    384016682
+                  ],
+                  "sha256": "1a0dc5ce13d95a8fcd1c5ccc9c69eb762236609ec40c66e819bcda23f4aa8cae",
+                  "tensor": "layers.14.engram.embed.weight"
+                },
+                {
+                  "bytes": 1024053584,
+                  "offset": 100356351136,
+                  "row_range": [
+                    256009984,
+                    384016682
+                  ],
+                  "sha256": "15091adaeab51eb5b5f0cc2fb366f2662c3c5c14eeef359416907e5611b8d9ce",
+                  "tensor": "layers.14.engram.embed.scale"
+                }
+              ],
+              "size": 101537926640,
+              "source": "/work/ds41f-1017/source/model-00048-of-00048.safetensors"
+            }
+          },
+          "original_revision": "1bae0e1088993b9b82de08f59de5be5a34e42170",
+          "output_is_full_model": false,
+          "qualified": false,
+          "rank": 2,
+          "schema": "ds41f.1017.engram-sparse-plan.v1",
+          "source_receipt_sha256": "94c668aea3989eb81bc21909e0d04ace49f414f3990b8aa1c1e8d3967f1925e0",
+          "status": "OWNED_RANGES_CPU_BITWISE_VERIFIED_NOT_GPU_QUALIFIED",
+          "world": 3
+        },
+        "serving_source": {
+          "files": {
+            "model-00047-of-00048.safetensors": {
+              "size": 101535150936
+            },
+            "model-00048-of-00048.safetensors": {
+              "size": 101537926640
+            }
+          },
+          "original_manifest_sha256": "f87c458600dffcb4a6d86041e9cda352fdf46a3991ac90860db53886c5eeb980",
+          "original_repo": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+          "original_revision": "1bae0e1088993b9b82de08f59de5be5a34e42170",
+          "output_is_full_model": false,
+          "qualification_scope": "EXISTING_CPU_RANGE_RECEIPTS_NOT_NEW_GPU_QUALIFICATION",
+          "qualified": false,
+          "range_provenance_sha256": "0991a5d00c45cef20da0bdda86dc97c073ba431b36f72c68866608b4c24817c2",
+          "rank": 2,
+          "schema": "ds1017.engram-serving-source.v2",
+          "world": 3
+        },
+        "serving_source_sha256": "d172db6972c746068e276aa8ca4fb613fe55fe2658a58bf1129442eb45fa4d9d"
+      }
+    ]
+  }
+}

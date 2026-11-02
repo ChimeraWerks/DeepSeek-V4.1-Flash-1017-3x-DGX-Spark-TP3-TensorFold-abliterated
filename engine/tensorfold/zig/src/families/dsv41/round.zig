@@ -1,0 +1,1862 @@
+//! A decode round on one TP rank: the served build's RoundDecoder (rounds.py) for the rows of one or more streams' windows,
+//! with the served switches (hc fused with the Sinkhorn half deferred and the posted mixes' dots on it; glue, rot_q,
+//! rot_attn, rot_wob, idx, comp, rowmm on; hc_rot and SHARED_OVERLAP off): the rows' streams from their token ids
+//! (embed_init), then a stretch at a time (cut before each Engram layer) every layer's attention mixes with the last
+//! sublayer's post fused in, its DSpark tap, attention (_attention2 and _kv_idx: the q norm with the window KV into the
+//! ring and the rotations folded in, q's RoPE in wq_b's epilogue, the compressor and the indexer, the sparse attention
+//! whose merge applies the inverse RoPE and rotates wo_a's inputs, wo_a's epilogue rotating wo_b's), its gather, the
+//! FFN mixes, the MoE and its gather; a stretch's last post alone; the head on every row. The served side streams (the
+//! Sinkhorn half, the L2 prefetches) run in this stream's order here, the RDMA gathers are NCCL all-gathers (the same
+//! bytes), and the round's index arithmetic (rounds.py _ix: integer ops on the positions and the stream's extent) is
+//! made on the host. A node of the four-node 2D split takes its column parts and their exchanges through round2d.zig's
+//! hooks (Engine.two).
+const std = @import("std");
+const cuda = @import("cuda");
+const prompt = @import("prompt.zig");
+const weights = @import("weights.zig");
+const tri = @import("tri.zig");
+const tri_basic = @import("tri_basic.zig");
+const tri_hc = @import("tri_hc.zig");
+const tri_norm = @import("tri_norm.zig");
+const tri_attn = @import("tri_attn.zig");
+const tri_index = @import("tri_index.zig");
+const exl3_linear = @import("exl3_linear.zig");
+const exl3_experts = @import("exl3_experts.zig");
+const round2d = @import("round2d.zig");
+const exl3_experts2d = @import("exl3_experts2d.zig");
+const engram = @import("engram.zig");
+const exact = @import("exact.zig");
+const ops_mod = @import("ops.zig");
+const shard = @import("shard.zig");
+const shard_ops = @import("shard_ops.zig");
+const shard_ring = @import("shard_ring.zig");
+const graph_vote = @import("graph_vote.zig");
+const graph_cache = @import("graph_cache.zig");
+
+const Engine = prompt.Engine;
+const Chunk = prompt.Chunk;
+const Caches = prompt.Caches;
+
+/// kernels.ROUND_ROWS (TF_DS_ROUND_ROWS unset: TF_DS_DECODE_ROWS, 16): a round's rows at most.
+pub const max_rows = 48; // the most rows any round-row setting (Engine.round_rows) gives a round
+/// The served round-row bound when TF_DS_ROUND_ROWS is unset (kernels.DECODE_ROWS); the four-node lane serves 48.
+pub const default_rows = 16;
+/// graph.py BUCKET_MIN (TF_DS_BUCKET_MIN unset).
+pub const bucket_min = 1024;
+/// The window ring's rows a slot (model.py: window + RING_EXTRA).
+const ring_extra = prompt.ring_extra;
+/// The compressor's positional store's rows a slot (model.py RAW).
+const raw_rows = prompt.raw_rows;
+
+/// graph.py bucket_for: the context bucket of a round whose deepest row sees n positions, in a pool of `cap`.
+pub fn bucketFor(n: usize, cap: usize) usize {
+    var b: usize = bucket_min;
+    while (b < n) b *= 2;
+    return @min(b, @max(cap, bucket_min));
+}
+
+/// The points a round exchanges or ends with, in the order the served build's recorder sees them (a checker's hook).
+pub const Point = enum { engram_proj, engram_gather, attn_in, attn_out, attn_gather, moe_in, moe_out, moe_gather, head_cols, head_gather, logits, taps };
+
+/// A checker of a round's buffers between its steps (synchronized first by the checker): false stops the round.
+pub const Probe = struct {
+    ctx: *anyopaque,
+    at: *const fn (ctx: *anyopaque, what: Point, layer: usize, dev: u64) anyerror!bool,
+
+    fn check(pb: ?Probe, what: Point, layer: usize, dev: u64) !void {
+        const p = pb orelse return;
+        if (!try p.at(p.ctx, what, layer, dev)) return error.RoundMismatch;
+    }
+};
+
+/// A round's rows: token ids at positions pos. One stream's (consecutive positions) in pool slot 0 with its extent [base,
+/// end) of positions; or a concurrent round's (MultiDecoder: several streams' windows, each window's rows contiguous):
+/// each row's pool slot and its stream's extent, and each window's first row with its stream's ids through the window.
+pub const Rows = struct {
+    ids: []const i64,
+    pos: []const i64,
+    base: i64 = 0,
+    end: i64 = 0,
+    slots: ?[]const i64 = null,
+    bases: ?[]const i64 = null,
+    ends: ?[]const i64 = null,
+    windows: ?[]const Window = null,
+    /// TF_DS_KV_SHARD: each row's part (its extent's owner), plain data from the lane's windows (lanes.Built); null or
+    /// a negative entry: the part of the row's extent base. A part that is not its base's is refused (BadPart).
+    parts: ?[]const i64 = null,
+
+    fn slotOf(r: Rows, i: usize) i64 {
+        return if (r.slots) |v| v[i] else 0;
+    }
+    fn baseOf(r: Rows, i: usize) i64 {
+        return if (r.bases) |v| v[i] else r.base;
+    }
+    fn endOf(r: Rows, i: usize) i64 {
+        return if (r.ends) |v| v[i] else r.end;
+    }
+    /// The rank holding row i's compressed rows (TF_DS_KV_SHARD; shard.rowOwner: a malformed extent is BadRound).
+    pub fn ownerOf(r: Rows, i: usize, sh: shard.Shard) !u32 {
+        return shard.rowOwner(sh, r.baseOf(i), r.endOf(i), if (r.parts) |v| v[i] else -1);
+    }
+};
+
+/// TF_DS_KV_SHARD's index tensors by row (shard.SGlue, int64 [R] each at max_rows apart, a rank's own: Round.sglue).
+const SGlue = shard.SGlue;
+const sglue_n = shard.sglue_n;
+
+/// A window of a concurrent round: its first row, its rows, its stream's ids through the window (Engram's n-grams).
+pub const Window = struct { row: usize, n: usize, seq: []const i32 };
+
+/// The index tensors rounds.py's _ix makes from a round's inputs, by row (int64 [R] each, gi [R, 2]).
+const Glue = enum(u8) { wslot, wbase, cbase1, ctarget1, gpos1, vis1, cbase2, ctarget2, gpos2, vis2, rslot, gi };
+const glue_n = @as(usize, @backingInt(Glue.gi)) + 2; // gi (the last) takes two
+
+/// A round's buffers for up to max_rows rows (Python allocates them a round; their contents never carry over).
+pub const Round = struct {
+    r: usize = 0,
+    bucket: usize = 0,
+    glue: u64, // int64 [glue_n, max_rows]
+    // RoundDecoder.inputs: one int64 [5, R] buffer (ids, positions, slots, the extent's base and end), so a round's
+    // positions sit R * 8 bytes in: the alignment its kernels were specialized for (16-byte at even R only)
+    inputs: u64,
+    ids: u64 = 0,
+    pos: u64 = 0,
+    zero: u64, // int64 [1] = 0: m._zero, sparse_attn's WLO in ring mode
+    // the streams and the mHC state
+    h: u64,
+    h_alt: u64,
+    x: u64,
+    part: u64,
+    pre: u64,
+    pre_a: u64,
+    pre_f: u64,
+    post: u64,
+    comb: u64,
+    // attention
+    qa: u64, // bf16 [R, q_lora]
+    ykv: u64, // bf16 [R, head_dim]
+    ckv: u64, // the compressor's kv projection: bf16 (ratio 1) or fp32 [R, head_dim]
+    cgate: u64, // fp32 [R, head_dim]
+    qr: u64, // bf16 [R, q_lora]
+    kout: u64, // bf16 [R, head_dim]: q_kv_norm's KV rows
+    xhq: u64, // fp16 [wq_b, idx_wq_b][R, q_lora]: their rotated input rows (q_proj's group buffers)
+    q: u64, // bf16 [R, heads, head_dim]
+    iq: u64, // bf16 [R, index_heads, index_head_dim]
+    iq4: u64, // its fp4_qd bytes
+    iw: u64, // bf16 [R, index_heads]
+    keys: u64, // int64 [R, nb]
+    score: u64, // fp32 [R, nb]
+    cand: u64, // u8 [R, nb / candidate_block]
+    has_cand: bool = false,
+    // past candidate_blocks blocks (TF_DS_CAND_ONLY, served on): the candidate source's block maxima, their top blocks
+    // and the pool as block ids (int32 [R, candidate_blocks], -1 none) the later layers score alone
+    bmax: u64, // fp32 [R, nb / candidate_block]
+    pidx: u64, // int64 [R, candidate_blocks]
+    cblk: u64, // int32 [R, candidate_blocks]
+    has_cblk: bool = false,
+    cidx: u64, // int64 [R, index_topk]
+    kk: usize = 0,
+    ktop: u64, // int64 [R, index_topk]: torch's top-k values
+    tmax: u64, // int64 [R, nb / 64]: each 64-key tile's largest key (past TOPK_FUSED_MAX keys)
+    pbufs: tri_index.PrunedBufs, // topk_select_pruned's tpos [R, k], cand [R, k * 64] and every [R]
+    kvg: u64, // fp32 [R, 2, head_dim]: the group's positional-store rows
+    sg: u64,
+    lat2: u64, // bf16 [R, head_dim]: the pair's weighted sum
+    lat: u64, // bf16 [R, head_dim]: the compressed latent
+    ikp: u64, // bf16 [R, index_head_dim]: idx_wk's projection
+    ik: u64, // bf16 [R, index_head_dim]: the index key
+    o: u64, // bf16 [R, heads, head_dim]
+    pm_: u64, // fp32 [R, heads, 8]: the split keys' partials
+    pl_: u64,
+    po_: u64, // fp32 [R, heads, 8, head_dim]
+    xhwo: u64, // fp16 [wo_a group][R, K]: wo_a's rotated input rows (the merge writes them)
+    xb: u64, // fp16 [R, wo_b.k]: wo_b's rotated input rows (wo_a's epilogue writes them)
+    u: u64, // bf16 [R, groups * o_lora]
+    pa: u64, // fp32 [R, D]
+    ga: u64, // fp32 [world, R, D]
+    // MoE
+    gl: u64, // fp32 [R, D / 256, experts]: the gate's chunk sums
+    pick: u64, // int32 [R, slots]
+    mw: u64, // fp32 [R, slots]
+    pm: u64, // fp32 [R, D]
+    gm: u64, // fp32 [world, R, D]
+    // Engram
+    e_in: u64, // bf16 [R, cols * engram_head_dim]: the rows read for this rank's hash columns
+    ek: u64, // fp32 [R, engram_wkv.n]
+    ekg: u64, // fp32 [world, R, engram_wkv.n]
+    ekv: u64, // bf16 [R, engram_wkv.n]
+    // the head and the taps
+    xc: u64, // bf16 [R, D]
+    hl: u64, // fp32 [R, columns]
+    hg: u64, // fp32 [world, R, columns]
+    logits: u64, // fp32 [R, world * columns]: the rows' logits, the ranks' columns in rank order
+    taps: u64, // bf16 [R, taps * D]
+    // wo_a's suh concatenated a layer (wo_a_rot: torch.cat of the slices' suh, cached on the layer)
+    wo_suh: []u64,
+    sink: tri_hc.Sink,
+    // the mixes' side work (their dots and the Sinkhorn: useSide) on a stream of its own, joined at the next mix
+    side: ?cuda.Stream = null,
+    join: ?cuda.Event = null,
+    side_out: bool = false,
+    // the paced L2 prefetch (usePrefetch): the next kernels' weights touched into L2 on a stream of its own
+    pf: ?cuda.Stream = null,
+    pf_fork: ?cuda.Event = null,
+    pf_join: ?cuda.Event = null,
+    pf_out: bool = false,
+    timer: ?*PhaseTimer = null, // eager rounds' GPU time by phase (a profile)
+    // a profile's GPU clocks a round (Model.useClock): at the forward's start, then before and after each stretch
+    // a profile's kernel launches by the phase they end in (eager rounds: in a graph only its capture launches)
+    launches: [32]u64 = @splat(0),
+    launch_mark: u64 = 0,
+    clk_layers: bool = false, // a clock at each layer's end alone (tag 64 + the layer), TF_DS_CLOCK_MARKS=2
+    clk_marks: bool = false,
+    clk_shard: bool = false, // clocks only at the sharded attention's marks (and a_q, a_idx, a_core), TF_DS_CLOCK_MARKS=4
+    clk_ratio: ?u8 = null, // phase clocks only in the layers of this compress ratio (TF_DS_CLOCK_MARKS=3: ratio 2)
+    cur_ratio: u8 = 0, // the layer a stretch is on (its compress ratio) // clocks at every phase mark too (Model.useClock(true)), not only around the stretches
+    clk: u64 = 0, // [1 + 2 * max_clocks] u64: the count, then each clock and its phase (PhaseTimer.Phase or clock_*)
+    // TF_DS_KV_SHARD (useShard, before any capture): the rows' shard glue (int64 [sglue_n, max_rows]); the decode fetch's
+    // gathered rows (codes, scales [world][round_rows][index_topk] rows) and the renumbered (or masked) picks
+    // [round_rows, index_topk + 16]; owner decode's both ranks' queries [world][round_rows][heads][head_dim] bf16, the
+    // other rank's heads' outputs, its rotated wo_a inputs [groups][round_rows, K] fp16 sent and received, and each
+    // layer's other-rank sinks (f32 [heads]) and wo_a suh (fp16, its groups' concatenated)
+    sglue: u64 = 0,
+    fc: u64 = 0,
+    fs: u64 = 0,
+    fidx: u64 = 0,
+    qall: u64 = 0,
+    o_peer: u64 = 0,
+    xh_peer: u64 = 0,
+    xh_recv: u64 = 0,
+    peer_sink: []u64 = &.{},
+    peer_suh: []u64 = &.{},
+    // the round's decode mode (forward: the switch's, or auto's choice from the rows each rank holds; off unsharded)
+    // and whether its exchanges ride the RDMA ring (KvShard.use_ring and every exchange of R rows fits a slot)
+    smode: shard.Mode = .off,
+    sring: bool = false,
+    // on the ring (KvShard.use_ring, useShard): the round's row lists (shard_ring.Lists, i32, uploaded each ring
+    // round by shardRound), the most rows whose every exchange fits a slot in each mode (the model's sizes: every
+    // compressed layer's), and the check of each layer's ring order
+    rlist: u64 = 0,
+    fit_fetch: usize = 0,
+    fit_owner: usize = 0,
+    rcur: shard_ring.Cursor = .{},
+    // owner decode's own-head pass (and its early query stage) on a stream of their own (KvShard.overlap): the pass's
+    // split partials, the fork and the two joins (the query stage's, before its collect; the pass's, before the outputs'
+    // collect, as the pass writes every xhwo row)
+    ss: ?cuda.Stream = null,
+    ss_fork: ?cuda.Event = null,
+    ss_jq: ?cuda.Event = null,
+    ss_jo: ?cuda.Event = null,
+    ss_q_out: bool = false,
+    pm2: u64 = 0,
+    pl2: u64 = 0,
+    po2: u64 = 0,
+
+    pub fn init(e: *const Engine, a: *prompt.Arena, gpa: std.mem.Allocator, pool_cap: usize) !Round {
+        const c = e.c;
+        const w = e.w;
+        const R = e.round_rows;
+        if (R < default_rows or R > max_rows) return error.BadRoundRows;
+        const d = c.hidden;
+        const hc = c.hc;
+        const hd = c.head_dim;
+        const hl = e.heads();
+        const l0 = w.layers[0];
+        const nb_max = bucketFor(pool_cap, pool_cap);
+        var rd: Round = undefined;
+        rd.r = 0;
+        // the profile's clocks off until Model.useClock (rd starts undefined: a field default does not apply)
+        rd.launches = @splat(0);
+        rd.launch_mark = 0;
+        rd.clk_layers = false;
+        rd.clk_marks = false;
+        rd.clk_shard = false;
+        rd.clk_ratio = null;
+        rd.cur_ratio = 0;
+        rd.clk = 0;
+        rd.bucket = 0;
+        rd.has_cand = false;
+        rd.kk = 0;
+        rd.sglue = 0;
+        rd.fc = 0;
+        rd.fs = 0;
+        rd.fidx = 0;
+        rd.qall = 0;
+        rd.o_peer = 0;
+        rd.xh_peer = 0;
+        rd.xh_recv = 0;
+        rd.peer_sink = &.{};
+        rd.peer_suh = &.{};
+        rd.smode = .off;
+        rd.sring = false;
+        rd.rlist = 0;
+        rd.fit_fetch = 0;
+        rd.fit_owner = 0;
+        rd.rcur = .{};
+        rd.ss = null;
+        rd.ss_fork = null;
+        rd.ss_jq = null;
+        rd.ss_jo = null;
+        rd.ss_q_out = false;
+        rd.pm2 = 0;
+        rd.pl2 = 0;
+        rd.po2 = 0;
+        rd.glue = try a.take(glue_n * max_rows * 8); // glue rows at max_rows apart
+        rd.inputs = try a.take(5 * R * 8);
+        rd.ids = rd.inputs;
+        rd.pos = rd.inputs;
+        rd.zero = try a.take(8);
+        try prompt.fill(e, rd.zero, 0, 8);
+        rd.h = try a.take(R * hc * d * 2);
+        rd.h_alt = try a.take(R * hc * d * 2);
+        rd.x = try a.take(R * d * 2);
+        rd.part = try a.take(R * tri_basic.hc_blocks * 32 * 4);
+        rd.pre = try a.take(R * hc * 4);
+        rd.pre_a = try a.take(R * hc * 4);
+        rd.pre_f = try a.take(R * hc * 4);
+        rd.post = try a.take(R * hc * 4);
+        rd.comb = try a.take(R * hc * hc * 4);
+        rd.qa = try a.take(R * c.q_lora * 2);
+        rd.ykv = try a.take(R * hd * 2);
+        rd.ckv = try a.take(R * hd * 4);
+        rd.cgate = try a.take(R * hd * 4);
+        rd.qr = try a.take(R * c.q_lora * 2);
+        rd.kout = try a.take(R * hd * 2);
+        rd.xhq = try a.take(2 * R * c.q_lora * 2);
+        rd.q = try a.take(R * hl * hd * 2);
+        rd.iq = try a.take(R * c.index_heads * c.index_head_dim * 2);
+        rd.iq4 = try a.take(R * c.index_heads * c.index_head_dim * 2);
+        rd.iw = try a.take(R * c.index_heads * 2);
+        rd.keys = try a.take(R * nb_max * 8);
+        rd.score = try a.take(R * nb_max * 4);
+        rd.cand = try a.take(R * (nb_max / c.candidate_block + 1));
+        rd.bmax = try a.take(R * (nb_max / c.candidate_block + 1) * 4);
+        rd.pidx = try a.take(R * c.candidate_blocks * 8);
+        rd.cblk = try a.take(R * c.candidate_blocks * 4);
+        rd.has_cblk = false;
+        rd.cidx = try a.take(R * c.index_topk * 8);
+        rd.ktop = try a.take(R * c.index_topk * 8);
+        rd.tmax = try a.take(R * (nb_max / tri_index.tile + 1) * 8);
+        rd.pbufs = .{ .tpos = try a.take(R * c.index_topk * 8), .cand = try a.take(R * c.index_topk * tri_index.tile * 8), .every = try a.take(R * 8) };
+        {
+            // topk_select_pruned's `every`: a visible count past every tile position (torch.full, each call)
+            var ev: [max_rows]i64 = @splat(tri_index.every_vis);
+            try prompt.upload(e, rd.pbufs.every, &ev, R * 8);
+        }
+        rd.kvg = try a.take(R * 2 * hd * 4);
+        rd.sg = try a.take(R * 2 * hd * 4);
+        rd.lat2 = try a.take(R * hd * 2);
+        rd.lat = try a.take(R * hd * 2);
+        rd.ikp = try a.take(R * c.index_head_dim * 2);
+        rd.ik = try a.take(R * c.index_head_dim * 2);
+        rd.o = try a.take(R * hl * hd * 2);
+        rd.pm_ = try a.take(R * hl * tri_attn.attn_splits * 4);
+        rd.pl_ = try a.take(R * hl * tri_attn.attn_splits * 4);
+        rd.po_ = try a.take(R * hl * tri_attn.attn_splits * hd * 4);
+        var wo_k: usize = 0;
+        for (l0.wo_a[0..l0.groups]) |wo| wo_k += wo.k;
+        rd.xhwo = try a.take(R * wo_k * 2);
+        rd.xb = try a.take(R * l0.wo_b.k * 2);
+        rd.u = try a.take(R * l0.groups * l0.wo_a[0].n * 2);
+        rd.pa = try a.take(R * d * 4);
+        rd.ga = try a.take(e.world * R * d * 4);
+        rd.gl = try a.take(R * (d / 256) * c.experts * 4);
+        rd.pick = try a.take(R * e.slots() * 4);
+        rd.mw = try a.take(R * e.slots() * 4);
+        rd.pm = try a.take(R * d * 4);
+        rd.gm = try a.take(e.world * R * d * 4);
+        rd.e_in = 0;
+        rd.ek = 0;
+        rd.ekg = 0;
+        rd.ekv = 0;
+        for (w.layers) |lay| {
+            const ew = lay.engram_wkv orelse continue;
+            rd.e_in = try a.take(R * ew.k * 2);
+            const en = if (e.two) |tw| tw.engramWidth() else ew.n; // the summed projection's width (2D: both pairs')
+            rd.ek = try a.take(R * ew.n * 4);
+            rd.ekg = try a.take(e.world * R * en * 4);
+            rd.ekv = try a.take(R * en * 2);
+            break;
+        }
+        rd.xc = try a.take(R * d * 2);
+        const hh = if (e.two) |tw| tw.hw[0] + tw.hw[1] else w.head.n; // a rank's vocabulary half (2D: both pairs' parts)
+        rd.hl = try a.take(R * w.head.n * 4);
+        rd.hg = try a.take(e.world * R * hh * 4);
+        rd.logits = try a.take(R * e.world * hh * 4);
+        rd.taps = try a.take(R * @max(c.dspark_taps.slice().len, 1) * d * 2);
+        // wo_a_rot's suh: the slices' suh one after another (torch.cat's bytes)
+        rd.wo_suh = try gpa.alloc(u64, w.layers.len);
+        for (w.layers, 0..) |lay, li| {
+            var k: usize = 0;
+            for (lay.wo_a[0..lay.groups]) |wo| k += wo.k;
+            const dst = try a.take(k * 2);
+            var off: usize = 0;
+            for (lay.wo_a[0..lay.groups]) |wo| {
+                try e.d.check(e.d.api.cuMemcpyDtoDAsync_v2(dst + off * 2, wo.suh, wo.k * 2, e.s.handle), "cuMemcpyDtoDAsync");
+                off += wo.k;
+            }
+            rd.wo_suh[li] = dst;
+        }
+        var ev = try cuda.Event.init(e.d, false);
+        errdefer ev.deinit();
+        // the Sinkhorn half's side stream is this stream (useSide gives it one of its own): its launches keep their
+        // order and plain (no-PDL) launches
+        rd.sink = .{ .s = e.s, .fork = ev };
+        rd.side = null;
+        rd.join = null;
+        rd.side_out = false;
+        rd.pf = null;
+        rd.pf_fork = null;
+        rd.pf_join = null;
+        rd.pf_out = false;
+        rd.timer = null;
+        return rd;
+    }
+
+    /// TF_DS_KV_SHARD (e.kv): the sharded decode's buffers, every one allocated here, before any graph capture (a
+    /// round's rows change their contents, never their addresses); owner decode also gathers the other rank's sinks and
+    /// wo_a suh of every layer once (an all-gather of each: both ranks call this at the same point of open). Every
+    /// rank-local step (the kernels' presence, the buffers, the overlap stream and events) comes first, and its outcome
+    /// rides the exchanges' settings gather (agreeExchanges: the RDMA ring or NCCL, auto's cost model): a rank that cannot
+    /// set up refuses with its own error and every other rank with KvShardSettingsMismatch at the same point, so no rank
+    /// waits in the sinks' gather for one that left.
+    pub fn useShard(rd: *Round, e: *const Engine, a: *prompt.Arena, gpa: std.mem.Allocator) !void {
+        const kv = e.kv orelse return error.NoKvShard;
+        errdefer rd.dropShard();
+        const want = exchangeSettings(e, kv);
+        const ready = rd.shardLocal(e, a, gpa, kv, want.ring);
+        try agreeExchanges(e, a, kv, want, ready);
+        if (kv.mode != .owner and kv.mode != .auto) return;
+        const hl = e.heads();
+        const wo_k = woK(e.w.layers[0]);
+        const peer = kv.sh.peer();
+        for (e.w.layers, 0..) |lay, li| {
+            // the other rank's slice of each, gathered in rank order (shardLocal took both buffers: rd.peer_* hold
+            // their bases until here): its own heads' sinks, its groups' suh
+            const sinks = rd.peer_sink[li];
+            try e.d.check(e.d.api.cuMemcpyDtoDAsync_v2(sinks + kv.sh.rank * hl * 4, lay.sink, hl * 4, e.s.handle), "cuMemcpyDtoDAsync");
+            try e.comm.allGatherInPlace(sinks, hl * 4, e.s);
+            rd.peer_sink[li] = sinks + peer * hl * 4;
+            const suh = rd.peer_suh[li];
+            try e.d.check(e.d.api.cuMemcpyDtoDAsync_v2(suh + kv.sh.rank * wo_k * 2, rd.wo_suh[li], wo_k * 2, e.s.handle), "cuMemcpyDtoDAsync");
+            try e.comm.allGatherInPlace(suh, wo_k * 2, e.s);
+            rd.peer_suh[li] = suh + peer * wo_k * 2;
+        }
+        try e.s.synchronize();
+    }
+
+    fn woK(lay: weights.Layer) usize {
+        var k: usize = 0;
+        for (lay.wo_a[0..lay.groups]) |wo| k += wo.k;
+        return k;
+    }
+
+    /// useShard's rank-local half (no collective): what this rank's sharded decode needs, checked and allocated.
+    /// `ring`: this rank's own wish for the ring (exchangeSettings), which the gather then makes every rank's.
+    fn shardLocal(rd: *Round, e: *const Engine, a: *prompt.Arena, gpa: std.mem.Allocator, kv: *shard_ops.KvShard, ring: bool) !void {
+        const c = e.c;
+        const R = e.round_rows;
+        const K = c.index_topk;
+        const world: usize = kv.sh.world;
+        if (world > 3) return error.KvShardNeedsTwoRanks;
+        if (world == 3 and kv.mode != .fetch) return error.Tp3FetchOnly;
+        rd.sglue = try a.take(sglue_n * max_rows * 8);
+        rd.fidx = try a.take(R * (K + 16) * 8);
+        if (ring) try rd.useShardRing(e, a, kv);
+        if (kv.mode == .fetch or kv.mode == .auto) {
+            rd.fc = try a.take(world * R * K * c.head_dim / 2);
+            rd.fs = try a.take(world * R * K * c.head_dim / 16);
+        }
+        if (kv.mode != .owner and kv.mode != .auto) return;
+        const hl = e.heads();
+        const hd = c.head_dim;
+        const wo_k = woK(e.w.layers[0]);
+        for (e.w.layers) |lay| if (woK(lay) != wo_k) return error.UnevenWoA; // (the exchange's rows: every layer's wo_a alike)
+        rd.qall = try a.take(world * R * hl * hd * 2);
+        rd.o_peer = try a.take(R * hl * hd * 2);
+        rd.xh_peer = try a.take(R * wo_k * 2);
+        rd.xh_recv = try a.take(R * wo_k * 2);
+        rd.peer_sink = try gpa.alloc(u64, e.w.layers.len);
+        rd.peer_suh = try gpa.alloc(u64, e.w.layers.len);
+        for (rd.peer_sink, rd.peer_suh) |*sk, *su| {
+            sk.* = try a.take(world * hl * 4);
+            su.* = try a.take(world * wo_k * 2);
+        }
+    }
+
+    /// The ring path's buffers and limits: the row lists' block, each mode's most rows whose every exchange fits a slot
+    /// (from the model's sizes, every compressed layer's outputs: the same on both ranks), and, for owner decode with
+    /// TF_DS_KV_SHARD_OVERLAP not "0", the own-head pass's stream, events and split partials (per rank: it moves where
+    /// kernels run, never the ring order or a byte).
+    fn useShardRing(rd: *Round, e: *const Engine, a: *prompt.Arena, kv: *shard_ops.KvShard) !void {
+        const c = e.c;
+        const R = e.round_rows;
+        const hd = c.head_dim;
+        const max = (e.ring orelse return error.NoKvShard).s.max_bytes;
+        rd.rlist = try a.take(shard_ring.Lists.bytes);
+        try prompt.fill(e, rd.rlist, 0, shard_ring.Lists.bytes);
+        const K = c.index_topk;
+        rd.fit_fetch = shard_ring.fitRows(shard_ring.fetchXferFrom(0, 0, kv.sh.rank, 0, 1, K, K, hd / 2, hd / 16).rowBytes(), max);
+        if (kv.mode == .fetch) return;
+        var fit = shard_ring.fitRows(shard_ring.qXfer(0, 0, kv.sh.rank, 1, e.heads(), hd).rowBytes(), max);
+        for (e.w.layers) |lay| {
+            if (lay.ratio == 0) continue;
+            const o = shard_ring.outXfer(0, 0, 1, lay.groups, lay.wo_a[0].k) catch {
+                fit = 0;
+                break;
+            };
+            fit = @min(fit, shard_ring.fitRows(o.rowBytes(), max));
+        }
+        rd.fit_owner = fit;
+        if (kv.mode != .owner and kv.mode != .auto) return;
+        const ov = getenv("TF_DS_KV_SHARD_OVERLAP");
+        kv.overlap = if (ov) |v| !std.mem.eql(u8, v, "0") else true;
+        if (!kv.overlap) return;
+        const hl = e.heads();
+        rd.pm2 = try a.take(R * hl * tri_attn.attn_splits * 4);
+        rd.pl2 = try a.take(R * hl * tri_attn.attn_splits * 4);
+        rd.po2 = try a.take(R * hl * tri_attn.attn_splits * hd * 4);
+        var s = try cuda.Stream.init(e.d, true);
+        errdefer s.deinit();
+        rd.ss_fork = try cuda.Event.init(e.d, false);
+        rd.ss_jq = try cuda.Event.init(e.d, false);
+        rd.ss_jo = try cuda.Event.init(e.d, false);
+        rd.ss = s;
+    }
+
+    pub fn dropShard(rd: *Round) void {
+        inline for (.{ &rd.ss_fork, &rd.ss_jq, &rd.ss_jo }) |ev| {
+            if (ev.*) |*x| x.deinit();
+            ev.* = null;
+        }
+        if (rd.ss) |*s| s.deinit();
+        rd.ss = null;
+    }
+
+    /// This rank's own exchange settings, before any agreement: the RDMA ring when this rank has one, its image has the
+    /// ring kernels (shard_ops.Kernels.ringRows) and TF_DS_KV_SHARD_RING is not "0"; TF_DS_KV_SHARD_COST (auto's cost
+    /// model), or the parse error.
+    const Want = struct { ring: bool, cost: anyerror!shard_ring.Cost };
+
+    fn exchangeSettings(e: *const Engine, kv: *const shard_ops.KvShard) Want {
+        const ring_env = getenv("TF_DS_KV_SHARD_RING");
+        const ring_ok: anyerror!bool = if (ring_env) |v| (if (v.len == 0 or std.mem.eql(u8, v, "1")) true else if (std.mem.eql(u8, v, "0")) false else error.BadKvShardRing) else true;
+        const kernels = kv.k.hasRingRows();
+        const on = ring_ok catch false;
+        if (e.ring != null and on and !kernels) std.log.warn("dsv41: TF_DS_KV_SHARD: this dsv41_shard image has no ring kernels (tf_ds_ring_stage_rows, tf_ds_ring_collect_rows): the decode exchanges take NCCL (rebuild the image for the ring)", .{});
+        return .{ .ring = e.ring != null and on and kernels, .cost = if (ring_ok) |_| shard_ring.Cost.parse(getenv("TF_DS_KV_SHARD_COST")) else |err| err };
+    }
+
+    /// The exchanges' settings on every rank alike (shard_ring.Agreed): this rank's (exchangeSettings), gathered and
+    /// compared. A rank whose own settings do not parse, or whose rank-local setup failed (`ready`: shardLocal), sends
+    /// the sentinel and refuses with its own error after the gather (as Model.agree does), so no rank waits in a
+    /// collective the other never joins; a difference is KvShardSettingsMismatch on every other rank.
+    fn agreeExchanges(e: *const Engine, a: *prompt.Arena, kv: *shard_ops.KvShard, want: Want, ready: anyerror!void) !void {
+        const mine = shard_ring.Agreed.of(want.ring, if (ready) |_| want.cost else |err| err);
+        const per = @sizeOf(shard_ring.Agreed);
+        const world: usize = kv.sh.world;
+        if (world > 3) return error.KvShardNeedsTwoRanks;
+        if (world == 3 and kv.mode != .fetch) return error.Tp3FetchOnly;
+        const buf = try a.take(world * per);
+        try prompt.upload(e, buf + kv.sh.rank * per, &mine, per);
+        try e.comm.allGatherInPlace(buf, per, e.s);
+        try e.s.synchronize();
+        var all: [3]shard_ring.Agreed = undefined;
+        try e.d.check(e.d.api.cuMemcpyDtoH_v2(&all, buf, world * per), "cuMemcpyDtoH");
+        if (!mine.same(all[0..world])) {
+            try ready; // this rank's own refusal first
+            _ = try want.cost;
+            return error.KvShardSettingsMismatch;
+        }
+        kv.use_ring = want.ring;
+        kv.cost = want.cost catch unreachable;
+    }
+
+    fn sgl(rd: *const Round, k: SGlue) u64 {
+        return rd.sglue + @as(u64, @backingInt(k)) * max_rows * 8;
+    }
+
+    /// The mixes' side work (the dots of the stored streams and the Sinkhorn) on a stream of its own, as the served
+    /// build runs it: forked behind each mix's finish, joined before the next mix reads what it wrote. Its kernels and
+    /// their inputs are the same, so the bytes are.
+    pub fn useSide(rd: *Round, e: *const Engine) !void {
+        if (rd.side != null) return;
+        var s = try cuda.Stream.init(e.d, true);
+        errdefer s.deinit();
+        rd.join = try cuda.Event.init(e.d, false);
+        rd.side = s;
+        rd.sink.s = s;
+    }
+
+    pub fn dropSide(rd: *Round, e: *const Engine) void {
+        if (rd.join) |*j| j.deinit();
+        if (rd.side) |*s| s.deinit();
+        rd.join = null;
+        rd.side = null;
+        rd.sink.s = e.s;
+    }
+
+    /// The paced L2 prefetch, as the served build's trace shows it: three launches a layer on a stream of its own, each
+    /// touching the next kernels' weights into L2 while the current ones run (after the q/kv linears: wo_a and wo_b;
+    /// after wo_b: the router; after the experts: the next layer's input linears). It writes nothing.
+    pub fn usePrefetch(rd: *Round, e: *const Engine) !void {
+        if (rd.pf != null) return;
+        var s = try cuda.Stream.init(e.d, true);
+        errdefer s.deinit();
+        rd.pf_fork = try cuda.Event.init(e.d, false);
+        rd.pf_join = try cuda.Event.init(e.d, false);
+        rd.pf = s;
+    }
+
+    pub fn dropPrefetch(rd: *Round) void {
+        if (rd.pf_fork) |*x| x.deinit();
+        if (rd.pf_join) |*x| x.deinit();
+        if (rd.pf) |*s| s.deinit();
+        rd.pf_fork = null;
+        rd.pf_join = null;
+        rd.pf = null;
+    }
+
+    /// These ranges touched into L2 behind the work queued so far, on the prefetch stream.
+    /// One paced L2 prefetch launch on its stream: `ranges` in order, the last one cut where the launch reaches `budget`
+    /// bytes (the served launches move at most 16 MiB, 8 MiB behind wo_b).
+    fn prefetch(rd: *Round, e: *const Engine, ranges: []const [2]u64, budget: u64) !void {
+        const s = rd.pf orelse return;
+        var a: ops_mod.Prefetch = .{};
+        var left = budget;
+        for (ranges) |r| {
+            if (r[1] == 0 or a.n == 16 or left == 0) continue;
+            const take = @min(r[1], left);
+            a.ptr[@intCast(a.n)] = r[0];
+            a.bytes[@intCast(a.n)] = take;
+            a.n += 1;
+            left -= take;
+        }
+        if (a.n == 0) return;
+        try rd.pf_fork.?.record(e.s);
+        try s.wait(rd.pf_fork.?);
+        try e.ops.l2Prefetch(s, a);
+        try rd.pf_join.?.record(s);
+        rd.pf_out = true;
+    }
+
+    /// The main stream waits for the prefetches forked so far (a stretch ends joined: its graph's every stream).
+    fn joinPrefetch(rd: *Round, e: *const Engine) !void {
+        if (!rd.pf_out) return;
+        try e.s.wait(rd.pf_join.?);
+        rd.pf_out = false;
+    }
+
+    pub const max_clocks = 512;
+    pub const clock_start = 250; // the forward's start
+    pub const clock_wait = 251; // before a stretch: the GPU waiting on the host since the last clock
+    pub const clock_tail = 252; // after a stretch: its work past its last phase
+
+    /// A clock kernel on the main stream (captured into a graph like any kernel, its slot fixed by the round's order).
+    fn clock(rd: *Round, e: *const Engine, ph: u8) !void {
+        if (rd.clk == 0) return;
+        try e.ops.gpuClock(e.s, rd.clk, ph, ph == clock_start, max_clocks);
+    }
+
+    fn mark(rd: *Round, e: *const Engine, p: PhaseTimer.Phase) !void {
+        const all = rd.clk_marks and (rd.clk_ratio == null or rd.clk_ratio.? == rd.cur_ratio);
+        if (rd.clk != 0 and (all or (rd.clk_shard and PhaseTimer.shardMark(p)))) {
+            const now = cuda.launch.count;
+            rd.launches[@backingInt(p)] += now -% rd.launch_mark;
+            rd.launch_mark = now;
+            try rd.clock(e, @backingInt(p));
+        }
+        if (rd.timer) |t| try t.mark(e.s, p);
+    }
+
+    /// The main stream waits for the side work forked so far.
+    fn joinSide(rd: *Round, e: *const Engine) !void {
+        if (!rd.side_out) return;
+        try e.s.wait(rd.join.?);
+        rd.side_out = false;
+    }
+
+    fn g(rd: *const Round, k: Glue) u64 {
+        return rd.glue + @as(u64, @backingInt(k)) * max_rows * 8;
+    }
+};
+
+/// rounds.py _ix's tensors for these rows (each row's slot and extent), made on the host and uploaded in one copy.
+fn setGlue(e: *const Engine, rd: *Round, rows: Rows) !void {
+    const R = rows.ids.len;
+    var hg: [glue_n * max_rows]i64 = @splat(0);
+    const rs: i64 = @intCast(e.c.window + ring_extra);
+    const raw: i64 = raw_rows;
+    for (0..R) |i| {
+        const p = rows.pos[i];
+        const at = struct {
+            fn f(buf: []i64, k: Glue, r: usize) *i64 {
+                return &buf[@as(usize, @backingInt(k)) * max_rows + r];
+            }
+        }.f;
+        const slot = rows.slotOf(i);
+        const base = rows.baseOf(i);
+        // wbase = slot * RS, wslot = wbase + pos % RS
+        at(&hg, .wbase, i).* = slot * rs;
+        at(&hg, .wslot, i).* = slot * rs + @mod(p, rs);
+        // ratio 1: cbase = base, ctarget = cbase + pos, gpos = pos, vis = pos + 1
+        at(&hg, .cbase1, i).* = base;
+        at(&hg, .ctarget1, i).* = base + p;
+        at(&hg, .gpos1, i).* = p;
+        at(&hg, .vis1, i).* = p + 1;
+        // ratio 2: groups = pos // 2, target = groups if the group is complete else the extent's last row (scratch)
+        const cb2 = @divFloor(base, 2);
+        const groups = @divFloor(p, 2);
+        const scratch = @divFloor(rows.endOf(i), 2) - 1 - cb2;
+        at(&hg, .cbase2, i).* = cb2;
+        at(&hg, .ctarget2, i).* = cb2 + (if (@mod(p + 1, 2) == 0) groups else scratch);
+        at(&hg, .gpos2, i).* = groups * 2;
+        at(&hg, .vis2, i).* = @divFloor(p + 1, 2);
+        // rslot = slot * RAW + pos % RAW; gi = rbase + (groups * 2 + [0, 1]) % RAW, rbase = slot * RAW
+        at(&hg, .rslot, i).* = slot * raw + @mod(p, raw);
+        const gi0 = @as(usize, @backingInt(Glue.gi)) * max_rows;
+        hg[gi0 + 2 * i] = slot * raw + @mod(groups * 2, raw);
+        hg[gi0 + 2 * i + 1] = slot * raw + @mod(groups * 2 + 1, raw);
+    }
+    try prompt.upload(e, rd.glue, &hg, hg.len * 8);
+    // RoundDecoder.set: [ids, pos, slots, base, end] in one [5, R] copy
+    var in: [5 * max_rows]i64 = @splat(0);
+    for (0..R) |i| {
+        in[i] = rows.ids[i];
+        in[R + i] = rows.pos[i];
+        in[2 * R + i] = rows.slotOf(i);
+        in[3 * R + i] = rows.baseOf(i);
+        in[4 * R + i] = rows.endOf(i);
+    }
+    try prompt.upload(e, rd.inputs, &in, 5 * R * 8);
+    rd.ids = rd.inputs;
+    rd.pos = rd.inputs + R * 8;
+    if (e.kv) |kv| try setShardGlue(e, rd, rows, kv.sh);
+}
+
+/// TF_DS_KV_SHARD's glue for these rows on this rank (SGlue), uploaded in one copy: the replicated glue's store
+/// targets moved into this rank's plane (or a trash row), each row's local extent base and holding flag, its fetch base.
+fn setShardGlue(e: *const Engine, rd: *Round, rows: Rows, sh: shard.Shard) !void {
+    const R = rows.ids.len;
+    if (R > max_rows) return error.WindowTooWide;
+    var bases: [max_rows]i64 = undefined;
+    var ends: [max_rows]i64 = undefined;
+    for (0..R) |i| {
+        bases[i] = rows.baseOf(i);
+        ends[i] = rows.endOf(i);
+    }
+    var hg: [sglue_n * max_rows]i64 = undefined;
+    try shard.glueRows(sh, rows.pos[0..R], bases[0..R], ends[0..R], if (rows.parts) |v| v[0..R] else null, e.c.index_topk, max_rows, &hg);
+    try prompt.upload(e, rd.sglue, &hg, hg.len * 8);
+}
+
+/// TF_DS_KV_SHARD: the round's decode (shard_ring.decide, a pure function of what every rank holds alike, tested
+/// there for both ranks): its mode (the switch's, or auto's choice from the round's row counts), whether its exchanges
+/// ride the RDMA ring (the round's rows fit a slot: Round.fit_*), its row lists uploaded for the ring kernels, and
+/// the counters. A round must start with no sized ring send pending (RowPairing) and the layer cursor reset.
+fn shardRound(e: *const Engine, rd: *Round, rows: Rows, kv: *shard_ops.KvShard) !void {
+    const R = rows.ids.len;
+    if (e.ring) |r| if (r.rowsOpen()) return error.ShardRingOrder;
+    if (!rd.rcur.done() or rd.ss_q_out) return error.ShardRingOrder;
+    rd.rcur.reset();
+    var owners: [max_rows]u32 = undefined;
+    for (0..R) |i| owners[i] = try rows.ownerOf(i, kv.sh);
+    const view: shard_ring.View = .{ .owners = owners[0..R] };
+    const d = try shard_ring.decide(.{
+        .view = view,
+        .mode = kv.mode,
+        .cost = kv.cost,
+        .sizes = ringSizes(e),
+        .decode_rows = tri.decode_rows,
+        .ring = kv.use_ring and rd.rlist != 0,
+        .fit_fetch = rd.fit_fetch,
+        .fit_owner = rd.fit_owner,
+    });
+    rd.smode = d.mode;
+    rd.sring = d.ring;
+    switch (d.mode) {
+        .fetch => kv.stats.fetch_rounds += 1,
+        .owner => kv.stats.owner_rounds += 1,
+        .off, .auto => unreachable,
+    }
+    if (kv.mode == .auto) {
+        if (d.mode == .fetch) kv.stats.auto_fetch += 1 else kv.stats.auto_owner += 1;
+    }
+    const ls = (try shard_ring.roundLists(d, view, kv.sh.rank)) orelse return;
+    kv.stats.ring_rounds += 1;
+    kv.stats.sent_rows += if (d.mode == .fetch) ls.get(.fetch, .send).n else ls.get(.q, .send).n + ls.get(.out, .send).n;
+    var dev: [shard_ring.Lists.words]i32 = undefined;
+    ls.encode(&dev);
+    try prompt.upload(e, rd.rlist, &dev, shard_ring.Lists.bytes);
+}
+
+/// A listed row's bytes in each decode exchange (auto's cost model): every pick of a fetched row, a row's queries, a
+/// row's rotated wo_a inputs.
+fn ringSizes(e: *const Engine) shard_ring.Sizes {
+    const c = e.c;
+    const l0 = e.w.layers[0];
+    var wo_k: usize = 0;
+    for (l0.wo_a[0..l0.groups]) |wo| wo_k += wo.k;
+    return .{ .fetch_row = c.index_topk * (c.head_dim / 2 + c.head_dim / 16), .q_row = e.heads() * c.head_dim * 2, .out_row = wo_k * 2 };
+}
+
+/// The layer's RoPE table rows (model.py _cs: the compressed table for a compressed layer).
+fn ropeOf(e: *const Engine, lay: weights.Layer) prompt.Rope {
+    return if (lay.ratio != 0) e.compressed else e.plain;
+}
+
+/// _attention2 with _kv_idx (kv_done: q_kv_norm wrote the window KV), the served switches, xh none (hc_rot off): the
+/// layer's attention partial pa [R, D] fp32 from its mixed rows x.
+fn attention(e: *const Engine, rd: *Round, ch: *const Chunk, cs: *const Caches, rings: []const u64, sh: *prompt.Shared, li: usize) !void {
+    const lay = e.w.layers[li];
+    const c = e.c;
+    const t = e.t;
+    const R = rd.r;
+    const hd = c.head_dim;
+    const rd_dim = c.rope_dim;
+    const hl = e.heads();
+    const ratio: usize = lay.ratio;
+    const rope = ropeOf(e, lay);
+    const ring = rings[li];
+    const ring_rows = c.window + ring_extra;
+    const pos = rd.pos;
+    // attn_in: wq_a, wkv and (a kv source of a compressed layer) the compressor's, one group
+    const has_comp = ratio != 0 and lay.comp_wkv != null;
+    const ck_dt: exl3_linear.DType = if (ratio == 1) .bf16 else .f32;
+    {
+        var ls: [4]weights.Linear = undefined;
+        var outs: [4]u64 = undefined;
+        var lds: [4]usize = undefined;
+        var dts: [4]exl3_linear.DType = undefined;
+        var n: usize = 0;
+        ls[n] = lay.wq_a;
+        outs[n] = rd.qa;
+        lds[n] = lay.wq_a.n;
+        dts[n] = .bf16;
+        n += 1;
+        ls[n] = lay.wkv;
+        outs[n] = rd.ykv;
+        lds[n] = hd;
+        dts[n] = .bf16;
+        n += 1;
+        if (has_comp) {
+            ls[n] = lay.comp_wkv.?;
+            outs[n] = rd.ckv;
+            lds[n] = hd;
+            dts[n] = ck_dt;
+            n += 1;
+            if (lay.comp_wgate) |cg| {
+                ls[n] = cg;
+                outs[n] = rd.cgate;
+                lds[n] = hd;
+                dts[n] = .f32;
+                n += 1;
+            }
+        }
+        const xs = [_]u64{ rd.x, rd.x, rd.x, rd.x };
+        const ldxs = [_]usize{ c.hidden, c.hidden, c.hidden, c.hidden };
+        try prompt.grouped(e, ch, R, ls[0..n], xs[0..n], ldxs[0..n], outs[0..n], lds[0..n], dts[0..n]);
+    }
+    try rd.mark(e, .a_in);
+    // the indexer's top-k takes every entry it scans (short contexts): its selection needs no scores
+    const has_idx = ratio != 0 and lay.idx_wq_b != null;
+    const nb: usize = if (ratio != 0) rd.bucket / ratio else 0;
+    const idx_all = has_idx and li != c.candidate_source and nb <= c.index_topk;
+    const need_iq = has_idx and !idx_all;
+    // q_proj with kv (rot_q): q's RMSNorm writes wq_b's (and the indexer wq_b's) rotated rows and the window KV into
+    // the ring in one launch; wq_b's epilogue applies q's RoPE
+    {
+        var rot: [2]tri_norm.Rot = undefined;
+        var calls: [2]exl3_linear.Call = undefined;
+        var n: usize = 0;
+        const qls = [_]?weights.Linear{ lay.wq_b, if (need_iq) lay.idx_wq_b else null };
+        const outs = [_]u64{ rd.q, rd.iq };
+        for (qls) |ol| {
+            const l = ol orelse continue;
+            const xh = rd.xhq + n * R * c.q_lora * 2;
+            rot[n] = .{ .suh = l.suh, .h = xh };
+            calls[n] = .{ .layer = l, .x = 0, .ldx = 0, .x_dtype = .bf16, .xh = xh, .y = outs[n], .ldy = @intCast(l.n), .y_dtype = .bf16, .counters = 0 };
+            if (n == 0) calls[n].rope = .{ .cos = rope.cos, .sin = rope.sin, .pos = pos, .hd = @intCast(hd), .rd = @intCast(rd_dim) };
+            n += 1;
+        }
+        try tri_norm.qKvNorm(t, rd.qa, lay.wq_a.n, lay.q_norm, c.eps, rot[0..n], rd.ykv, lay.kv_norm, rope.cos, rope.sin, pos, ring, ring_rows, rd.g(.wslot), true, rd_dim, rd.qr, rd.kout, R, lay.wq_a.n, hd);
+        try prompt.groupedRotated(e, ch, R, calls[0..n]);
+    }
+    // the prefetch: this layer's wo_a and wo_b behind q's linears
+    {
+        var r: [5][2]u64 = @splat(.{ 0, 0 });
+        for (lay.wo_a[0..lay.groups], 0..) |wo, j| r[j] = linearBytes(wo);
+        r[4] = linearBytes(lay.wo_b);
+        try rd.prefetch(e, &r, prefetch_budget);
+    }
+    try rd.mark(e, .a_q);
+    // TF_DS_KV_SHARD owner decode on the RDMA ring: q is final here, so this rank's queries of the rows the peer holds
+    // go out now and travel behind the compressor and the indexer (ownerDecode takes the peer's). Whether this layer's
+    // attention is sharded is known already: the picks it will have (the indexer's min(index_topk, nb), or the
+    // selection an indexless layer reuses)
+    const q_sent = ratio != 0 and e.kv != null and rd.smode == .owner and rd.sring and (if (lay.idx_wq_b != null) @min(c.index_topk, rd.bucket / ratio) else rd.kk) > 0;
+    if (q_sent) {
+        try rd.rcur.begin(.owner);
+        try sendQueries(e, rd, rd.q, true);
+        try rd.mark(e, .sh_q);
+    }
+    // _kv_idx: the compressor's caches (a kv source) and the indexer's selection
+    var comp: tri_attn.Comp = .none;
+    var cbase: ?u64 = null;
+    if (ratio != 0) {
+        const cb_k: Glue = if (ratio == 1) .cbase1 else .cbase2;
+        cbase = rd.g(cb_k);
+        if (lay.comp_wkv != null) {
+            if (ratio == 1) {
+                try tri_basic.rmsnorm(t, rd.ckv, hd, lay.comp_norm, rd.lat, hd, c.eps, R, hd);
+            } else if (ratio == 2) {
+                // rk[rslot] = kv, rs[rslot] = score; the group's two rows back (rk[gi], rs[gi]); the pair's softmax-
+                // weighted sum to bf16 (torch's ops: exact.compress2's bytes), then the RMSNorm (Triton's)
+                try e.ops.scatterRows(e.s, rd.ckv, hd * 4, rd.g(.rslot), cs.raw_kv[li], hd * 4, hd * 4, R);
+                try e.ops.scatterRows(e.s, rd.cgate, hd * 4, rd.g(.rslot), cs.raw_score[li], hd * 4, hd * 4, R);
+                try e.d.check(e.d.api.cuMemsetD8Async(ch.invalid, 0, 4, e.s.handle), "cuMemsetD8Async");
+                try e.ops.gatherRows(e.s, cs.raw_kv[li], cs.slots * raw_rows, rd.g(.gi), rd.kvg, hd * 4, 2 * R, ch.invalid);
+                try e.ops.gatherRows(e.s, cs.raw_score[li], cs.slots * raw_rows, rd.g(.gi), rd.sg, hd * 4, 2 * R, ch.invalid);
+                try e.exact.compress2(e.s, rd.kvg, rd.sg, rd.lat2, R, hd);
+                try tri_basic.rmsnorm(t, rd.lat2, hd, lay.comp_norm, rd.lat, hd, c.eps, R, hd);
+            } else return notPorted(@src());
+            sh.kv_layer = li;
+            const ctarget = rd.g(if (ratio == 1) .ctarget1 else .ctarget2);
+            const gpos = rd.g(if (ratio == 1) .gpos1 else .gpos2);
+            if (lay.idx_wk) |iwk| {
+                const id = c.index_head_dim;
+                try prompt.grouped(e, ch, R, &.{iwk}, &.{rd.lat}, &.{hd}, &.{rd.ikp}, &.{id}, &.{.bf16});
+                try tri_basic.rmsnorm(t, rd.ikp, id, lay.idx_k_norm, rd.ik, id, c.eps, R, id);
+                try tri_norm.ropeHeads(t, rd.ik, rope.cos, rope.sin, gpos, rd_dim, false, R, 1, id);
+                try tri_attn.fp4Store(t, rd.ik, id, cs.idx_codes[li], cs.idx_scales[li], ctarget, R, id, 32, false);
+            }
+            // the latent rotated in place (it is not read again), then stored (TF_DS_KV_SHARD: into this rank's plane,
+            // the owner's row or the round row's trash row)
+            try tri_norm.ropeHeads(t, rd.lat, rope.cos, rope.sin, gpos, rd_dim, false, R, 1, hd);
+            const ltarget = if (e.kv != null) rd.sgl(if (ratio == 1) .ltarget1 else .ltarget2) else ctarget;
+            try tri_attn.fp4Store(t, rd.lat, hd, cs.comp_codes[li], cs.comp_scales[li], ltarget, R, hd, 16, true);
+        }
+        const src = sh.kv_layer orelse return error.NoKvSource;
+        const vis = rd.g(if (ratio == 1) .vis1 else .vis2);
+        if (idx_all) {
+            // topk_indices of every scanned key is 0 .. nb - 1 whatever the scores, then the visible mask (on the
+            // device: no host round trip in the round)
+            if (nb > 512) return notPorted(@src());
+            try e.ops.iotaVis(e.s, vis, rd.cidx, nb, R);
+            rd.kk = nb;
+        } else if (lay.idx_wq_b != null) {
+            const ih = c.index_heads;
+            const id = c.index_head_dim;
+            const k: tri_index.IndexK = .{ .fp4 = .{ .codes = cs.idx_codes[src], .scales = cs.idx_scales[src] } };
+            try tri_norm.ropeHeads(t, rd.iq, rope.cos, rope.sin, pos, rd_dim, false, R, ih, id);
+            try tri_attn.fp4QdP2(t, rd.iq, rd.iq4, R * ih * id);
+            try tri_norm.rowmmWts(t, rd.x, c.hidden, lay.idx_proj_h, exact.indexScale(c.index_head_dim, c.index_heads), rd.iw, R, c.hidden, ih);
+            const kk = @min(c.index_topk, nb);
+            const pow2 = kk & (kk - 1) == 0;
+            const after_src = c.candidate_source < li;
+            const top: tri_index.TopK = .{ .top = rd.ktop, .ctx = @ptrCast(@constCast(e)), .run = prompt.torchTopk };
+            if (pow2 and after_src and rd.has_cblk) {
+                // past the pool's width: the pool's blocks scored alone (the same keys there; the -inf keys elsewhere
+                // left out: the same top-k), then the selection
+                const nblk = c.candidate_blocks;
+                try tri_index.indexKeysCand(t, rd.iq4, k, rd.iw, vis, nb, rd.cblk, nblk, nblk, c.candidate_block, cbase, rd.keys, R, ih, id);
+                try tri_index.topkSelect(t, rd.keys, nblk * c.candidate_block, kk, vis, rd.cidx, top, R, nblk * c.candidate_block);
+            } else if (pow2 and li != c.candidate_source) {
+                // scores -> (the pool's mask) -> top-k keys in one launch, then the selection
+                if (after_src and nb > c.candidate_blocks * c.candidate_block) return error.NoCandidatePool;
+                const cand: ?tri_index.Cand = if (after_src) (if (rd.has_cand) .{ .mask = rd.cand, .stride = nb / c.candidate_block } else return error.NoCandidatePool) else null;
+                if (nb > tri_index.topk_fused_max) {
+                    // long buckets: each 64-key tile's maximum too; topk_select_pruned (the k best tiles, or torch's
+                    // top-k of every key when there are no more tiles than k)
+                    try tri_index.indexKeys(t, rd.iq4, k, rd.iw, vis, nb, cbase, cand, c.candidate_block, rd.tmax, kk, rd.keys, R, ih, id);
+                    try tri_index.topkSelectPruned(t, rd.keys, nb, rd.tmax, kk, vis, rd.cidx, rd.pbufs, top, R, nb);
+                } else {
+                    try tri_index.indexKeys(t, rd.iq4, k, rd.iw, vis, nb, cbase, cand, c.candidate_block, null, kk, rd.keys, R, ih, id);
+                    try tri_index.topkSelect(t, rd.keys, nb, kk, vis, rd.cidx, top, R, nb);
+                }
+            } else if (pow2 and li == c.candidate_source) {
+                // the candidate source: the scores, the pool from them, then their keys' top-k
+                try tri_index.indexScore(t, rd.iq4, k, rd.iw, vis, nb, rd.score, cbase, false, null, false, R, ih, id);
+                const cb = c.candidate_block;
+                if (nb > c.candidate_blocks * cb) {
+                    // _candidate_blocks: the block maxima (the newest pinned), their candidate_blocks best (ties to the
+                    // lower block, ascending), those with a finite maximum as block ids, the rest -1
+                    const nbk = (nb + cb - 1) / cb;
+                    try e.ops.blockMax(e.s, rd.score, nb, nb, cb, vis, rd.bmax, nbk, R);
+                    try e.ops.topkIndices(e.s, rd.bmax, nbk, R, nbk, c.candidate_blocks, rd.pbufs.every, rd.pidx);
+                    try e.ops.poolPick(e.s, rd.bmax, nbk, nbk, rd.pidx, c.candidate_blocks, 0, 0, rd.cblk, R);
+                    rd.has_cblk = true;
+                } else {
+                    if (nb % cb != 0) return notPorted(@src()); // _candidates' padded path (buckets are whole blocks)
+                    try e.ops.candFast(e.s, rd.score, nb, nb / cb, cb, vis, rd.cand, nb / cb, R);
+                    rd.has_cand = true;
+                }
+                if (nb > tri_index.topk_fused_max) {
+                    try tri_index.scoreKeys(t, rd.score, rd.tmax, rd.keys, R, nb);
+                    try tri_index.topkSelectPruned(t, rd.keys, nb, rd.tmax, kk, vis, rd.cidx, rd.pbufs, top, R, nb);
+                } else {
+                    try tri_index.scoreKeys(t, rd.score, null, rd.keys, R, nb);
+                    try tri_index.topkSelect(t, rd.keys, nb, kk, vis, rd.cidx, top, R, nb);
+                }
+            } else return notPorted(@src()); // the scores' topk_indices path (a top-k of no power of two)
+            rd.kk = kk;
+        }
+        comp = .{ .fp4 = .{ .codes = cs.comp_codes[src], .scales = cs.comp_scales[src] } };
+    }
+    try rd.mark(e, .a_idx);
+    // rot_attn: the merge applies the inverse RoPE and writes wo_a's rotated input rows; wo_ab with its fold
+    const gk = lay.wo_a[0].k;
+    const attn: tri_attn.Attn = .{
+        .q = rd.q,
+        .out = rd.o,
+        .rows = R,
+        .h = hl,
+        .hd = hd,
+        .sink = lay.sink,
+        .wsrc = ring,
+        .wsrc_rows = ring_rows,
+        .wlo = rd.zero,
+        .ring = true,
+        .comp = comp,
+        .idx = if (ratio != 0) rd.cidx else 0,
+        .n_idx = if (ratio != 0) rd.kk else 0,
+        .pos = pos,
+        .scale = prompt.scale(hd),
+        .window = c.window,
+        .wbase = rd.g(.wbase),
+        .cbase = cbase,
+        .ring_rows = ring_rows,
+        .rot = .{ .cos = rope.cos, .sin = rope.sin, .rd = rd_dim, .suh = rd.wo_suh[li], .xh = rd.xhwo, .gh = gk / hd },
+        .parts = .{ .pm = rd.pm_, .pl = rd.pl_, .po = rd.po_ },
+    };
+    // TF_DS_KV_SHARD: a compressed layer's picked rows are on each row's owner only; the round's mode (rd.smode: the
+    // switch's, or auto's choice; shardRound)
+    const mode: shard.Mode = if (e.kv != null and ratio != 0 and attn.n_idx > 0) rd.smode else .off;
+    if (q_sent and mode != .owner) return error.ShardRingOrder; // (a sent query no pass takes: the ranks would part)
+    switch (mode) {
+        .off => try tri_attn.sparseAttn(t, attn),
+        .fetch => try fetchDecode(e, rd, attn, ratio),
+        .owner => try ownerDecode(e, rd, attn, ratio, li, q_sent),
+        .auto => return error.NoKvShard, // (forward resolves auto a round)
+    }
+    if (!rd.rcur.done()) return error.ShardRingOrder; // (every stage of the layer collected)
+    try rd.mark(e, .a_core);
+    var calls: [exl3_linear.gmax]exl3_linear.Call = undefined;
+    const uw = lay.groups * lay.wo_a[0].n;
+    var col: usize = 0;
+    var off: usize = 0;
+    for (lay.wo_a[0..lay.groups], 0..) |wo, gi| {
+        const rot: exl3_linear.RotOut = if (e.two) |tw| round2d.woRot(tw, lay, col) else .{ .suh = lay.wo_b.suh, .xh = rd.xb, .ldr = @intCast(lay.wo_b.k), .off = @intCast(col) };
+        calls[gi] = .{ .layer = wo, .x = 0, .ldx = 0, .x_dtype = .bf16, .xh = rd.xhwo + off * 2, .y = rd.u + col * 2, .ldy = @intCast(uw), .y_dtype = .bf16, .counters = 0, .rot = rot };
+        col += wo.n;
+        off += R * wo.k;
+    }
+    try prompt.groupedRotated(e, ch, R, calls[0..lay.groups]);
+    try rd.mark(e, .a_woa);
+    if (e.two) |tw| try round2d.woExchange(tw, e, rd.xb, R); // 2D: the column partner's half of wo_b's input rows
+    try rd.mark(e, .a_x);
+    var cb_call = [_]exl3_linear.Call{.{ .layer = lay.wo_b, .x = 0, .ldx = 0, .x_dtype = .bf16, .xh = rd.xb, .y = rd.pa, .ldy = @intCast(lay.wo_b.n), .y_dtype = .f32, .counters = 0 }};
+    try prompt.groupedRotated(e, ch, R, &cb_call);
+    // the prefetch behind wo_b: the ffn mix's weights, the router, the shared expert's gate
+    try rd.prefetch(e, &.{ .{ lay.hc_ffn[0], hcFnBytes(c) }, .{ lay.gate_w, @as(u64, c.experts) * c.hidden * 2 }, lay.experts.shared_gate, lay.experts.shared_up, lay.experts.shared_down }, prefetch_budget / 2);
+}
+
+/// TF_DS_KV_SHARD's decode attention by sparse fetch (the reference): each rank packs the picks of the rows it holds
+/// (codes and scales from its plane at the row's local base, pick order) into its slot of the gathered buffer
+/// ([world][R][index_topk] rows), renumbers every row's picks to its row there (relative: j), and the other rank gets
+/// them; then both ranks attend every row for their own heads over the gathered rows at the row's fetch base. On the
+/// RDMA ring (rd.sring) a rank sends only its send list's rows (the rows only it holds), kk picks each, and the peer
+/// puts them at its receive list's rows of the sender's slot (shard_ring.fetchXfer: one sized transfer for codes and
+/// scales); on NCCL the slots are all-gathered in
+/// place at their fixed size (one NCCL group). The same schedule on both ranks whoever holds the rows, every buffer
+/// the round's own (graph-safe); each row reads the replicated bytes in the replicated order (shard.zig's and
+/// shard_ring.zig's tests).
+fn fetchDecode(e: *const Engine, rd: *Round, a: tri_attn.Attn, ratio: usize) !void {
+    const c = e.c;
+    const R = rd.r;
+    const K = c.index_topk;
+    const kk = a.n_idx;
+    if (kk > K or rd.fc == 0) return error.NoKvShard;
+    const cb = c.head_dim / 2;
+    const sb = c.head_dim / 16;
+    const final = R > tri.decode_rows;
+    const kos = if (final) (kk + 15) / 16 * 16 else kk;
+    const sl = shard.decodeSlots(e.kv.?.sh.rank, R, K, cb, sb);
+    try shard_ops.fetch(&e.kv.?.k, e.s, .{
+        .codes = a.comp.fp4.codes,
+        .scales = a.comp.fp4.scales,
+        .cb = cb,
+        .sb = sb,
+        .idx = a.idx,
+        .ks = kk,
+        .kk = kk,
+        .rows = R,
+        .sbase = rd.sgl(if (ratio == 1) .lbase1 else .lbase2),
+        .own = rd.sgl(.own),
+        .copy = true,
+        .dcodes = rd.fc + sl.codes,
+        .dscales = rd.fs + sl.scales,
+        .dk = K,
+        .out = rd.fidx,
+        .kos = kos,
+        .how = .relative,
+    });
+    try rd.mark(e, .sh_fetch);
+    const kv = e.kv.?;
+    if (rd.sring) {
+        const x = shard_ring.fetchXferFrom(rd.fc, rd.fs, kv.sh.rank, 0, R, K, kk, cb, sb);
+        try rd.rcur.begin(.fetch);
+        try rd.rcur.take(.stage_fetch);
+        try shard_ops.ringSend(&kv.k, e.ring.?, e.s, x, rd.rlist + shard_ring.Lists.offset(.fetch, .send), R, true);
+        try rd.rcur.take(.collect_fetch);
+        for (0..kv.sh.world) |from| {
+            if (from == kv.sh.rank) continue;
+            const rx = shard_ring.fetchXferFrom(rd.fc, rd.fs, kv.sh.rank, @intCast(from), R, K, kk, cb, sb);
+            try shard_ops.ringRecv(&kv.k, e.ring.?, e.s, rx, rd.rlist + shard_ring.Lists.fetchOffset(@intCast(from)), R, @intCast(from), true);
+        }
+    } else try e.comm.allGatherInPlace2(rd.fc, sl.slot_c, rd.fs, sl.slot_s, e.s);
+    try rd.mark(e, .sh_rows);
+    var b = a;
+    b.comp = .{ .fp4 = .{ .codes = rd.fc, .scales = rd.fs } };
+    b.idx = rd.fidx;
+    b.cbase = rd.sgl(.fbase);
+    try tri_attn.sparseAttn(e.t, b);
+}
+
+/// Owner decode on the RDMA ring: this rank's queries q [R][hl][hd] of the rows only the peer holds to the peer's
+/// gathered queries (shard_ring.qXfer, its q send list); ownerRing's receive takes the peer's. No other ring transfer
+/// runs between the two (Ring's RowPairing). Sent early (at q, behind the compressor and the indexer) on the shard
+/// side stream when there is one, so its copy overlaps them too (joined before the collect), and kept out of the ring
+/// probes (its doorbell-to-flag time would include the compressor and the indexer).
+fn sendQueries(e: *const Engine, rd: *Round, q: u64, early: bool) !void {
+    const kv = e.kv.?;
+    const x = shard_ring.qXfer(q, rd.qall, kv.sh.rank, rd.r, e.heads(), e.c.head_dim);
+    const list = rd.rlist + shard_ring.Lists.offset(.q, .send);
+    try rd.rcur.take(.stage_q);
+    if (early) if (rd.ss) |ss| {
+        try rd.ss_fork.?.record(e.s);
+        try ss.wait(rd.ss_fork.?);
+        try shard_ops.ringSend(&kv.k, e.ring.?, ss, x, list, rd.r, false);
+        try rd.ss_jq.?.record(ss);
+        rd.ss_q_out = true;
+        return;
+    };
+    try shard_ops.ringSend(&kv.k, e.ring.?, e.s, x, list, rd.r, !early);
+}
+
+/// TF_DS_KV_SHARD's owner-computed decode: the ranks' queries gathered; each rank attends the rows it holds (the
+/// others' picks masked to none) for its own heads (its sinks, its wo_a rotation: the replicated call over its own
+/// plane at the row's local base) and then for the other rank's heads with that rank's queries, sinks and wo_a suh
+/// (the same 32-head kernels, no 64-head variant needed), whose rotated wo_a inputs go back in one exchange; a rank
+/// takes the returned rows for the rows it does not hold. Every head of a row is computed by the kernel, keys and
+/// order its own rank would use, so the bits are the replicated ones (GPU validation: docs/port/shard-attn.md).
+/// Rounds of the split path only (the merge applies the rotation; tri.decode_rows is the round's bound).
+/// On the RDMA ring (rd.sring) the exchanges are sized by the round's row lists and overlapped: ownerRing.
+/// PORT(kit): a 64-head variant of _sparse_attn_part and its merge with per-head sinks and both ranks' suh (an
+/// explicitly audited kit; the recorded one has none) would make the two 32-head passes one.
+fn ownerDecode(e: *const Engine, rd: *Round, a: tri_attn.Attn, ratio: usize, li: usize, q_sent: bool) !void {
+    const c = e.c;
+    const kv = e.kv.?;
+    const R = rd.r;
+    const kk = a.n_idx;
+    const hl = e.heads();
+    const hd = c.head_dim;
+    if (R > tri.decode_rows) return error.NotPortedYet; // (a one-pass round has no merge to carry the rotation)
+    if (rd.qall == 0 or kk > c.index_topk) return error.NoKvShard;
+    const rot = a.rot orelse return error.NoRotation;
+    const lay = e.w.layers[li];
+    const gk = lay.wo_a[0].k;
+    const wo_k = lay.groups * gk;
+    const peer = kv.sh.peer();
+    const own = rd.sgl(.own);
+    if (q_sent and !rd.sring) return error.ShardRingOrder;
+    if (rd.sring) return ownerRing(e, rd, a, ratio, li, q_sent);
+    // both ranks' queries, rank after rank: [world][R][hl][hd]
+    try e.comm.allGather(a.q, rd.qall, R * hl * hd, .bf16, e.s);
+    try rd.mark(e, .sh_q);
+    // the picks of the rows this rank holds, none for the others'
+    try shard_ops.fetch(&kv.k, e.s, .{ .cb = hd / 2, .sb = hd / 16, .idx = a.idx, .ks = kk, .kk = kk, .rows = R, .own = own, .copy = false, .dk = 0, .out = rd.fidx, .kos = kk, .how = .mask });
+    try rd.mark(e, .sh_fetch);
+    var mine = a;
+    mine.idx = rd.fidx;
+    mine.cbase = rd.sgl(if (ratio == 1) .lbase1 else .lbase2);
+    try tri_attn.sparseAttn(e.t, mine);
+    try rd.mark(e, .sh_own);
+    try tri_attn.sparseAttn(e.t, peerPass(e, rd, mine, rot, li));
+    try rd.mark(e, .sh_peer);
+    // the other rank's heads of my rows to it, mine of its rows from it; then its rows' inputs in place
+    try e.comm.exchange(rd.xh_peer, R * wo_k, rd.xh_recv, R * wo_k, .f16, peer, e.s);
+    try rd.mark(e, .sh_out);
+    const x = shard.xhPlanes(R, lay.groups, gk);
+    try shard_ops.select(&kv.k, e.s, rd.xh_recv, rot.xh, own, 0, R, x.row_bytes, x.planes, x.plane_bytes);
+    try rd.mark(e, .sh_sel);
+}
+
+/// The peer-head pass's call: `mine` with the other rank's queries, sinks and wo_a suh, into o_peer / xh_peer.
+fn peerPass(e: *const Engine, rd: *const Round, mine: tri_attn.Attn, rot: tri_attn.Rot, li: usize) tri_attn.Attn {
+    const kv = e.kv.?;
+    var theirs = mine;
+    theirs.q = rd.qall + kv.sh.peer() * rd.r * e.heads() * e.c.head_dim * 2;
+    theirs.out = rd.o_peer;
+    theirs.sink = rd.peer_sink[li];
+    var prot = rot;
+    prot.suh = rd.peer_suh[li];
+    prot.xh = rd.xh_peer;
+    theirs.rot = prot;
+    return theirs;
+}
+
+/// Owner decode on the RDMA ring (rd.sring, shard_ring.zig): the exchanges sized by the round's lists (the rows only
+/// one rank holds) and overlapped. In ring order: the queries' stage (at q, `q_sent`, on the side stream when there is
+/// one; else here) and collect, then the outputs' stage and collect, nothing else of the ring between a stage and its
+/// collect (rd.rcur, Ring's RowPairing). Around them, on this rank:
+/// 1. the mask of the picks (the rows this rank holds keep theirs);
+/// 2. with the side stream (KvShard.overlap): the own-head pass forked onto it, its own split partials (pm2, pl2,
+///    po2), so it runs while the queries are collected and the peer-head pass runs; without: it runs at step 5;
+/// 3. the peer's queries of this rank's rows collected (the early stage joined first);
+/// 4. the peer-head pass, and its outputs of the rows only this rank holds staged at once, straight for the peer's xhwo;
+/// 5. the own-head pass joined (or run: it hides the outputs' flight) before
+/// 6. the peer's outputs of the rows only it holds are collected into xhwo (the own pass writes every xhwo row first).
+/// The passes are the same launches over the same inputs as on NCCL, each with its own outputs and partials, so each
+/// pass's eight-split reduction and every bit are unchanged; only which stream and when they run differ.
+fn ownerRing(e: *const Engine, rd: *Round, a: tri_attn.Attn, ratio: usize, li: usize, q_sent: bool) !void {
+    const c = e.c;
+    const kv = e.kv.?;
+    const ring = e.ring.?;
+    const R = rd.r;
+    const kk = a.n_idx;
+    const hl = e.heads();
+    const hd = c.head_dim;
+    const rot = a.rot orelse return error.NoRotation;
+    const lay = e.w.layers[li];
+    const peer = kv.sh.peer();
+    const L = shard_ring.Lists;
+    if (!q_sent) {
+        try rd.rcur.begin(.owner);
+        try sendQueries(e, rd, a.q, false);
+        try rd.mark(e, .sh_q);
+    }
+    try shard_ops.fetch(&kv.k, e.s, .{ .cb = hd / 2, .sb = hd / 16, .idx = a.idx, .ks = kk, .kk = kk, .rows = R, .own = rd.sgl(.own), .copy = false, .dk = 0, .out = rd.fidx, .kos = kk, .how = .mask });
+    try rd.mark(e, .sh_fetch);
+    var mine = a;
+    mine.idx = rd.fidx;
+    mine.cbase = rd.sgl(if (ratio == 1) .lbase1 else .lbase2);
+    if (rd.ss) |ss| {
+        var side = mine;
+        side.parts = .{ .pm = rd.pm2, .pl = rd.pl2, .po = rd.po2 };
+        var t2 = e.t;
+        t2.stream = ss;
+        try rd.ss_fork.?.record(e.s);
+        try ss.wait(rd.ss_fork.?);
+        try tri_attn.sparseAttn(t2, side);
+        try rd.ss_jo.?.record(ss);
+    }
+    if (rd.ss_q_out) {
+        try e.s.wait(rd.ss_jq.?);
+        rd.ss_q_out = false;
+    }
+    const qx = shard_ring.qXfer(a.q, rd.qall, kv.sh.rank, R, hl, hd);
+    try rd.rcur.take(.collect_q);
+    try shard_ops.ringRecv(&kv.k, ring, e.s, qx, rd.rlist + L.offset(.q, .recv), R, peer, !q_sent);
+    try rd.mark(e, .sh_qwait);
+    try tri_attn.sparseAttn(e.t, peerPass(e, rd, mine, rot, li));
+    try rd.mark(e, .sh_peer);
+    const ox = try shard_ring.outXfer(rd.xh_peer, rot.xh, R, lay.groups, lay.wo_a[0].k);
+    try rd.rcur.take(.stage_out);
+    try shard_ops.ringSend(&kv.k, ring, e.s, ox, rd.rlist + L.offset(.out, .send), R, true);
+    try rd.mark(e, .sh_out);
+    if (rd.ss != null) try e.s.wait(rd.ss_jo.?) else try tri_attn.sparseAttn(e.t, mine);
+    try rd.mark(e, .sh_own);
+    try rd.rcur.take(.collect_out);
+    try shard_ops.ringRecv(&kv.k, ring, e.s, ox, rd.rlist + L.offset(.out, .recv), R, peer, true);
+    try rd.mark(e, .sh_owait);
+}
+
+/// Model.moe of a decode window (shared_side off: SHARED_OVERLAP unset in the served lane): the gate's chunk sums
+/// (rowmm_gate), the routing with the shared expert in every row's last slot, the routed experts' decode path.
+fn moe(e: *const Engine, rd: *Round, ch: *const Chunk, li: usize) !void {
+    const lay = e.w.layers[li];
+    const c = e.c;
+    const R = rd.r;
+    const sl = e.slots();
+    const kc = try tri_norm.rowmmGate(e.t, rd.x, c.hidden, lay.gate_w, rd.gl, R, c.hidden, c.experts);
+    try tri_norm.route(e.t, rd.gl, kc, lay.gate_b, c.top_k, c.routed_scaling, lay.experts.count - 1, rd.pick, rd.mw, R, c.experts, sl);
+    try rd.mark(e, .m_rt);
+    if (e.two) |tw| {
+        // 2D (round2d.experts, the profile's marks between): gate / up, the intermediate's exchange, down
+        try exl3_experts2d.decodeGateUp(e.ex, e.s, lay.experts, ch.xsd, rd.x, c.hidden, rd.pick, rd.mw, rd.pm, R, c.swiglu_limit);
+        try rd.mark(e, .m_gu);
+        try tw.catRank(e, ch.xsd.xd, tw.xd_full, R * ch.xsd.slots, tw.gu, 2);
+        try rd.mark(e, .m_x);
+        try exl3_experts2d.decodeDown(e.ex, e.s, lay.experts, ch.xsd, tw.xd_full, rd.pick, rd.mw, rd.pm, R);
+    } else try exl3_experts.decode(e.ex, e.s, lay.experts, ch.xsd, rd.x, c.hidden, rd.pick, rd.mw, rd.pm, R, c.swiglu_limit);
+    // the prefetch behind the experts: the next layer's attention mix and input linears (an Engram layer: the first
+    // 4 MiB of its wkv), after the last layer the head
+    if (li + 1 < e.w.layers.len) {
+        const nx = e.w.layers[li + 1];
+        if (nx.engram_wkv) |ew| {
+            try rd.prefetch(e, &.{linearBytes(ew)}, prefetch_budget / 4);
+        } else {
+            try rd.prefetch(e, &.{ .{ nx.hc_attn[0], hcFnBytes(c) }, linearBytes(nx.wq_a), linearBytes(nx.wkv), if (nx.comp_wkv) |x| linearBytes(x) else .{ 0, 0 }, if (nx.comp_wgate) |x| linearBytes(x) else .{ 0, 0 }, linearBytes(nx.wq_b) }, prefetch_budget);
+        }
+    } else try rd.prefetch(e, &.{linearBytes(e.w.head)}, prefetch_budget);
+}
+
+/// An EXL3 linear's words: their first byte and length (k * n values of k2 / 2 bits).
+fn linearBytes(l: weights.Linear) [2]u64 {
+    return .{ l.words, @as(u64, l.k) * l.n * l.k2 / 16 };
+}
+
+/// A paced prefetch launch's most bytes (the served launch trace: 16 MiB; 8 MiB behind wo_b, 4 MiB before an Engram
+/// layer).
+const prefetch_budget: u64 = 16 << 20;
+
+/// An mHC mix's weights hc_*_fn: fp32 [24, hc * d].
+fn hcFnBytes(c: anytype) u64 {
+    return 24 * @as(u64, c.hc) * c.hidden * 4;
+}
+
+/// A round's GPU time by phase (tf-dsv41-lanes --profile 2): a timing event on the main stream at each phase's end,
+/// the elapsed times read after the round. Eager rounds only (in a graph the events would be captured).
+pub const PhaseTimer = struct {
+    // (sh_*: the sharded attention's parts, TF_DS_KV_SHARD: the fetch or mask kernel, the fetch's row exchange, owner
+    // decode's query send (on the ring: at q, before the indexer), own-head pass, query wait, peer-head pass, output
+    // send (NCCL: the exchange), output wait (the ring), the NCCL path's select)
+    pub const Phase = enum(u8) { start, embed, engram, mix_attn, attn, gather_a, mix_ffn, moe, gather_m, post, head, a_in, a_q, a_idx, a_core, a_woa, a_x, m_rt, m_gu, m_x, sh_fetch, sh_rows, sh_q, sh_own, sh_qwait, sh_peer, sh_out, sh_owait, sh_sel };
+    pub const phases = @typeInfo(Phase).@"enum".field_names;
+    comptime {
+        std.debug.assert(phases.len <= 32); // Round.launches
+    }
+
+    /// The marks TF_DS_CLOCK_MARKS=4 clocks: q's end (the rest of the layer before it), the compressor and indexer's
+    /// end, the attention core's end and the sharded parts between (the early query send sits between a_q and a_idx).
+    pub fn shardMark(p: Phase) bool {
+        return @backingInt(p) >= @backingInt(Phase.sh_fetch) or p == .a_q or p == .a_idx or p == .a_core;
+    }
+    const max_marks = 1024;
+    events: []cuda.Event,
+    phase: [max_marks]Phase = undefined,
+    n: usize = 0,
+    ms: [phases.len]f64 = @splat(0),
+    rounds: u64 = 0,
+    gpa: std.mem.Allocator,
+
+    pub fn init(gpa: std.mem.Allocator, d: *const cuda.Driver) !PhaseTimer {
+        const ev = try gpa.alloc(cuda.Event, max_marks);
+        var made: usize = 0;
+        errdefer {
+            for (ev[0..made]) |*x| x.deinit();
+            gpa.free(ev);
+        }
+        for (ev) |*x| {
+            x.* = try cuda.Event.init(d, true);
+            made += 1;
+        }
+        return .{ .events = ev, .gpa = gpa };
+    }
+
+    pub fn deinit(t: *PhaseTimer) void {
+        const cleanup = cuda.context_health.cleanupMark();
+        for (t.events) |*x| {
+            x.deinit();
+            if (!cuda.context_health.cleanupReleased(cleanup)) return;
+        }
+        t.gpa.free(t.events);
+    }
+
+    pub fn mark(t: *PhaseTimer, s: cuda.Stream, p: Phase) !void {
+        if (t.n == max_marks) return;
+        try t.events[t.n].record(s);
+        t.phase[t.n] = p;
+        t.n += 1;
+    }
+
+    /// The round's marks read: each phase's time is from the mark before it to its own.
+    pub fn finish(t: *PhaseTimer) !void {
+        if (t.n == 0) return;
+        try t.events[t.n - 1].synchronize();
+        for (1..t.n) |i| t.ms[@backingInt(t.phase[i])] += try cuda.Event.elapsedMs(t.events[i - 1], t.events[i]);
+        t.n = 0;
+        t.rounds += 1;
+    }
+};
+
+/// What a stretch of a round leaves the next on the host: the stream buffers' roles, the taps written, the latest kv
+/// source and selection, the indexer's pool flags and k. Every round starts from the same roles (the buffers' contents
+/// never carry over), so a stretch's launches and what it leaves depend on its rows and bucket alone.
+const Carry = struct {
+    h: u64,
+    spare: u64,
+    pre: u64,
+    pre_f: u64,
+    ntap: usize = 0,
+    sh: prompt.Shared = .{},
+    kk: usize = 0,
+    has_cand: bool = false,
+    has_cblk: bool = false,
+};
+
+/// The rounds' stretches as CUDA graphs (the served graph.py: one capture a rows and context bucket, the round cut
+/// before each Engram layer, whose rows the host reads between the stretches): a stretch is captured the first time
+/// its (rows, bucket, stretch) comes up and replayed after, with what it leaves. The same launches with the same
+/// arguments as the eager round, so the same bytes. At most `cap` keys (graphs and voted tombstones) are kept;
+/// replaying either refreshes its recency. All ranks use the same cap and ordered keys, including the same vote
+/// decisions, so a miss evicts the same least recently used key on each rank.
+const storage_guard = @import("graph_storage.zig");
+
+pub const Graphs = struct {
+    gpa: std.mem.Allocator,
+    lru: graph_cache.Lru(Key, Entry),
+    voter: ?*graph_vote.Control = null,
+    disabled: bool = false,
+    guard: bool = false,
+
+    pub const Key = struct { rows: u32, bucket: u64, stretch: u32, mode: u8 = 0 }; // shard mode is part of capture identity
+    const Entry = union(enum) {
+        graph: struct { exec: cuda.graph.Exec, start: Carry, end: Carry, storage: ?[]u64 = null },
+        tombstone,
+    };
+
+    pub fn init(gpa: std.mem.Allocator, cap: usize) Graphs {
+        return .{ .gpa = gpa, .lru = .init(cap), .guard = storage_guard.enabled() };
+    }
+
+    pub fn deinit(g: *Graphs) void {
+        var it = g.lru.valueIterator();
+        const cleanup = cuda.context_health.cleanupMark();
+        while (it.next()) |en| switch (en.*) {
+            .graph => |*entry| {
+                entry.exec.deinit();
+                if (!cuda.context_health.cleanupReleased(cleanup)) return;
+                if (entry.storage) |mem| g.gpa.free(mem);
+            },
+            .tombstone => {},
+        };
+        g.lru.deinit(g.gpa);
+        g.* = undefined;
+    }
+
+    /// The cached keys, including voted tombstones.
+    pub fn count(g: *const Graphs) usize {
+        return g.lru.count();
+    }
+
+    /// Reserve first, then keep only a committed vote outcome or a successfully launched graph. The returned
+    /// victim belongs to us; a running CUDA graph is destroyed once its launch has completed.
+    fn keep(g: *Graphs, key: Key, entry: Entry) void {
+        if (g.lru.putAssumeCapacity(key, entry)) |old| {
+            switch (old) {
+                .graph => |gr| {
+                    var exec = gr.exec;
+                    exec.deinit();
+                    // The signature belongs to the evicted entry, not the key. A later miss captures
+                    // and stores a fresh signature even when this key is reinserted.
+                    if (gr.storage) |mem| g.gpa.free(mem);
+                },
+                .tombstone => {},
+            }
+            if (std.math.isPowerOfTwo(g.lru.evicted)) std.log.info("dsv41: CUDA graph cache: {d} keys kept (the cap), {d} evicted for newer keys so far; a count that keeps rising means TF_DS_GRAPH_CAP is below the working set", .{ g.lru.count(), g.lru.evicted });
+        } else if (std.math.isPowerOfTwo(g.lru.count()) and g.lru.count() >= 64) std.log.info("dsv41: CUDA graph cache: {d} keys kept", .{g.lru.count()});
+    }
+
+    fn run(g: *Graphs, key: Key, e: *const Engine, rd: *Round, ch: *const Chunk, cs: *const Caches, rings: []const u64, cy: *Carry, li: usize, end: usize) !void {
+        if (g.disabled) return stretch(e, rd, ch, cs, rings, cy, li, end, null);
+        var signature: storage_guard.Signature = .{};
+        var signature_ok = true;
+        if (g.guard) signature = signatureFor(e, rd, ch, cs, rings) catch blk: {
+            signature_ok = false;
+            break :blk .{};
+        };
+        if (g.lru.get(key)) |en| switch (en.*) {
+            .tombstone => {
+                if (!signature_ok) return error.GraphVoteFatal;
+                return stretch(e, rd, ch, cs, rings, cy, li, end, null);
+            },
+            .graph => |*entry| {
+                // Reserve/ready votes install the same key on every rank. A warm
+                // replay needs only its local pointer/state check: a mismatch or
+                // launch failure is pair-fatal via peer_watch, which ends the
+                // world (and any peer waiting in a later miss vote) without a
+                // decode-path collective on every stretch.
+                if (g.voter) |v| if (!v.isHealthy()) return error.GraphVoteFatal;
+                if (!signature_ok) return error.GraphStorageChanged;
+                if (g.guard) try signature.check(entry.storage orelse return error.GraphStorageChanged);
+                if (!std.meta.eql(entry.start, cy.*)) return error.GraphStateMismatch;
+                entry.exec.launchOn(e.s) catch |err| {
+                    if (g.voter != null) return error.GraphVoteFatal;
+                    return err;
+                };
+                cy.* = entry.end;
+                rd.kk = cy.kk;
+                rd.has_cand = cy.has_cand;
+                rd.has_cblk = cy.has_cblk;
+                return;
+            },
+        };
+        if (g.voter) |v| return g.runVoted(v, key, signature.slice(), signature_ok, e, rd, ch, cs, rings, cy, li, end);
+        if (!signature_ok) return error.GraphStorageChanged;
+        const start = cy.*;
+        try cuda.graph.beginCapture(e.s, .thread_local);
+        stretch(e, rd, ch, cs, rings, cy, li, end, null) catch |err| {
+            if (cuda.graph.endCapture(e.s)) |got| {
+                var x = got;
+                x.deinit();
+            } else |_| {}
+            return err;
+        };
+        var graph = try cuda.graph.endCapture(e.s);
+        defer graph.deinit();
+        var exec = try graph.instantiate();
+        errdefer exec.deinit();
+        const storage = if (g.guard) try g.gpa.dupe(u64, signature.slice()) else null;
+        errdefer if (storage) |mem| g.gpa.free(mem);
+        // A failed first launch or allocation frees exec and its signature without evicting a key.
+        try exec.launchOn(e.s);
+        try g.lru.reserve(g.gpa);
+        g.keep(key, .{ .graph = .{ .exec = exec, .start = start, .end = cy.*, .storage = storage } });
+    }
+
+    fn signatureFor(e: *const Engine, rd: *Round, ch: *const Chunk, cs: *const Caches, rings: []const u64) !storage_guard.Signature {
+        var signature: storage_guard.Signature = .{};
+        try signature.add(@intFromPtr(e));
+        try signature.add(@intFromPtr(e.w.layers.ptr));
+        try signature.storage(rd.*, &.{"launch_mark"});
+        try signature.storage(rd.pbufs, &.{});
+        try signature.storage(rd.sink, &.{});
+        try signature.words(rd.wo_suh);
+        try signature.storage(ch.xsd, &.{});
+        try signature.add(ch.invalid);
+        try signature.words(&cs.comp_codes); try signature.words(&cs.comp_scales);
+        try signature.words(&cs.idx_codes); try signature.words(&cs.idx_scales);
+        try signature.words(&cs.raw_kv); try signature.words(&cs.raw_score);
+        try signature.words(rings);
+        return signature;
+    }
+
+    fn runVoted(g: *Graphs, v: *graph_vote.Control, key: Key, signature: []const u64, signature_ok: bool, e: *const Engine, rd: *Round, ch: *const Chunk, cs: *const Caches, rings: []const u64, cy: *Carry, li: usize, end: usize) !void {
+        const wire_key: graph_vote.Key = .{ .a = key.rows, .b = key.bucket, .c = (@as(u64, key.stretch) << 8) | key.mode };
+        const reserved = if (v.isHealthy()) blk: {
+            g.lru.reserve(g.gpa) catch break :blk false;
+            break :blk true;
+        } else false;
+        const reserve_vote: graph_vote.Status = if (!v.isHealthy() or !signature_ok) .fatal else if (!reserved) .disable else if (v.inject(.reserve)) .no else .yes;
+        const reserve = try v.stage(.reserve, .round, key.stretch, wire_key, reserve_vote);
+        switch (reserve) {
+            .fatal, .none => return error.GraphVoteFatal,
+            .disable => { g.disabled = true; return stretch(e, rd, ch, cs, rings, cy, li, end, null); },
+            .no => { g.keep(key, .tombstone); return stretch(e, rd, ch, cs, rings, cy, li, end, null); },
+            .yes => {},
+        }
+        const start = cy.*;
+        var graph: ?cuda.graph.Graph = null;
+        var exec: ?cuda.graph.Exec = null;
+        defer if (v.isHealthy()) {
+            if (exec) |*x| x.deinit();
+            if (graph) |*x| x.deinit();
+        };
+        var success = false;
+        if (cuda.graph.beginCapture(e.s, .thread_local)) |_| {
+            const recorded = if (stretch(e, rd, ch, cs, rings, cy, li, end, null)) |_| true else |_| false;
+            if (v.isHealthy()) {
+                if (cuda.graph.endCapture(e.s)) |got| graph = got else |_| {}
+            }
+            if (recorded) if (graph) |*x| {
+                if (x.instantiate()) |made| {
+                    exec = made;
+                    success = true;
+                } else |_| {}
+            };
+        } else |_| {}
+        var storage: ?[]u64 = null;
+        defer if (v.isHealthy()) if (storage) |mem| g.gpa.free(mem);
+        if (success and g.guard) storage = g.gpa.dupe(u64, signature) catch blk: {
+            success = false;
+            break :blk null;
+        };
+        const ready_vote: graph_vote.Status = if (!v.isHealthy()) .fatal else if (!success or v.inject(.ready)) .no else .yes;
+        if (try v.stage(.ready, .round, key.stretch, wire_key, ready_vote) != .yes) return error.GraphVoteFatal;
+        const owned = exec orelse return error.GraphVoteFatal;
+        // The vote reserved a slot on every rank; commit the key and eviction only after first launch.
+        if (v.inject(.launch_first)) return error.GraphVoteFatal;
+        owned.launchOn(e.s) catch return error.GraphVoteFatal;
+        g.keep(key, .{ .graph = .{ .exec = owned, .start = start, .end = cy.*, .storage = storage } });
+        storage = null;
+        exec = null;
+    }
+};
+
+/// A round's errors after which the ranks cannot go on together: the ring or the communicator dead (RingFailed,
+/// CommAborted), a decode round's ring transfers out of their fixed order or row lists (RingOrder, ShardRingOrder,
+/// BadRingRows: a sized send may be in flight with no receive, or the peer waits in a collect). Rank 0 ends the pair
+/// on each (native.pair_fatal: TF_DS_PAIR_BROKEN=exit exits 75, both ranks restart); a follower stops following
+/// (lanes.followPair) instead of taking the next frame.
+pub const pair_ending = [_]anyerror{ error.EngramRankFault, error.PrefillQualificationFailed, error.MaskedAttentionNumericalMismatch, error.RaggedMmaNumericalMismatch, error.RingFailed, error.CommAborted, error.RingOrder, error.ShardRingOrder, error.BadRingRows, error.GraphVoteFatal, error.GraphStorageChanged, error.GraphStateMismatch };
+
+pub fn endsPair(err: anyerror) bool {
+    for (pair_ending) |x| if (x == err) return true;
+    return false;
+}
+
+/// A round of these rows through every layer and the head: rd.logits [R, vocab] and rd.taps. The caches (ring, the
+/// compressed rows, the positional store) are the prompt's, extended by the rows; eh: the Engram host (the rows' n-grams
+/// hashed from `seq`, the whole sequence's ids through the rows'). With `graphs` each stretch runs as its graph and a
+/// probe sees only the round's end (its logits and taps).
+pub fn forward(e: *const Engine, rd: *Round, ch: *const Chunk, cs: *const Caches, rings: []const u64, eh: ?*prompt.EngramHost, seq: []const i32, rows: Rows, pool_cap: usize, probe: ?Probe, graphs: ?*Graphs) !void {
+    const w = e.w;
+    const R = rows.ids.len;
+    if (R == 0 or R > e.round_rows or rows.pos.len != R) return error.BadRound;
+    rd.r = R;
+    // kernels.round_rows(): up to the round's bound its rows take the row-invariant decode kernels
+    const bound = tri.decode_rows;
+    tri.decode_rows = e.round_rows;
+    defer tri.decode_rows = bound;
+    var deepest: usize = 0;
+    for (rows.pos) |p| deepest = @max(deepest, @as(usize, @intCast(p)) + 1);
+    rd.bucket = bucketFor(deepest, pool_cap);
+    rd.has_cand = false;
+    rd.has_cblk = false;
+    rd.kk = 0;
+    try setGlue(e, rd, rows);
+    rd.smode = .off;
+    rd.sring = false;
+    // a round that fails part way leaves the layer cursor and the early-q flag clean for the next (a ring send still
+    // awaiting its receive is left open on purpose: every later ring transfer refuses, RingOrder, and the round's
+    // error ends the pair, native.pair_fatal)
+    errdefer {
+        rd.rcur.reset();
+        rd.ss_q_out = false;
+    }
+    if (e.kv) |kv| try shardRound(e, rd, rows, kv);
+    var cy: Carry = .{ .h = rd.h, .spare = rd.h_alt, .pre = rd.pre, .pre_f = rd.pre_f };
+    // the round's Engram reads, every layer's at once (AIO): hashed and submitted once the first stretch is issued
+    // (its GPU time covers the reads), landed on the host before each Engram layer's stretch
+    var ah: Ahead = .{};
+    var ahead = e.c.engram_layers.slice().len == 0;
+    // the stretches: cut before each Engram layer (TF_DS_ENGRAM_SPLIT on), its rows read on the host before it
+    var li: usize = 0;
+    var sn: u32 = 0;
+    try rd.clock(e, Round.clock_start);
+    rd.launch_mark = cuda.launch.count;
+    while (li < w.layers.len) : (sn += 1) {
+        var end = li + 1;
+        while (end < w.layers.len and w.layers[end].engram_wkv == null) end += 1;
+        if (w.layers[li].engram_wkv != null) {
+            if (!ahead) try engramAhead(e, eh orelse return error.NoEngramTables, seq, rows, &ah);
+            ahead = true;
+            try engramLand(e, rd, eh orelse return error.NoEngramTables, &ah, li);
+        }
+        try rd.clock(e, Round.clock_wait);
+        if (graphs) |g| {
+            try g.run(.{ .rows = @intCast(R), .bucket = rd.bucket, .stretch = sn, .mode = @backingInt(rd.smode) }, e, rd, ch, cs, rings, &cy, li, end);
+        } else try stretch(e, rd, ch, cs, rings, &cy, li, end, probe);
+        try rd.clock(e, Round.clock_tail);
+        if (!ahead) try engramAhead(e, eh orelse return error.NoEngramTables, seq, rows, &ah);
+        ahead = true;
+        li = end;
+    }
+    if (graphs != null) {
+        try Probe.check(probe, .logits, w.layers.len, rd.logits);
+        if (cy.ntap > 0) try Probe.check(probe, .taps, w.layers.len, rd.taps);
+    }
+}
+
+/// Layers li .. end of a round (the first stretch starts with the rows' streams, the last ends with the head), from
+/// what the stretch before left (cy), which it updates. No host step: the Engram rows are in rd.e_in already.
+fn stretch(e: *const Engine, rd: *Round, ch: *const Chunk, cs: *const Caches, rings: []const u64, cy: *Carry, li: usize, end: usize, probe: ?Probe) !void {
+    const c = e.c;
+    const w = e.w;
+    const t = e.t;
+    const R = rd.r;
+    const d = c.hidden;
+    if (li == 0) {
+        try rd.mark(e, .start);
+        try tri_basic.embedInit(t, w.embed, rd.ids, cy.h, cy.pre, R, d, c.hc);
+        try rd.mark(e, .embed);
+    }
+    var sh = cy.sh;
+    var h = cy.h;
+    var spare = cy.spare;
+    var pre = cy.pre;
+    var pre_f = cy.pre_f;
+    var ntap = cy.ntap;
+    var pending: ?u64 = null;
+    for (li..end) |l| {
+        const lay = w.layers[l];
+        rd.cur_ratio = lay.ratio;
+        if (lay.engram_wkv) |ew| {
+            if (pending) |gp| {
+                try tri_basic.hcPost(t, gp, h, rd.post, rd.comb, h, e.world, R, d);
+                pending = null;
+            }
+            try prompt.grouped(e, ch, R, &.{ew}, &.{rd.e_in}, &.{ew.k}, &.{rd.ek}, &.{ew.n}, &.{.f32});
+            try Probe.check(probe, .engram_proj, l, rd.ek);
+            const en = if (e.two) |tw| tw.engramWidth() else ew.n;
+            if (e.two) |tw| try tw.quarters(e, rd.ek, rd.ekg, R, tw.ew, 4) else try e.gatherF32(rd.ek, rd.ekg, R * ew.n);
+            try Probe.check(probe, .engram_gather, l, rd.ekg);
+            try e.ops.sumRanksBf16(e.s, rd.ekg, rd.ekv, R * en, if (e.two != null) 2 else e.world);
+            try tri_basic.engramGate(t, h, rd.ekv, lay.engram_qk, spare, c.eps, R, d);
+            std.mem.swap(u64, &h, &spare);
+            try rd.mark(e, .engram);
+        }
+        // the attention mixes, the pending post fused in (pre_mix)
+        h = try mix(e, rd, h, &spare, &pending, lay.hc_attn, pre, lay.attn_norm, rd.pre_a, R);
+        try rd.mark(e, .mix_attn);
+        if (std.mem.indexOfScalar(u16, c.dspark_taps.slice(), @intCast(l)) != null) {
+            // one launch a tap, straight into its block of the taps buffer
+            try tri_basic.tap(t, h, rd.taps + ntap * d * 2, c.dspark_taps.slice().len * d, R, d);
+            ntap += 1;
+        }
+        try Probe.check(probe, .attn_in, l, rd.x);
+        try attention(e, rd, ch, cs, rings, &sh, l);
+        try rd.mark(e, .attn);
+        try Probe.check(probe, .attn_out, l, rd.pa);
+        if (e.two) |tw| try tw.quarters(e, rd.pa, rd.ga, R, tw.ow, 4) else try e.gatherF32(rd.pa, rd.ga, R * d);
+        try rd.mark(e, .gather_a);
+        try Probe.check(probe, .attn_gather, l, rd.ga);
+        pending = rd.ga;
+        h = try mix(e, rd, h, &spare, &pending, lay.hc_ffn, rd.pre_a, lay.ffn_norm, pre_f, R);
+        try rd.mark(e, .mix_ffn);
+        try Probe.check(probe, .moe_in, l, rd.x);
+        try moe(e, rd, ch, l);
+        try rd.mark(e, .moe);
+        try Probe.check(probe, .moe_out, l, rd.pm);
+        if (e.two) |tw| try tw.quarters(e, rd.pm, rd.gm, R, tw.dw, 4) else try e.gatherF32(rd.pm, rd.gm, R * d);
+        try rd.mark(e, .gather_m);
+        if (rd.clk_layers) try rd.clock(e, @intCast(64 + l));
+        try Probe.check(probe, .moe_gather, l, rd.gm);
+        pending = rd.gm;
+        std.mem.swap(u64, &pre, &pre_f);
+    }
+    try rd.joinSide(e); // (a stretch ends joined: the post reads the side work's post and comb)
+    try rd.joinPrefetch(e);
+    if (pending) |gp| try tri_basic.hcPost(t, gp, h, rd.post, rd.comb, h, e.world, R, d);
+    try rd.mark(e, .post);
+    cy.* = .{ .h = h, .spare = spare, .pre = pre, .pre_f = pre_f, .ntap = ntap, .sh = sh, .kk = rd.kk, .has_cand = rd.has_cand, .has_cblk = rd.has_cblk };
+    if (end < w.layers.len) return;
+    // the head on every row: the logits, the ranks' columns in rank order (g.permute(1, 0, 2))
+    try tri_basic.collapseNorm(t, h, pre, w.norm, rd.xc, c.eps, R, d);
+    const hn: usize = w.head.n;
+    try prompt.grouped(e, ch, R, &.{w.head}, &.{rd.xc}, &.{d}, &.{rd.hl}, &.{hn}, &.{.f32});
+    try Probe.check(probe, .head_cols, w.layers.len, rd.hl);
+    const hh = if (e.two) |tw| tw.hw[0] + tw.hw[1] else hn; // a rank's vocabulary half (2D: both pairs' quarters)
+    if (e.two) |tw| try tw.quarters(e, rd.hl, rd.hg, R, tw.hw, 4) else try e.gatherF32(rd.hl, rd.hg, R * hn);
+    try Probe.check(probe, .head_gather, w.layers.len, rd.hg);
+    for (0..e.world) |k| try e.ops.copyRows(e.s, rd.hg + k * R * hh * 4, hh * 4, rd.logits + k * hh * 4, e.world * hh * 4, hh * 4, R);
+    try rd.mark(e, .head);
+    try Probe.check(probe, .logits, w.layers.len, rd.logits);
+    if (ntap > 0) try Probe.check(probe, .taps, w.layers.len, rd.taps);
+}
+
+/// rounds.py pre_mix: hc_pre2 of the streams h with the pending gathered partials posted in (into the spare buffer,
+/// which becomes the streams), the Sinkhorn half deferred to the side stream (this one); returns the streams.
+fn mix(e: *const Engine, rd: *Round, h: u64, spare: *u64, pending: *?u64, params: [3]u64, pre_in: u64, norm: u64, pre_out: u64, R: usize) !u64 {
+    const c = e.c;
+    try rd.joinSide(e);
+    defer if (rd.side) |s| if (rd.join.?.record(s)) {
+        rd.side_out = true;
+    } else |_| {};
+    if (pending.*) |gp| {
+        const out = try tri_hc.hcPre2(e.t, h, params[0], params[1], params[2], pre_in, norm, c.eps, c.hc_eps, c.hc_iters, rd.x, pre_out, rd.post, rd.comb, rd.part, .{ .gathered = gp, .world = e.world, .h_out = spare.* }, rd.sink, R, c.hidden);
+        pending.* = null;
+        spare.* = h;
+        return out;
+    }
+    return tri_hc.hcPre2(e.t, h, params[0], params[1], params[2], pre_in, norm, c.eps, c.hc_eps, c.hc_iters, rd.x, pre_out, rd.post, rd.comb, rd.part, null, rd.sink, R, c.hidden);
+}
+
+/// A round's Engram reads, ahead of the stretches that use them: every window's n-grams hashed once (all the Engram
+/// layers), each layer's ids in its own part of the host buffers (two layers in flight); with AIO every layer's reads
+/// go out at the round's start, else each layer's when its stretch comes (the reader pool).
+const Ahead = struct { ids: [2]u64 = .{ 0, 0 }, aio: bool = false, R: usize = 0 };
+
+/// Layer slot j's first row in the Engram host's buffers (a round's rows of each Engram layer apart).
+fn aheadRow(j: usize) usize {
+    return j * max_rows;
+}
+
+fn engramAhead(e: *const Engine, eh: *prompt.EngramHost, seq: []const i32, rows: Rows, ah: *Ahead) !void {
+    const c = e.c;
+    const R = rows.ids.len;
+    const cols = eh.hasher.cols();
+    const k = eh.hi - eh.lo;
+    const one = [_]Window{.{ .row = 0, .n = R, .seq = seq }};
+    const windows = rows.windows orelse &one;
+    if (c.engram_layers.slice().len > 2 or eh.flat.len < 2 * max_rows * k) return error.EngramShape;
+    const t0 = stamp(eh);
+    for (windows) |w| {
+        const start: usize = @intCast(rows.pos[w.row]);
+        if (w.row + w.n > R or w.seq.len < start + w.n) return error.ShortSequence;
+        const per = eh.hasher.layers * cols;
+        eh.hasher.hashes(w.seq, start, w.n, eh.hashes[w.row * per .. (w.row + w.n) * per]);
+    }
+    ah.* = .{ .aio = eh.aio != null, .R = R };
+    for (c.engram_layers.slice(), 0..) |li, j| {
+        const tbl = eh.tables.layers.get(li) orelse return error.MissingEngramTable;
+        const f0 = aheadRow(j) * k;
+        for (0..R) |r| {
+            for (0..k) |q| eh.flat[f0 + r * k + q] = eh.hashes[(r * eh.hasher.layers + j) * cols + eh.lo + q];
+        }
+        if (eh.aio) |aio| ah.ids[j] = try aio.start(tbl, eh.flat[f0..][0 .. R * k], eh.w[f0 * tbl.row_w ..][0 .. R * k * tbl.row_w], eh.s[f0 * tbl.row_s ..][0 .. R * k * tbl.row_s]);
+    }
+    if (eh.io != null) eh.t_hash += stamp(eh) - t0;
+}
+
+/// Layer li's Engram rows of the round's rows (Engram.hashes of each row's stream's ids through the row, this rank's
+/// columns, the tables' FP8 rows decoded to bf16 as Engram._decode does) into rd.e_in: their reads landed (or made
+/// now), decoded, uploaded.
+fn engramLand(e: *const Engine, rd: *Round, eh: *prompt.EngramHost, ah: *const Ahead, li: usize) !void {
+    const c = e.c;
+    const j = std.mem.indexOfScalar(u16, c.engram_layers.slice(), @intCast(li)) orelse return error.NotAnEngramLayer;
+    const tbl = eh.tables.layers.get(@intCast(li)) orelse return error.MissingEngramTable;
+    const k = eh.hi - eh.lo;
+    const f0 = aheadRow(j) * k;
+    const m = ah.R * k;
+    const t1 = stamp(eh);
+    if (ah.aio) {
+        try eh.aio.?.wait(ah.ids[j]);
+    } else try eh.pool.gather(tbl, eh.flat[f0..][0..m], eh.w[f0 * tbl.row_w ..][0 .. m * tbl.row_w], eh.s[f0 * tbl.row_s ..][0 .. m * tbl.row_s]);
+    const t2 = stamp(eh);
+    const w0 = f0 * tbl.row_w;
+    const s0 = f0 * tbl.row_s;
+    for (0..m) |i| engram.decodeRow(eh.w[w0 + i * tbl.row_w ..][0..tbl.row_w], eh.s[s0 + i * tbl.row_s ..][0..tbl.row_s], eh.rows[w0 + i * tbl.row_w ..][0..tbl.row_w]);
+    const t3 = stamp(eh);
+    try prompt.upload(e, rd.e_in, eh.rows[w0..].ptr, m * tbl.row_w * 2);
+    if (eh.io != null) {
+        eh.t_read += t2 - t1;
+        eh.t_decode += t3 - t2;
+        eh.t_upload += stamp(eh) - t3;
+        eh.calls += 1;
+    }
+}
+
+/// The host clock (ns) when the Engram host keeps time (0 when it does not).
+fn stamp(eh: *const prompt.EngramHost) u64 {
+    const io = eh.io orelse return 0;
+    return @intCast(std.Io.Timestamp.now(io, .awake).nanoseconds);
+}
+
+test "context buckets as graph.py makes them" {
+    try std.testing.expectEqual(@as(usize, 1024), bucketFor(1, 1 << 20));
+    try std.testing.expectEqual(@as(usize, 4096), bucketFor(2230, 1 << 20));
+    try std.testing.expectEqual(@as(usize, 4096), bucketFor(4096, 1 << 20));
+    try std.testing.expectEqual(@as(usize, 8192), bucketFor(4097, 1 << 20));
+    try std.testing.expectEqual(@as(usize, 4096), bucketFor(5000, 4096));
+}
+
+fn getenv(name: [*:0]const u8) ?[]const u8 {
+    return std.mem.span(std.c.getenv(name) orelse return null);
+}
+
+/// error.NotPortedYet with its site on stderr (a request that reaches a path the port lacks names it in the log).
+fn notPorted(src: std.builtin.SourceLocation) error{NotPortedYet} {
+    std.debug.print("{{\"not_ported\": \"{s}:{d}\"}}\n", .{ src.file, src.line });
+    return error.NotPortedYet;
+}
+
+
+test "prefill128 numerical qualification failures terminate the rank group" {
+    try std.testing.expect(endsPair(error.PrefillQualificationFailed));
+    try std.testing.expect(endsPair(error.MaskedAttentionNumericalMismatch));
+    try std.testing.expect(endsPair(error.RaggedMmaNumericalMismatch));
+    try std.testing.expect(!endsPair(error.Cancelled));
+}

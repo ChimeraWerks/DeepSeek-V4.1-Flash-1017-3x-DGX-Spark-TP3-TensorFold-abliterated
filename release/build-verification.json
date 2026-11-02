@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "release": "v1.1",
+  "engine_commit": "14803a3",
+  "source_manifest_sha256": "1c5ef7762a623959061acc589e08e107fe5cb7cd00feb5e1c77db8504136b413",
+  "compiler": {
+    "version": "0.17.0",
+    "executable_sha256": "7c61539af19fa4082c94848f1c2b57b89e76dc6cfd5bd4c57764c3caf8f82272"
+  },
+  "build": {
+    "targets": [
+      "native",
+      "dsv41-tools"
+    ],
+    "target": "aarch64-linux-gnu",
+    "sample_cand": true,
+    "jobs": 4
+  },
+  "fatbins_sha256": {
+    "dsv41_ops.fatbin": "fb727ad1beafc262ba73e5123aec8b4730b0cba517bc5df2526ba2f32da37dc8",
+    "dsv41_rdma.fatbin": "95511a331135816cfb4e91b78ac04125db53e24083502cca1845b73a33de91af",
+    "dsv41_sample_cand.fatbin": "b921bbb76c38c9f502817d05ee85410f0558eadb38113696826cfccd25acb6a2",
+    "dsv41_shard.fatbin": "0adb9c5dd553902f8d5b594122654cb431e25eb5898fe197536a232b5f350cf7",
+    "dsv41_torch.fatbin": "c24b3b7b10ab982f7f5ac0f07dbc411f7e1a67aba619fa1ce071df213cd84fcf",
+    "experts.fatbin": "649c6256e9dcf0cbffe7a3e8443a66cb1f6ef20c91b3b4169665cddb8238342d",
+    "experts_pack.fatbin": "35d72252c1cd633d1c39a22cb67302d9e5b9dd1d84d456008a894038b8acdbe6",
+    "experts_prefill.fatbin": "731a2acd7713390acb424e1404e5363dd28602c57583369ed416caa2b4e4a08a",
+    "gdn.fatbin": "18db21dc56f61053f690f97206b750e4078d03e138592c57df6805e5eab5dd51",
+    "lane_gemv.fatbin": "dc561a5577a119d1fe1cc79fd93a7b4b8e8b46afdbe480566e24144b5255e76d",
+    "nemotron_ops.fatbin": "17891103a851723596509f9fad97f40ae7a0878880548183231344e09837904c",
+    "prefill_attention.fatbin": "7b0f09f6bae452a361b06a62cd824fcb5f7d3dacb3e5bc9fb5c5d21ae121dab9",
+    "probe.fatbin": "aa74c92ebc0e5bbe845169892acd034de68e870021d5782ddd467198aa0b022c",
+    "qmm_group.fatbin": "cc608c9ba61aecc3f96453e92ecaf647e6b0292cfe26b83b7bbd0ce1ca43417a",
+    "qmm_prefill.fatbin": "f7b935dd1e3367e6b57851f2bbfd443e7d59ac9f698906fcd4775bc36cb1ad36",
+    "sample.fatbin": "558ef1ca6ff71fbf057d26c03656225242b0869ddbfee92abba4cbf156fce533",
+    "scan_rows.fatbin": "f850e860ebd4404e50ad97d7f1d8b1a7db19c3f965c03852c959ca373fe2ebca",
+    "torch_argmax.fatbin": "0f5223a21cc7cd41b4b1a9b6c473d28c068f151f2355c53b49c6be9d58c9158c",
+    "torch_indexing.fatbin": "45c97bb3b9bc26bc6393d12ff03e170b4e47c4e1c1cbeeebc90004800bd4c3ed",
+    "torch_movement.fatbin": "33a8312a4183b1adfabe35ac2b0dabcac279a2dbe6a18e27cdb47d38224e214a",
+    "torch_nemotron_constants.fatbin": "837396b79d96298c45587a3d2fe1c30d9017d582e6d99413dbca23707440f8b9",
+    "torch_pointwise.fatbin": "d93593ea6f2cde140c7cbcb8d9b88e9e1c2bd08bf68939743924b620e2f95340",
+    "torch_topk.fatbin": "e2b0fac2d7d913267e035a672a2a071e72410f135d2678c58899e9df9711e35d"
+  },
+  "first_rebuild_sha256": {
+    "native/bin/tensorfold-native": "c95d873169233c499fbdeb3aac75082d11d64a9e34d1f23f27850dbe6b40d55e",
+    "bin/tf-dsv41-lanes": "22f36e0abe5693fcf072cfdd7dcede233d1dc84f96b741bff6466dd989c666f9",
+    "bin/tf-dsv41-check": "b66d8c54947d2bbafd33e0469c4c39b73fcd9d0e1a00daba8086cc2d91c3ee1b"
+  },
+  "production_stage_sha256": {
+    "tensorfold-native": "6f4e9cbf4d50e4dbf51d4095f5fbe572f35b0d2f34cf99cb407a3f6aa441bfb3",
+    "tf-dsv41-lanes": "b8bc78d102258efda07468ae99fb6ab4666cecf875aa409c013386346dbd6fb5",
+    "tf-dsv41-check": "d6080b023f3bb75faa213fdeaa57f9b2bc6400448a910434f6734cdb00c02584"
+  },
+  "whole_file_match": false,
+  "allocated_elf_sections_match": true,
+  "allocated_sections_per_binary": 22,
+  "differences": "Non-allocated DWARF/source-path and symbol/string-table differences. Same-path fresh-cache repeat isolates anonymous-symbol-name nondeterminism for native and lanes; checker repeats byte-identically. No binary normalization or modification performed.",
+  "tests": {
+    "focused_host": 422,
+    "focused_steps": 35,
+    "crossbuilds_passed": 3
+  },
+  "qualification": "CPU/source/build comparison only; not GPU or end-to-end serving acceptance. Live Spark byte comparison is recorded separately.",
+  "source_delta": {
+    "base_commit": "14803a3",
+    "path": "engine/tensorfold/zig/src/server/metrics.zig",
+    "changes": [
+      "One documentation comment describes an external metrics sampler generically.",
+      "One test title describes external samplers generically."
+    ],
+    "runtime_logic_changed": false,
+    "sha256": "4fc2f2db1cfdfb28e8461ceb0ab51bd7b901d72ac1dcb5e93ea3c42c2b17c66c"
+  },
+  "post_delta_rebuild_status": "succeeded",
+  "post_delta_controlled_comparison": {
+    "comparison": "same-path fresh-cache rebuild after comment and test-title edits",
+    "source_commit": "150386bc3dc60ef25e760090b8ce159208514a8d",
+    "metrics_source_sha256": "4fc2f2db1cfdfb28e8461ceb0ab51bd7b901d72ac1dcb5e93ea3c42c2b17c66c",
+    "source_manifest_sha256": "6a62197578751aed5104f8ef3676674bc40097bca484562b7af916b675e937b4",
+    "build_steps_passed": 11,
+    "build_steps_total": 11,
+    "focused_telemetry_tests_passed": 3,
+    "changed_source_files": [
+      "zig/src/server/metrics.zig"
+    ],
+    "other_input_receipt_differences": [],
+    "binaries": {
+      "tensorfold-native": {
+        "baseline_sha256": "d79128ea3152db110a8395cf10813e642f0a13fc9f99f55cb7bd353f67e55112",
+        "rebuilt_sha256": "02935114e7ef3ebed7f41809be8aecc4055a0a8505dd06c14fffc4512c2be842",
+        "whole_file_identical": false,
+        "allocated_sections_compared": 22,
+        "allocated_sections_identical": true,
+        "strtab_equal_after_anonymous_name_normalization": true,
+        "different_sections": [
+          ".strtab"
+        ]
+      },
+      "tf-dsv41-lanes": {
+        "baseline_sha256": "effd0c9d8fa8243cf1ab464bfff80b5ba94634b5a7b0a9923466b6ed84abdf57",
+        "rebuilt_sha256": "512e30c67b2bffc38346da1fecd28296a4618608658ede8ac42c11365953016c",
+        "whole_file_identical": false,
+        "allocated_sections_compared": 22,
+        "allocated_sections_identical": true,
+        "strtab_equal_after_anonymous_name_normalization": true,
+        "different_sections": [
+          ".strtab"
+        ]
+      },
+      "tf-dsv41-check": {
+        "baseline_sha256": "b66d8c54947d2bbafd33e0469c4c39b73fcd9d0e1a00daba8086cc2d91c3ee1b",
+        "rebuilt_sha256": "b66d8c54947d2bbafd33e0469c4c39b73fcd9d0e1a00daba8086cc2d91c3ee1b",
+        "whole_file_identical": true,
+        "allocated_sections_compared": 22,
+        "allocated_sections_identical": true,
+        "strtab_equal_after_anonymous_name_normalization": true,
+        "different_sections": []
+      }
+    },
+    "conclusion": "All allocated sections are unchanged. The checker is whole-file identical. Native and lanes differ only in non-allocated anonymous symbol names, consistent with the same-path fresh-build nondeterminism established before the text edits. Whole-file identity of all three binaries is not claimed."
+  }
+}

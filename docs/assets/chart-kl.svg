@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 642" width="1000" height="642" font-family="Inter, 'SF Pro Display', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0.35" y2="1"><stop offset="0" stop-color="#0A1033"/><stop offset="1" stop-color="#03050F"/></linearGradient>
+  <radialGradient id="nebula" cx="0.88" cy="0.0" r="0.75"><stop offset="0" stop-color="#8A55E6" stop-opacity="0.30"/><stop offset="0.55" stop-color="#4B3BB8" stop-opacity="0.07"/><stop offset="1" stop-color="#4B3BB8" stop-opacity="0"/></radialGradient>
+  <radialGradient id="ember" cx="0.0" cy="1.0" r="0.65"><stop offset="0" stop-color="#F7936F" stop-opacity="0.15"/><stop offset="1" stop-color="#F7936F" stop-opacity="0"/></radialGradient>
+  <linearGradient id="fold" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#F7936F"/><stop offset="0.5" stop-color="#B86CEC"/><stop offset="1" stop-color="#5E8FF0"/></linearGradient>
+  <linearGradient id="foldv" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#5E8FF0"/><stop offset="0.55" stop-color="#B86CEC"/><stop offset="1" stop-color="#F7936F"/></linearGradient>
+  <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#B86CEC" stop-opacity="0.30"/><stop offset="1" stop-color="#5E8FF0" stop-opacity="0"/></linearGradient>
+  <linearGradient id="meshfade" x1="1" y1="0" x2="0.35" y2="0.8"><stop offset="0" stop-color="#FFFFFF" stop-opacity="1"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></linearGradient>
+  <mask id="meshmask"><rect width="100%" height="100%" fill="url(#meshfade)"/></mask>
+  <filter id="glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="7"/></filter>
+  <filter id="halo" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="3.5"/></filter>
+</defs>
+<rect width="1000" height="642" rx="22" fill="url(#bg)"/>
+<rect width="1000" height="642" rx="22" fill="url(#nebula)"/>
+<rect width="1000" height="642" rx="22" fill="url(#ember)"/>
+<g mask="url(#meshmask)" opacity="0.5"><path d="M448 1L506 -4 M448 1L444 52 M448 1L501 52 M506 -4L588 -9 M506 -4L501 52 M506 -4L589 36 M588 -9L644 -4 M588 -9L589 36 M588 -9L628 37 M644 -4L713 -23 M644 -4L628 37 M644 -4L706 46 M713 -23L752 4 M713 -23L706 46 M713 -23L762 41 M752 4L837 -17 M752 4L762 41 M752 4L838 55 M837 -17L901 -19 M837 -17L838 55 M837 -17L890 57 M901 -19L951 -12 M901 -19L890 57 M901 -19L946 44 M951 -12L1010 -20 M951 -12L946 44 M951 -12L1036 40 M1010 -20L1036 40 M444 52L501 52 M444 52L431 93 M444 52L514 115 M501 52L589 36 M501 52L514 115 M501 52L556 105 M589 36L628 37 M589 36L556 105 M589 36L632 101 M628 37L706 46 M628 37L632 101 M628 37L690 103 M706 46L762 41 M706 46L690 103 M706 46L751 118 M762 41L838 55 M762 41L751 118 M762 41L817 107 M838 55L890 57 M838 55L817 107 M838 55L897 110 M890 57L946 44 M890 57L897 110 M890 57L955 107 M946 44L1036 40 M946 44L955 107 M946 44L1036 97 M1036 40L1036 97 M431 93L514 115 M431 93L433 158 M431 93L517 162 M514 115L556 105 M514 115L517 162 M514 115L568 152 M556 105L632 101 M556 105L568 152 M556 105L623 168 M632 101L690 103 M632 101L623 168 M632 101L690 163 M690 103L751 118 M690 103L690 163 M690 103L755 159 M751 118L817 107 M751 118L755 159 M751 118L817 175 M817 107L897 110 M817 107L817 175 M817 107L896 164 M897 110L955 107 M897 110L896 164 M897 110L946 173 M955 107L1036 97 M955 107L946 173 M955 107L1022 154 M1036 97L1022 154 M433 158L517 162 M433 158L433 235 M433 158L502 220 M517 162L568 152 M517 162L502 220 M517 162L557 232 M568 152L623 168 M568 152L557 232 M568 152L627 224 M623 168L690 163 M623 168L627 224 M623 168L708 223 M690 163L755 159 M690 163L708 223 M690 163L760 215 M755 159L817 175 M755 159L760 215 M755 159L835 215 M817 175L896 164 M817 175L835 215 M817 175L896 235 M896 164L946 173 M896 164L896 235 M896 164L971 227 M946 173L1022 154 M946 173L971 227 M946 173L1023 212 M1022 154L1023 212 M433 235L502 220 M433 235L455 291 M433 235L502 268 M502 220L557 232 M502 220L502 268 M502 220L573 278 M557 232L627 224 M557 232L573 278 M557 232L649 287 M627 224L708 223 M627 224L649 287 M627 224L698 281 M708 223L760 215 M708 223L698 281 M708 223L763 285 M760 215L835 215 M760 215L763 285 M760 215L833 284 M835 215L896 235 M835 215L833 284 M835 215L882 289 M896 235L971 227 M896 235L882 289 M896 235L940 273 M971 227L1023 212 M971 227L940 273 M971 227L1022 267 M1023 212L1022 267 M455 291L502 268 M502 268L573 278 M573 278L649 287 M649 287L698 281 M698 281L763 285 M763 285L833 284 M833 284L882 289 M882 289L940 273 M940 273L1022 267" stroke="#7F8CE8" stroke-opacity="0.22" stroke-width="0.8" fill="none"/><g fill="#C9B6F2" fill-opacity="0.55"><circle cx="448" cy="1" r="2.0"/><circle cx="506" cy="-4" r="1.4"/><circle cx="588" cy="-9" r="1.1"/><circle cx="644" cy="-4" r="1.4"/><circle cx="713" cy="-23" r="1.4"/><circle cx="752" cy="4" r="1.1"/><circle cx="837" cy="-17" r="1.4"/><circle cx="901" cy="-19" r="2.0"/><circle cx="951" cy="-12" r="2.0"/><circle cx="1010" cy="-20" r="2.0"/><circle cx="444" cy="52" r="1.1"/><circle cx="501" cy="52" r="2.0"/><circle cx="589" cy="36" r="1.1"/><circle cx="628" cy="37" r="1.1"/><circle cx="706" cy="46" r="2.0"/><circle cx="762" cy="41" r="1.4"/><circle cx="838" cy="55" r="2.0"/><circle cx="890" cy="57" r="2.0"/><circle cx="946" cy="44" r="2.0"/><circle cx="1036" cy="40" r="1.1"/><circle cx="431" cy="93" r="2.0"/><circle cx="514" cy="115" r="1.4"/><circle cx="556" cy="105" r="2.0"/><circle cx="632" cy="101" r="2.0"/><circle cx="690" cy="103" r="1.1"/><circle cx="751" cy="118" r="1.4"/><circle cx="817" cy="107" r="2.0"/><circle cx="897" cy="110" r="1.1"/><circle cx="955" cy="107" r="1.4"/><circle cx="1036" cy="97" r="1.4"/><circle cx="433" cy="158" r="2.0"/><circle cx="517" cy="162" r="1.1"/><circle cx="568" cy="152" r="2.0"/><circle cx="623" cy="168" r="1.1"/><circle cx="690" cy="163" r="1.4"/><circle cx="755" cy="159" r="2.0"/><circle cx="817" cy="175" r="1.4"/><circle cx="896" cy="164" r="1.1"/><circle cx="946" cy="173" r="2.0"/><circle cx="1022" cy="154" r="2.0"/><circle cx="433" cy="235" r="2.0"/><circle cx="502" cy="220" r="1.1"/><circle cx="557" cy="232" r="1.4"/><circle cx="627" cy="224" r="1.4"/><circle cx="708" cy="223" r="1.4"/><circle cx="760" cy="215" r="1.1"/><circle cx="835" cy="215" r="1.1"/><circle cx="896" cy="235" r="2.0"/><circle cx="971" cy="227" r="1.4"/><circle cx="1023" cy="212" r="1.4"/><circle cx="455" cy="291" r="1.1"/><circle cx="502" cy="268" r="1.4"/><circle cx="573" cy="278" r="1.1"/><circle cx="649" cy="287" r="2.0"/><circle cx="698" cy="281" r="1.4"/><circle cx="763" cy="285" r="1.1"/><circle cx="833" cy="284" r="2.0"/><circle cx="882" cy="289" r="1.4"/><circle cx="940" cy="273" r="1.1"/><circle cx="1022" cy="267" r="2.0"/></g></g>
+<rect x="0.5" y="0.5" width="999" height="641" rx="22" fill="none" stroke="#2A3366"/>
+<rect x="44" y="34" width="28" height="3" rx="1.5" fill="url(#fold)"/>
+<text x="80" y="38" fill="#B86CEC" font-size="12" font-weight="700" letter-spacing="2">FIDELITY</text>
+<text x="44" y="74" fill="#F4F5FF" font-size="28" font-weight="800" letter-spacing="-0.6">Abliterated, and still closest to the official model</text>
+<text x="44" y="100" fill="#959CC4" font-size="14">The only abliterated pack below an unedited quant · 65 × 2,048-token panel, 133,120 positions</text>
+<text x="956" y="78" fill="url(#fold)" font-size="50" font-weight="800" letter-spacing="-1.5" text-anchor="end">0.0784</text>
+<text x="956" y="100" fill="#C9CEEA" font-size="11.5" font-weight="700" letter-spacing="1.6" text-anchor="end">MEAN KL · LOWEST SCORED</text>
+<line x1="404.6" x2="404.6" y1="156" y2="558" stroke="#1A2149"/>
+<text x="404.6" y="580.0" fill="#5F6790" font-size="11.5" font-weight="400" text-anchor="middle">0.02</text>
+<line x1="487.1" x2="487.1" y1="156" y2="558" stroke="#1A2149"/>
+<text x="487.1" y="580.0" fill="#5F6790" font-size="11.5" font-weight="400" text-anchor="middle">0.04</text>
+<line x1="569.7" x2="569.7" y1="156" y2="558" stroke="#1A2149"/>
+<text x="569.7" y="580.0" fill="#5F6790" font-size="11.5" font-weight="400" text-anchor="middle">0.06</text>
+<line x1="652.3" x2="652.3" y1="156" y2="558" stroke="#1A2149"/>
+<text x="652.3" y="580.0" fill="#5F6790" font-size="11.5" font-weight="400" text-anchor="middle">0.08</text>
+<line x1="734.9" x2="734.9" y1="156" y2="558" stroke="#1A2149"/>
+<text x="734.9" y="580.0" fill="#5F6790" font-size="11.5" font-weight="400" text-anchor="middle">0.10</text>
+<line x1="817.4" x2="817.4" y1="156" y2="558" stroke="#1A2149"/>
+<text x="817.4" y="580.0" fill="#5F6790" font-size="11.5" font-weight="400" text-anchor="middle">0.12</text>
+<line x1="900.0" x2="900.0" y1="156" y2="558" stroke="#1A2149"/>
+<text x="900.0" y="580.0" fill="#5F6790" font-size="11.5" font-weight="400" text-anchor="middle">0.14</text>
+<text x="322.0" y="602.0" fill="#5F6790" font-size="12" font-weight="400" text-anchor="start">Mean KL to official logits · lower is closer</text>
+<line x1="682.0" x2="682.0" y1="138" y2="558" stroke="#C9CEEA" stroke-dasharray="4 4"/>
+<text x="690.0" y="148.0" fill="#C9CEEA" font-size="12" font-weight="700" text-anchor="start">unedited quant</text>
+<rect x="20" y="159" width="960" height="42" rx="12" fill="#B86CEC" fill-opacity="0.08" stroke="#B86CEC" stroke-opacity="0.25"/>
+<text x="300.0" y="181.0" fill="#F4F5FF" font-size="15" font-weight="800" text-anchor="end">This release</text>
+<text x="300.0" y="197.0" fill="#F7936F" font-size="11.5" font-weight="600" text-anchor="end">3.84 bpw mix + mrfakename edit</text>
+<path d="M322.0 176.0H639.7Q645.7 176.0 645.7 182.0V182.0Q645.7 188.0 639.7 188.0H322.0Z" fill="url(#fold)" opacity="0.7" filter="url(#glow)"/>
+<path d="M322.0 177.0H640.7Q645.7 177.0 645.7 182.0V182.0Q645.7 187.0 640.7 187.0H322.0Z" fill="url(#fold)"/>
+<circle cx="645.7" cy="182.0" r="8" fill="#FFFFFF" stroke="#B86CEC" stroke-width="2.5"/>
+<text x="661.7" y="187.0" fill="#F4F5FF" font-size="18" font-weight="800" text-anchor="start">0.0784</text>
+<text x="300.0" y="231.0" fill="#C9CEEA" font-size="14" font-weight="600" text-anchor="end">LakyFx 3.5 bpw</text>
+<text x="300.0" y="247.0" fill="#5F6790" font-size="11.5" font-weight="400" text-anchor="end">no edit, not abliterated</text>
+<path d="M322.0 229.0H679.0Q682.0 229.0 682.0 232.0V232.0Q682.0 235.0 679.0 235.0H322.0Z" fill="#3D477D"/>
+<circle cx="682.0" cy="232.0" r="5" fill="#C9CEEA" stroke="#959CC4" stroke-width="2.5"/>
+<text x="698.0" y="237.0" fill="#959CC4" font-size="13.5" font-weight="600" text-anchor="start">0.0872</text>
+<text x="300.0" y="281.0" fill="#C9CEEA" font-size="14" font-weight="600" text-anchor="end">LakyFx 3.5 bpw</text>
+<text x="300.0" y="297.0" fill="#5F6790" font-size="11.5" font-weight="400" text-anchor="end">+ mrfakename edit</text>
+<path d="M322.0 279.0H705.8Q708.8 279.0 708.8 282.0V282.0Q708.8 285.0 705.8 285.0H322.0Z" fill="#2B3360"/>
+<circle cx="708.8" cy="282.0" r="5" fill="#060A1E" stroke="#959CC4" stroke-width="2.5"/>
+<text x="724.8" y="287.0" fill="#959CC4" font-size="13.5" font-weight="600" text-anchor="start">0.0937</text>
+<text x="300.0" y="331.0" fill="#C9CEEA" font-size="14" font-weight="600" text-anchor="end">LakyFx 3.5 bpw</text>
+<text x="300.0" y="347.0" fill="#5F6790" font-size="11.5" font-weight="400" text-anchor="end">+ heretic edit</text>
+<path d="M322.0 329.0H732.7Q735.7 329.0 735.7 332.0V332.0Q735.7 335.0 732.7 335.0H322.0Z" fill="#2B3360"/>
+<circle cx="735.7" cy="332.0" r="5" fill="#060A1E" stroke="#959CC4" stroke-width="2.5"/>
+<text x="751.7" y="337.0" fill="#959CC4" font-size="13.5" font-weight="600" text-anchor="start">0.1002</text>
+<text x="300.0" y="381.0" fill="#C9CEEA" font-size="14" font-weight="600" text-anchor="end">Our 3.84 bpw mix</text>
+<text x="300.0" y="397.0" fill="#5F6790" font-size="11.5" font-weight="400" text-anchor="end">+ Keys overlay</text>
+<path d="M322.0 379.0H777.7Q780.7 379.0 780.7 382.0V382.0Q780.7 385.0 777.7 385.0H322.0Z" fill="#2B3360"/>
+<circle cx="780.7" cy="382.0" r="5" fill="#060A1E" stroke="#959CC4" stroke-width="2.5"/>
+<text x="796.7" y="387.0" fill="#959CC4" font-size="13.5" font-weight="600" text-anchor="start">0.1111</text>
+<text x="300.0" y="431.0" fill="#C9CEEA" font-size="14" font-weight="600" text-anchor="end">LakyFx 3.5 bpw</text>
+<text x="300.0" y="447.0" fill="#5F6790" font-size="11.5" font-weight="400" text-anchor="end">+ Keys overlay</text>
+<path d="M322.0 429.0H824.7Q827.7 429.0 827.7 432.0V432.0Q827.7 435.0 824.7 435.0H322.0Z" fill="#2B3360"/>
+<circle cx="827.7" cy="432.0" r="5" fill="#060A1E" stroke="#959CC4" stroke-width="2.5"/>
+<text x="843.7" y="437.0" fill="#959CC4" font-size="13.5" font-weight="600" text-anchor="start">0.1225</text>
+<text x="300.0" y="481.0" fill="#C9CEEA" font-size="14" font-weight="600" text-anchor="end">LakyFx 3.5 bpw</text>
+<text x="300.0" y="497.0" fill="#5F6790" font-size="11.5" font-weight="400" text-anchor="end">+ Mia's Keys K5</text>
+<path d="M322.0 479.0H828.5Q831.5 479.0 831.5 482.0V482.0Q831.5 485.0 828.5 485.0H322.0Z" fill="#2B3360"/>
+<circle cx="831.5" cy="482.0" r="5" fill="#060A1E" stroke="#959CC4" stroke-width="2.5"/>
+<text x="847.5" y="487.0" fill="#959CC4" font-size="13.5" font-weight="600" text-anchor="start">0.1234</text>
+<text x="300.0" y="531.0" fill="#C9CEEA" font-size="14" font-weight="600" text-anchor="end">LibertAIDAI 3.5 bpw</text>
+<text x="300.0" y="547.0" fill="#5F6790" font-size="11.5" font-weight="400" text-anchor="end">+ Keys overlay</text>
+<path d="M322.0 529.0H842.5Q845.5 529.0 845.5 532.0V532.0Q845.5 535.0 842.5 535.0H322.0Z" fill="#2B3360"/>
+<circle cx="845.5" cy="532.0" r="5" fill="#060A1E" stroke="#959CC4" stroke-width="2.5"/>
+<text x="861.5" y="537.0" fill="#959CC4" font-size="13.5" font-weight="600" text-anchor="start">0.1268</text>
+</svg>

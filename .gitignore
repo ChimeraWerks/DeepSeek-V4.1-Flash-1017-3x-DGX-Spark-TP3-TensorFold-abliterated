@@ -1,0 +1,38 @@
+# Private cluster settings and deployment receipts
+cluster.env
+.state/
+engine/build/out/
+engine/build/toolchains/
+engine/build/fatbins-samplecand/
+ranks/
+
+# Python and tool caches
+.venv/
+venvs/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+.cache/
+caches/
+
+# Zig build output
+.zig-cache/
+zig-cache/
+zig-out/
+
+# Large or machine-local data (weights, caches, databases, logs)
+models/
+cache/
+runs/
+logs/
+*.sqlite*
+*.safetensors
+*.bin
+/vendor/
+.serena/
+
+# Native A/B working copies of rank caches
+experiments/baseline/
+experiments/variants/*/rank*/
+experiments/source/
+experiments/controls/

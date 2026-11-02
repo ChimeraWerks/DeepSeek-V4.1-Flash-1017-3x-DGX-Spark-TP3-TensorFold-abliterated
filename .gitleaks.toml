@@ -1,0 +1,17 @@
+title = "Release scan: exact audited non-secret identifiers only"
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Upstream GPU kernel lookup identifiers, not credentials"
+condition = "AND"
+paths = ['''engine/tensorfold/zig/(kernels/metal/glm|src/families/glm)/kernels\.zig$''']
+regexTarget = "secret"
+regexes = ['''^(qmv_1536_20480|qmv_4096_12576|qmvp_8192_4096)$''']
+
+[[allowlists]]
+description = "Disposable authentication test fixture, never a real credential"
+condition = "AND"
+paths = ['''tools/cluster/test_head_api\.py$''']
+regexTarget = "secret"
+regexes = ['''^test-existing-ops-placeholder-003$''']

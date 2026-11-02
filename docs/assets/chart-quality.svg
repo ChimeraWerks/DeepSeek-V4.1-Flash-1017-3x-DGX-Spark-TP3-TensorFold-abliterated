@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 520" width="1000" height="520" font-family="Inter, 'SF Pro Display', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0.35" y2="1"><stop offset="0" stop-color="#0A1033"/><stop offset="1" stop-color="#03050F"/></linearGradient>
+  <radialGradient id="nebula" cx="0.88" cy="0.0" r="0.75"><stop offset="0" stop-color="#8A55E6" stop-opacity="0.30"/><stop offset="0.55" stop-color="#4B3BB8" stop-opacity="0.07"/><stop offset="1" stop-color="#4B3BB8" stop-opacity="0"/></radialGradient>
+  <radialGradient id="ember" cx="0.0" cy="1.0" r="0.65"><stop offset="0" stop-color="#F7936F" stop-opacity="0.15"/><stop offset="1" stop-color="#F7936F" stop-opacity="0"/></radialGradient>
+  <linearGradient id="fold" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#F7936F"/><stop offset="0.5" stop-color="#B86CEC"/><stop offset="1" stop-color="#5E8FF0"/></linearGradient>
+  <linearGradient id="foldv" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#5E8FF0"/><stop offset="0.55" stop-color="#B86CEC"/><stop offset="1" stop-color="#F7936F"/></linearGradient>
+  <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#B86CEC" stop-opacity="0.30"/><stop offset="1" stop-color="#5E8FF0" stop-opacity="0"/></linearGradient>
+  <linearGradient id="meshfade" x1="1" y1="0" x2="0.35" y2="0.8"><stop offset="0" stop-color="#FFFFFF" stop-opacity="1"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></linearGradient>
+  <mask id="meshmask"><rect width="100%" height="100%" fill="url(#meshfade)"/></mask>
+  <filter id="glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="7"/></filter>
+  <filter id="halo" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="3.5"/></filter>
+</defs>
+<rect width="1000" height="520" rx="22" fill="url(#bg)"/>
+<rect width="1000" height="520" rx="22" fill="url(#nebula)"/>
+<rect width="1000" height="520" rx="22" fill="url(#ember)"/>
+<g mask="url(#meshmask)" opacity="0.5"><path d="M438 -7L490 4 M438 -7L433 38 M438 -7L522 46 M490 4L584 4 M490 4L522 46 M490 4L588 61 M584 4L627 -18 M584 4L588 61 M584 4L642 41 M627 -18L684 -19 M627 -18L642 41 M627 -18L687 41 M684 -19L747 -5 M684 -19L687 41 M684 -19L773 48 M747 -5L823 -1 M747 -5L773 48 M747 -5L821 34 M823 -1L901 -14 M823 -1L821 34 M823 -1L887 45 M901 -14L944 -14 M901 -14L887 45 M901 -14L940 41 M944 -14L1003 -6 M944 -14L940 41 M944 -14L1013 46 M1003 -6L1013 46 M433 38L522 46 M433 38L444 108 M433 38L521 100 M522 46L588 61 M522 46L521 100 M522 46L557 100 M588 61L642 41 M588 61L557 100 M588 61L626 108 M642 41L687 41 M642 41L626 108 M642 41L699 101 M687 41L773 48 M687 41L699 101 M687 41L749 113 M773 48L821 34 M773 48L749 113 M773 48L832 109 M821 34L887 45 M821 34L832 109 M821 34L899 116 M887 45L940 41 M887 45L899 116 M887 45L939 97 M940 41L1013 46 M940 41L939 97 M940 41L1019 112 M1013 46L1019 112 M444 108L521 100 M444 108L444 164 M444 108L501 157 M521 100L557 100 M521 100L501 157 M521 100L585 178 M557 100L626 108 M557 100L585 178 M557 100L636 163 M626 108L699 101 M626 108L636 163 M626 108L687 167 M699 101L749 113 M699 101L687 167 M699 101L754 168 M749 113L832 109 M749 113L754 168 M749 113L820 163 M832 109L899 116 M832 109L820 163 M832 109L905 159 M899 116L939 97 M899 116L905 159 M899 116L957 159 M939 97L1019 112 M939 97L957 159 M939 97L1019 174 M1019 112L1019 174 M444 164L501 157 M444 164L444 235 M444 164L505 221 M501 157L585 178 M501 157L505 221 M501 157L577 222 M585 178L636 163 M585 178L577 222 M585 178L642 216 M636 163L687 167 M636 163L642 216 M636 163L682 220 M687 167L754 168 M687 167L682 220 M687 167L748 215 M754 168L820 163 M754 168L748 215 M754 168L832 227 M820 163L905 159 M820 163L832 227 M820 163L907 227 M905 159L957 159 M905 159L907 227 M905 159L958 218 M957 159L1019 174 M957 159L958 218 M957 159L1019 216 M1019 174L1019 216 M444 235L505 221 M444 235L430 281 M444 235L513 275 M505 221L577 222 M505 221L513 275 M505 221L581 281 M577 222L642 216 M577 222L581 281 M577 222L629 290 M642 216L682 220 M642 216L629 290 M642 216L683 274 M682 220L748 215 M682 220L683 274 M682 220L758 285 M748 215L832 227 M748 215L758 285 M748 215L819 294 M832 227L907 227 M832 227L819 294 M832 227L878 279 M907 227L958 218 M907 227L878 279 M907 227L955 287 M958 218L1019 216 M958 218L955 287 M958 218L1011 271 M1019 216L1011 271 M430 281L513 275 M513 275L581 281 M581 281L629 290 M629 290L683 274 M683 274L758 285 M758 285L819 294 M819 294L878 279 M878 279L955 287 M955 287L1011 271" stroke="#7F8CE8" stroke-opacity="0.22" stroke-width="0.8" fill="none"/><g fill="#C9B6F2" fill-opacity="0.55"><circle cx="438" cy="-7" r="2.0"/><circle cx="490" cy="4" r="2.0"/><circle cx="584" cy="4" r="2.0"/><circle cx="627" cy="-18" r="1.4"/><circle cx="684" cy="-19" r="1.4"/><circle cx="747" cy="-5" r="1.1"/><circle cx="823" cy="-1" r="1.4"/><circle cx="901" cy="-14" r="2.0"/><circle cx="944" cy="-14" r="1.4"/><circle cx="1003" cy="-6" r="1.4"/><circle cx="433" cy="38" r="1.1"/><circle cx="522" cy="46" r="2.0"/><circle cx="588" cy="61" r="1.1"/><circle cx="642" cy="41" r="1.1"/><circle cx="687" cy="41" r="2.0"/><circle cx="773" cy="48" r="1.1"/><circle cx="821" cy="34" r="2.0"/><circle cx="887" cy="45" r="2.0"/><circle cx="940" cy="41" r="1.4"/><circle cx="1013" cy="46" r="1.1"/><circle cx="444" cy="108" r="1.1"/><circle cx="521" cy="100" r="2.0"/><circle cx="557" cy="100" r="1.1"/><circle cx="626" cy="108" r="1.1"/><circle cx="699" cy="101" r="1.4"/><circle cx="749" cy="113" r="1.1"/><circle cx="832" cy="109" r="1.4"/><circle cx="899" cy="116" r="1.1"/><circle cx="939" cy="97" r="1.1"/><circle cx="1019" cy="112" r="1.4"/><circle cx="444" cy="164" r="2.0"/><circle cx="501" cy="157" r="1.1"/><circle cx="585" cy="178" r="1.1"/><circle cx="636" cy="163" r="2.0"/><circle cx="687" cy="167" r="1.1"/><circle cx="754" cy="168" r="2.0"/><circle cx="820" cy="163" r="2.0"/><circle cx="905" cy="159" r="1.1"/><circle cx="957" cy="159" r="1.4"/><circle cx="1019" cy="174" r="2.0"/><circle cx="444" cy="235" r="1.1"/><circle cx="505" cy="221" r="1.1"/><circle cx="577" cy="222" r="1.1"/><circle cx="642" cy="216" r="1.4"/><circle cx="682" cy="220" r="1.4"/><circle cx="748" cy="215" r="1.1"/><circle cx="832" cy="227" r="2.0"/><circle cx="907" cy="227" r="1.4"/><circle cx="958" cy="218" r="2.0"/><circle cx="1019" cy="216" r="2.0"/><circle cx="430" cy="281" r="1.4"/><circle cx="513" cy="275" r="2.0"/><circle cx="581" cy="281" r="1.4"/><circle cx="629" cy="290" r="1.1"/><circle cx="683" cy="274" r="2.0"/><circle cx="758" cy="285" r="1.4"/><circle cx="819" cy="294" r="1.4"/><circle cx="878" cy="279" r="1.4"/><circle cx="955" cy="287" r="1.1"/><circle cx="1011" cy="271" r="2.0"/></g></g>
+<rect x="0.5" y="0.5" width="999" height="519" rx="22" fill="none" stroke="#2A3366"/>
+<rect x="44" y="34" width="28" height="3" rx="1.5" fill="url(#fold)"/>
+<text x="80" y="38" fill="#B86CEC" font-size="12" font-weight="700" letter-spacing="2">QUALITY</text>
+<text x="44" y="74" fill="#F4F5FF" font-size="28" font-weight="800" letter-spacing="-0.6">Refusals removed, scores stay high</text>
+<text x="44" y="100" fill="#959CC4" font-size="14">Thinking evals at effort 50, temperature 1; IFEval and refusal screens greedy through the API</text>
+<text x="956" y="78" fill="url(#fold)" font-size="50" font-weight="800" letter-spacing="-1.5" text-anchor="end">90.5%</text>
+<text x="956" y="100" fill="#C9CEEA" font-size="11.5" font-weight="700" letter-spacing="1.6" text-anchor="end">GPQA-DIAMOND · 1,584 ANSWERS</text>
+<text x="44.0" y="146.0" fill="#C9CEEA" font-size="14" font-weight="700" text-anchor="start">Task scores</text>
+<text x="44.0" y="180.0" fill="#F4F5FF" font-size="15" font-weight="700" text-anchor="start">GPQA-Diamond</text>
+<text x="44.0" y="197.0" fill="#5F6790" font-size="11.5" font-weight="400" text-anchor="start">198 × 8, effort 50</text>
+<path d="M194.0 166.0H552.0Q560.0 166.0 560.0 174.0V184.0Q560.0 192.0 552.0 192.0H194.0Z" fill="#141B40"/>
+<path d="M194.0 166.0H517.3Q525.3 166.0 525.3 174.0V184.0Q525.3 192.0 517.3 192.0H194.0Z" fill="url(#fold)" opacity="0.55" filter="url(#glow)"/>
+<path d="M194.0 166.0H517.3Q525.3 166.0 525.3 174.0V184.0Q525.3 192.0 517.3 192.0H194.0Z" fill="url(#fold)"/>
+<text x="515.3" y="185.0" fill="#0A0F2A" font-size="15" font-weight="800" text-anchor="end">90.5%</text>
+<line x1="526.7" x2="526.7" y1="158" y2="200" stroke="#F4F5FF" stroke-width="2"/>
+<text x="530.7" y="212.0" fill="#C9CEEA" font-size="11.5" font-weight="600" text-anchor="end">DeepSeek, max effort: 90.9%</text>
+<text x="44.0" y="248.0" fill="#F4F5FF" font-size="15" font-weight="700" text-anchor="start">AIME 2025</text>
+<text x="44.0" y="265.0" fill="#5F6790" font-size="11.5" font-weight="400" text-anchor="start">30 × 4, effort 50</text>
+<path d="M194.0 234.0H552.0Q560.0 234.0 560.0 242.0V252.0Q560.0 260.0 552.0 260.0H194.0Z" fill="#141B40"/>
+<path d="M194.0 234.0H542.9Q550.9 234.0 550.9 242.0V252.0Q550.9 260.0 542.9 260.0H194.0Z" fill="url(#fold)" opacity="0.55" filter="url(#glow)"/>
+<path d="M194.0 234.0H542.9Q550.9 234.0 550.9 242.0V252.0Q550.9 260.0 542.9 260.0H194.0Z" fill="url(#fold)"/>
+<text x="540.9" y="253.0" fill="#0A0F2A" font-size="15" font-weight="800" text-anchor="end">97.5%</text>
+<text x="44.0" y="316.0" fill="#F4F5FF" font-size="15" font-weight="700" text-anchor="start">IFEval</text>
+<text x="44.0" y="333.0" fill="#5F6790" font-size="11.5" font-weight="400" text-anchor="start">541 prompts, strict</text>
+<path d="M194.0 302.0H552.0Q560.0 302.0 560.0 310.0V320.0Q560.0 328.0 552.0 328.0H194.0Z" fill="#141B40"/>
+<path d="M194.0 302.0H510.7Q518.7 302.0 518.7 310.0V320.0Q518.7 328.0 510.7 328.0H194.0Z" fill="url(#fold)" opacity="0.55" filter="url(#glow)"/>
+<path d="M194.0 302.0H510.7Q518.7 302.0 518.7 310.0V320.0Q518.7 328.0 510.7 328.0H194.0Z" fill="url(#fold)"/>
+<text x="508.7" y="321.0" fill="#0A0F2A" font-size="15" font-weight="800" text-anchor="end">88.7%</text>
+<line x1="522.7" x2="522.7" y1="294" y2="336" stroke="#F4F5FF" stroke-width="2"/>
+<text x="526.7" y="348.0" fill="#C9CEEA" font-size="11.5" font-weight="600" text-anchor="end">Official API, same prompts: 89.8%</text>
+<text x="44.0" y="384.0" fill="#F4F5FF" font-size="15" font-weight="700" text-anchor="start">LiveCodeBench v6</text>
+<text x="44.0" y="401.0" fill="#5F6790" font-size="11.5" font-weight="400" text-anchor="start">175 problems</text>
+<path d="M194.0 370.0H552.0Q560.0 370.0 560.0 378.0V388.0Q560.0 396.0 552.0 396.0H194.0Z" fill="#141B40"/>
+<path d="M194.0 370.0H508.1Q516.1 370.0 516.1 378.0V388.0Q516.1 396.0 508.1 396.0H194.0Z" fill="url(#fold)" opacity="0.55" filter="url(#glow)"/>
+<path d="M194.0 370.0H508.1Q516.1 370.0 516.1 378.0V388.0Q516.1 396.0 508.1 396.0H194.0Z" fill="url(#fold)"/>
+<text x="506.1" y="389.0" fill="#0A0F2A" font-size="15" font-weight="800" text-anchor="end">88.0%</text>
+<text x="44.0" y="452.0" fill="#F4F5FF" font-size="15" font-weight="700" text-anchor="start">MMLU-Pro</text>
+<text x="44.0" y="469.0" fill="#5F6790" font-size="11.5" font-weight="400" text-anchor="start">500 stratified, thinking on</text>
+<path d="M194.0 438.0H552.0Q560.0 438.0 560.0 446.0V456.0Q560.0 464.0 552.0 464.0H194.0Z" fill="#141B40"/>
+<path d="M194.0 438.0H508.1Q516.1 438.0 516.1 446.0V456.0Q516.1 464.0 508.1 464.0H194.0Z" fill="url(#fold)" opacity="0.55" filter="url(#glow)"/>
+<path d="M194.0 438.0H508.1Q516.1 438.0 516.1 446.0V456.0Q516.1 464.0 508.1 464.0H194.0Z" fill="url(#fold)"/>
+<text x="506.1" y="457.0" fill="#0A0F2A" font-size="15" font-weight="800" text-anchor="end">88.0%</text>
+<line x1="610" x2="610" y1="132" y2="480" stroke="#1A2149"/>
+<text x="646.0" y="146.0" fill="#C9CEEA" font-size="14" font-weight="700" text-anchor="start">Refusals</text>
+<text x="646.0" y="214.0" fill="url(#fold)" font-size="46" font-weight="800" text-anchor="start" letter-spacing="-1.5">0</text>
+<text x="683.0" y="210.0" fill="#C9CEEA" font-size="15" font-weight="700" text-anchor="start">of 100</text>
+<text x="646.0" y="238.0" fill="#959CC4" font-size="12.5" font-weight="400" text-anchor="start">harmful prompts refused</text>
+<text x="646.0" y="318.0" fill="url(#fold)" font-size="46" font-weight="800" text-anchor="start" letter-spacing="-1.5">97</text>
+<text x="710.0" y="314.0" fill="#C9CEEA" font-size="15" font-weight="700" text-anchor="start">of 100</text>
+<text x="646.0" y="342.0" fill="#959CC4" font-size="12.5" font-weight="400" text-anchor="start">complied, per HarmBench's own classifier</text>
+<text x="646.0" y="422.0" fill="url(#fold)" font-size="46" font-weight="800" text-anchor="start" letter-spacing="-1.5">0</text>
+<text x="683.0" y="418.0" fill="#C9CEEA" font-size="15" font-weight="700" text-anchor="start">of 250</text>
+<text x="646.0" y="446.0" fill="#959CC4" font-size="12.5" font-weight="400" text-anchor="start">safe prompts refused (61 partial)</text>
+</svg>

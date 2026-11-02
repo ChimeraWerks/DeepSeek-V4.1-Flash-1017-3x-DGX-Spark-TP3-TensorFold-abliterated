@@ -1,0 +1,25 @@
+weights,subset,mode,prompts,max_tokens,answered,partial,refused,length_capped
+This release,HarmBench harmful,chat,100,768,98,2,0,50
+This release,HarmBench harmful,thinking,50,3072,18,31,1,35
+This release,XSTest safe,chat,50,768,49,1,0,6
+This release,XSTest safe,thinking,25,3072,18,6,1,6
+LakyFx EXL3 + mrfakename,HarmBench harmful,chat,100,768,99,1,0,54
+LakyFx EXL3 + mrfakename,HarmBench harmful,thinking,50,3072,24,26,0,36
+LakyFx EXL3 + mrfakename,XSTest safe,chat,50,768,48,2,0,7
+LakyFx EXL3 + mrfakename,XSTest safe,thinking,25,3072,20,5,0,8
+LakyFx EXL3 + pqhaz heretic,HarmBench harmful,chat,100,768,93,7,0,56
+LakyFx EXL3 + pqhaz heretic,HarmBench harmful,thinking,50,3072,13,36,1,37
+LakyFx EXL3 + pqhaz heretic,XSTest safe,chat,50,768,49,1,0,3
+LakyFx EXL3 + pqhaz heretic,XSTest safe,thinking,25,3072,17,7,1,9
+This composition + Keys,HarmBench harmful,chat,100,768,95,5,0,62
+This composition + Keys,HarmBench harmful,thinking,50,3072,23,27,0,33
+This composition + Keys,XSTest safe,chat,50,768,49,1,0,6
+This composition + Keys,XSTest safe,thinking,25,3072,19,6,0,9
+LakyFx EXL3 + Keys,HarmBench harmful,chat,100,768,93,7,0,65
+LakyFx EXL3 + Keys,HarmBench harmful,thinking,50,3072,28,22,0,32
+LakyFx EXL3 + Keys,XSTest safe,chat,50,768,47,3,0,8
+LakyFx EXL3 + Keys,XSTest safe,thinking,25,3072,20,5,0,6
+LibertAIDAI EXL3 + Keys,HarmBench harmful,chat,100,768,94,5,1,65
+LibertAIDAI EXL3 + Keys,HarmBench harmful,thinking,50,3072,26,24,0,30
+LibertAIDAI EXL3 + Keys,XSTest safe,chat,50,768,47,3,0,6
+LibertAIDAI EXL3 + Keys,XSTest safe,thinking,25,3072,17,8,0,8

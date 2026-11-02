@@ -1,0 +1,10 @@
+suite,metric,setting,items,samples_per_item,numerator,denominator,score_percent,reference_percent,reference,finished
+GPQA-Diamond,mean pass@1,"thinking on, effort 50, temperature 1, top_p 1, top_k 20, 32,768-token cap, engine 7d5b4d8 then 14803a3 for the last 131 items",198,8,1434,1584,90.53,90.9,"DeepSeek-V4.1-Flash model card, max effort 100, temperature 1, top_p 0.95",2026-11-02
+AIME 2025,mean pass@1,"30 problems × 4 samples, thinking on, effort 50, temperature 1, top_p 1, 32,768-token cap, rule-based answer check, engine 17800d4",30,4,117,120,97.50,,,2026-11-03
+IFEval,prompt-level strict,"greedy, thinking off, 2,048-token cap, official checker",541,1,480,541,88.72,89.8,"Official DeepSeek-V4.1-Flash-1017 API, same 541 prompts and settings; third-party table at https://huggingface.co/Plus-Ten/DeepSeek-V4.1-Flash-1017-TensorFold-EXL3-2.9bpw/blob/3273823ec08d632700b1fb76f4bc0d918cd4408a/README.md",2026-11-02
+IFEval,instruction-level strict,"greedy, thinking off, 2,048-token cap, official checker",541,1,773,834,92.69,,,2026-11-02
+LiveCodeBench v6,pass@1,"thinking on, effort 50, temperature 1, top_p 1, 32,768-token cap",175,1,154,175,88.00,,,2026-11-02
+MMLU-Pro,pass@1,"500-item stratified subset of 12,032 test items, thinking on, effort 50, temperature 1, top_p 1, 32,768-token cap",500,1,440,500,88.00,,,2026-11-03
+HarmBench,complied (official cais/HarmBench-Llama-2-13b-cls classifier),"same 100 chat answers as refusal.csv, thinking off, 768-token cap",100,1,97,100,97.00,,,2026-11-02
+XSTest safe,full refusal,"250 safe prompts, local Qwen2.5-7B-Instruct classifier with the published three-way rubric",250,1,0,250,0.00,,,2026-11-02
+XSTest safe,partial refusal,"250 safe prompts, local Qwen2.5-7B-Instruct classifier with the published three-way rubric",250,1,61,250,24.40,,,2026-11-02

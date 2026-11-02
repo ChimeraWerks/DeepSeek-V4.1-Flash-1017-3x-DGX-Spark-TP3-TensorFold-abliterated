@@ -1,0 +1,9 @@
+weights,base,edit,abliterated,cuts,positions,mean_kl,mean_kl_ci95_low,mean_kl_ci95_high,top1_percent,p99_kl,release_minus_this_kl,delta_ci95_low,delta_ci95_high,release_lower_kl_cuts
+This release,3.84 bpw mixed EXL3,mrfakename,yes,65,133120,0.0784,0.0591,0.1010,91.99,1.463,,,,
+"LakyFx EXL3, no edit",LakyFx 3.5 bpw EXL3,none,no,65,133120,0.0872,0.0676,0.1099,91.18,1.517,-0.0088,-0.0131,-0.0035,59
+LakyFx EXL3 + mrfakename,LakyFx 3.5 bpw EXL3,mrfakename,yes,65,133120,0.0937,0.0725,0.1177,90.75,1.620,-0.0153,-0.0189,-0.0117,64
+LakyFx EXL3 + pqhaz heretic,LakyFx 3.5 bpw EXL3,pqhaz heretic,yes,65,133120,0.1002,0.0778,0.1262,90.76,1.746,-0.0218,-0.0265,-0.0175,64
+This composition + Keys,3.84 bpw mixed EXL3,drowzeys Keys,yes,65,133120,0.1111,0.0856,0.1406,90.66,1.953,-0.0326,-0.0427,-0.0247,64
+LakyFx EXL3 + Keys,LakyFx 3.5 bpw EXL3,drowzeys Keys,yes,65,133120,0.1225,0.0944,0.1552,89.73,2.119,-0.0441,-0.0556,-0.0341,65
+LibertAIDAI EXL3 + Keys,LibertAIDAI 3.5 bpw EXL3,drowzeys Keys,yes,65,133120,0.1268,0.0993,0.1583,90.10,2.031,-0.0484,-0.0593,-0.0386,64
+LakyFx EXL3 + Mia Keys K5,LakyFx 3.5 bpw EXL3,Mia Keys K5,yes,65,133120,0.1234,0.0952,0.1562,89.63,2.097,-0.0450,-0.0566,-0.0349,65

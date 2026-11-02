@@ -1,0 +1,52 @@
+{
+  "required_native_profile": "v1.1",
+  "engine_commit": "14803a3",
+  "serving_version": "0.1.5",
+  "production_defaults": {
+    "streams": 16,
+    "pool": 8000000,
+    "context": 1048576,
+    "graph_cap": 128,
+    "spill_gib": 256,
+    "memory_reserve_gib": 4,
+    "top_k": 20
+  },
+  "default_on": [
+    "tool_call_prose",
+    "request_control_masking",
+    "optional_anthropic_thinking_budget",
+    "prompt_preparation_memory_floor",
+    "tp3_peer_failure_exit_75",
+    "bounded_engine_logs",
+    "writable_overlay_index",
+    "tensorfold_disconnect_cancellation",
+    "numeric_aware_repetition",
+    "nvme_spill_256gib"
+  ],
+  "opt_in_later_default_off": [
+    "kv_sharding",
+    "disk_chat_continuation",
+    "context_compaction",
+    "validated_checkpoints"
+  ],
+  "excluded": [
+    "eaq_v1_1",
+    "unrelated_dashboard",
+    "upstream_test_tooling"
+  ],
+  "live_qualified": false,
+  "qualification_scope": "Production launch configuration recorded 2026-11-02; not full-context or fault-injection acceptance of a new installation.",
+  "optional_feature_scope": "KV sharding, continuation and shortening remain separate opt-in features; production NVMe spill is enabled.",
+  "small_fix_scope": [
+    "mia_0020_style_tp3_exit",
+    "mia_0023",
+    "mia_0027",
+    "mia_0028",
+    "mia_0029",
+    "ablit_writable_index",
+    "log_rotation",
+    "tensorfold_disconnect",
+    "numeric_aware_repetition"
+  ],
+  "build_handover_requires": "paired greedy exactness with all new optional switches off"
+}

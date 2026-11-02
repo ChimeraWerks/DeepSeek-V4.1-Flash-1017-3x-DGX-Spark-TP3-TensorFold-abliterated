@@ -1,0 +1,6 @@
+Validation tools from MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks,
+commit 2fd7809571e4d34f46a055dabf11caed9b145988, Apache-2.0 (recipe/LICENSE).
+Spill and KV validation derives from Robert Wojciechowski's GLM port and
+BadAd84's spill block-tier design. Adapted here for strict three-rank
+commit accounting, three owners, rank2 fault injection, explicit origin-scoped authentication and confined destructive test
+operations. See UPSTREAM.json.

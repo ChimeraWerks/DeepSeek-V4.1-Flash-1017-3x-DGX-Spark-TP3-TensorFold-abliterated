@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chimera-dgx-sparks"
+version = "0.1.5"
+description = "Portable TensorFold TP3 serving recipe with durable vision jobs"
+requires-python = ">=3.11"
+license = "Apache-2.0 AND MIT"
+license-files = ["LICENSE", "LICENSES/*.txt"]
+dependencies = ["fastapi==0.139.2", "httpx==0.28.1", "uvicorn==0.51.0"]
+
+[project.scripts]
+chimera-sparks = "chimera_sparks.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+chimera_sparks = ["assets/*", "assets/profiles/*.json"]
+
+[tool.setuptools.data-files]
+"share/chimera-sparks" = ["UPSTREAM.json", "CREDITS.md", "README.md", "engine-scope.json"]
+"share/chimera-sparks/licenses" = ["LICENSES/LakyFx-MIT.txt"]

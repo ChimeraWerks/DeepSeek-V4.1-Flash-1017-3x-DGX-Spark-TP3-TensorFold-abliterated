@@ -1,0 +1,38 @@
+cff-version: 1.2.0
+message: "If you use this recipe, please cite it and credit the upstream components listed in CREDITS.md."
+type: software
+license: Apache-2.0
+title: "DeepSeek V4.1 Flash 1017 abliterated EXL3 3.84 bpw on three DGX Spark systems with TensorFold TP3"
+version: v1.1
+date-released: 2026-11-02
+authors:
+  - name: ChimeraWerks
+repository-code: "https://github.com/ChimeraWerks/DeepSeek-V4.1-Flash-1017-3x-DGX-Spark-TP3-TensorFold-abliterated"
+url: "https://github.com/ChimeraWerks/DeepSeek-V4.1-Flash-1017-3x-DGX-Spark-TP3-TensorFold-abliterated"
+abstract: >-
+  Production deployment recipe for DeepSeek V4.1 Flash 1017 abliterated,
+  EXL3 3.84 bits per weight excluding the output head, on three NVIDIA
+  DGX Spark GB10 systems using TensorFold tensor parallelism 3.
+  Includes operating instructions, component provenance and
+  dated serving measurements. The v1.1 engine is 14803a3 with serving API
+  0.1.5, 8M KV, C16 and top_k 20. No model checkpoint is distributed.
+keywords:
+  - DeepSeek V4.1 Flash 1017
+  - DGX Spark
+  - GB10
+  - EXL3
+  - abliterated
+  - tensor parallelism
+  - TP3
+  - TensorFold
+references:
+  - type: software
+    title: "TensorFold"
+    authors:
+      - name: "TensorFold contributors"
+    url: "https://github.com/ashhart/TensorFold"
+  - type: dataset
+    title: "DeepSeek V4.1 Flash 1017 base model"
+    authors:
+      - name: "DeepSeek"
+    url: "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017"

@@ -1,0 +1,43 @@
+id,section,measurement,result,baseline,engine,date,conditions,record
+P1,prefill history,"Prefill tok/s at 4K/8K/16K/32K, starting point",2446.87 / 2479.59 / 2479.07 / 2468.68,,ee903f5,2026-10-29,"Cold prompts, spill off, 8M pool, 2,048-row chunks",run log
+P2,prefill history,"Owned-row prefill, tok/s at 4K/8K/16K/32K",2935.49 / 3009.95 / 3026.56 / 3023.04,P1,7dd3526,2026-10-29,"Cold prompts, spill off, 10M pool, TF_DS_PREFILL_OWNED=1",run log
+P3,prefill history,"Owned rows in more projections and the compressor, tok/s at 4K/8K/16K/32K",2982.99 / 3082.57 / 3065.98 / 3055.36,P2,46ae23c,2026-10-29,Same settings as P2,run log
+P4,prefill history,"Direct all-gathers, tok/s at 4K/8K/16K/32K",3042.77 / 3110.57 / 3102.86 / 3077.30,P3,93d0b4c,2026-10-30,"Same settings as P2, TF_DS_DIRECT_GATHER=1",run log
+P5a,"1.2.8 port, 32K","Port flags off, matched baseline",3010.78 tok/s,,2e4b8a5,2026-11-01,"Cold 32K prompt, spill off, 10M pool",run log
+P5b,"1.2.8 port, 32K","Engram read-ahead, ragged experts, masked attention (AE, W, K)",3142.44 tok/s,P5a,2e4b8a5,2026-11-01,10M pool,run log
+P5c,"1.2.8 port, 32K","All 1.2.8 flags, 4K logical rows, 2,048-row physical GEMMs",3471.40 tok/s,P5b,be45684,2026-11-01,10M pool,run log
+P5d,"1.2.8 port, 32K",6K logical rows,3524.52 tok/s,P5c,442dccc,2026-11-01,10M pool,run log
+P5e,"1.2.8 port, 32K",8K logical rows,3581.37 tok/s,P5d,442dccc,2026-11-01,9.65M pool,run log
+P5f,"1.2.8 port, 32K","Ragged expert kernel on the shared range, prompt aliasing",3684.93 tok/s,P5e,56aeb80,2026-11-01,8M pool,run log
+P5g,"1.2.8 port, 32K",Exact shared-expert partition,3720 tok/s,P5f,c60fe1b,2026-11-01,"8M pool; parity 8/8 long, 12/12 short",engineering note (run log not retained)
+P6,prefill flags,Owned-row prefill gain at 4K/8K/16K/32K,+19.97% / +21.39% / +22.08% / +22.46%,P1,7dd3526 vs ee903f5,2026-10-29,"Computed from P1 and P2; the baseline ran with an 8M pool, the candidate with 10M",run log
+P7,prefill flags,Direct all-gather gain at 4K/8K/16K/32K,+2.00% / +0.91% / +1.20% / +0.72%,P3,93d0b4c vs 46ae23c,2026-10-30,Computed from P3 and P4,run log
+P8,prefill flags,Exact shared-expert partition gain at 4K,3512 vs 3422 tok/s (+2.6%),earlier shared split e23306c,c60fe1b,2026-11-01,"Both arms with 8K logical rows and prompt aliasing, 8M pool",engineering note (run log not retained)
+P9,prefill flags,"Prompt scratch aliasing, prompt arena per follower","19,650,584,828 -> 14,206,378,236 bytes (5.44 GB less)",alias off,a8b79a6,2026-11-01,"8M pool, 8K logical rows, all port flags, spill off",run log
+P10,prefill flags,Output parity at every prefill step,8/8 long and 12/12 short greedy replies matched in text and reasoning,ee903f5 reference replies,"7dd3526, 46ae23c, 93d0b4c, 1.2.8 arms",2026-10-29 to 2026-11-01,"Long: four fixtures 2,513-17,157 tokens, 200 output tokens; short: six prompts, 256 output tokens; token IDs not recorded",run log
+S1,spill,"13,908-token prompt: cold / after 480 evicting prompts / after engine restart","4,469 ms / 61 ms / 1,405 ms",,14803a3,2026-11-02,"256 GiB spill, 3 GiB prompt cache, temperature 0, max_tokens 1; the restart resumed 12,288 of 13,908 tokens",run log
+S2,spill,Parity and speed with spill on,"12/12 replies identical; 32K prefill 3,712.92 tok/s",,14803a3,2026-11-02,"Spill 256 GiB, 8M pool, 16 streams",run log
+S3,prefix wait,"Eight requests on a new 17K prompt, last first token",65.7 s -> 14.2 s,prefix wait off,56efca0,2026-10-26,"Temperature 0, thinking off, max_tokens 32, two repetitions",run log
+S4,GPU top-k sampling,"Sampled C16 decode tok/s, no top_k vs top_k 20","184.1, 184.1 vs 196.4, 193.3",no top_k,7dd3526,2026-10-29,"Temperature 0.7, thinking off, 192 output tokens per stream, alternating arms",run log
+S5,RDMA idle backoff,"Busiest idle thread, nap off vs on, per Spark","100.0/0.3%, 100.0/0.5%, 100.0/0.5%; hottest SoC zones 8.8, 12.0 and 8.0 C cooler",nap off,1.2.5 build,2026-10-24,"TF_RDMA_IDLE_S=2, TF_RDMA_NAP_US=500; 30 s idle probe after 60 s idle",run log
+S6,peer watch,Recovery after follower kill and follower reboot,"7.5 min (rank 2 kill), 7.3 min (Spark 3 reboot)",,cebcf1e,2026-10-30,Pair supervisor restart; timestamps recorded at the time,engineering note (run log not retained)
+S7,prompt caches,Parity with the 1.2.7 cache and speculation flags,12/12 replies identical,production 860ff85,9e4ea88,2026-10-28,"TF_CACHE_*, TF_KV_*, 16 streams, 8M pool",run log
+M1,host memory,"Display carveout, before vs after Display Reserved Memory Auto","2,046 -> 512 MiB (1,534 MiB freed)",,,,"October 2026 firmware, BIOS 5.36_0ACUM028, all three Sparks",run log
+M2,host memory,"Kernel-reserved memory and MemTotal, 4K kernel vs 64K kernel with UVM packing",6.04 -> 2.44 GiB; 121.7 -> 125.3 GiB,"7.0.0-1019-nvidia, 4K pages",,,"After: 7.0.0-1019-nvidia-64k, uvm_pack=Y, THP never, min_free_kbytes 1048576; firmware and display change included",run log
+M3,host memory,64K memory policy: free-memory reserve,about 6.2 GiB automatic -> 1 GiB fixed,64K defaults,,2026-10-23,"THP off, then vm.min_free_kbytes=1048576; documented reserve, not a measured MemAvailable change",engineering note (run log not retained)
+M4,clocks,"Prefill tok/s, stock clocks vs GPU 2,400 MHz + P-cores 3,500 MHz","32K 3,832.91 -> 3,774.11; 8K 3,707.75 -> 3,647.40 (about -1.5%)",v1.1 release suite,14803a3,2026-11-02,"All cores, E-cores 2,800 MHz in the capped arm; eight decode cells changed -1.8% to +2.8%",run log
+M5,clocks,"Mean GPU power in greedy code decode, GPU cap 2,350 MHz vs stock",43.2 W vs 59.0 W,stock clocks,"7d5b4d8 capped, cebcf1e stock",2026-10-30,Efficiency-core affinity; host telemetry frames averaged per section,run log
+M6,memory guard,Guard thresholds,warn below 4 GiB; stop own rank below 2 GiB for 10 s or below 0.75 GiB for two samples,,14803a3 serving package,,MemAvailable sampled every 0.25 s once the rank is ready,code default
+B1,graph capture,C16 streams completed with the ragged expert kernel on,all six C16 cells complete on 14803a3; the previous build's C16 run ended partial,earlier build,14803a3,2026-11-01,"Greedy and thinking, prose, code and structured",run log
+B2,qualify once,"First 4K prompt time to first token, and expert-range checks","12,379 ms -> 1,355 ms; 1,040 -> 4 checks",7cd5421,9011df3,2026-11-01,"8K logical rows, 8M pool, shared split and aliasing; check counts from the engineering note",run log
+B3,graph vote,All ranks stopped after an injected capture fault,"9.1 s (ready phase), 10.3 s (first launch)",hang without the vote,6f7a4b8,2026-10-26,TF_DS_GRAPH_FAULT injected on one rank,run log
+D1,dropped,16K logical prefill windows,"32K 3,701.73 tok/s (no gain); rank 0 5,608 MiB available after the sweep",8K windows,aa8484a,2026-11-01,6M pool (the 8K baseline used 8M),run log
+D2,dropped,Two-window prefill pipeline,never paired; memory admission refused long prompts at 8M and 6M pools,,d8b78dc,2026-11-01,TF_DS_PREFILL_TWO_WINDOW=1,run log
+D3,dropped,Dense GEMM kits stages2 / stages3 at 32K,"3,509.74 / 3,646.87 tok/s (-5.8% / -2.1%)","3,724.11 tok/s",14803a3 + kit,2026-11-01,"8M pool, 8K rows, parity passed",run log
+D4,dropped,Attention warps8 kit at 32K,"3,491.80 tok/s (-6.2%)","3,724.11 tok/s",14803a3 + kit,2026-11-01,"8M pool, 8K rows, parity 8/8 and 12/12",run log
+D5,dropped,Persist16 / Live16 kernel variants at 32K,"3,582.00 / 3,597.47 tok/s (-2.8% / -2.4%)","3,684.93 tok/s",ede9616 / 8622001,2026-11-01,"8M pool, 8K rows, W_RANGE16",run log
+D6,dropped,"Indexer column split, prefill 4K-128K",-1.7% mean,442dccc,4e05e45,2026-11-01,TF_DS_PREFILL_INDEX_COLSPLIT=1,run log
+D7,dropped,"Host-staged RDMA, prefill 4K-32K","2,559.52 / 2,593.51 / 2,592.63 / 2,568.59 tok/s (about -15%)",46ae23c,8735dd0,2026-10-29,"TF_DS_PREFILL_RDMA=1, parity passed",run log
+D8,dropped,"Step-ahead: cold short request right after a reply, time to first token",0.407-0.477 s off vs 1.173-1.209 s on,step-ahead off,7dd3526,2026-10-29,"350-359-token requests after a 2,800-token reply",run log
+D9,dropped,6-bit and replacement (D1) draft models vs the native 4-bit DSpark drafter,6-bit -5.1% to +0.1% per cell; D1 no consistent gain (code C1 -4.7%),native 4-bit DSpark,9e4ea88,2026-10-28,"Greedy and thinking, prose, code and structured, C1/C8/C16",run log
+D10,dropped,NCCL CTA counts 4 / 8 / 16 at 32K,"3,736.67 / 3,723.98 / 3,724.71 tok/s (within noise; recipe keeps 8)",,c60fe1b,2026-11-01,Parity 8/8 and 12/12 in every arm,run log
