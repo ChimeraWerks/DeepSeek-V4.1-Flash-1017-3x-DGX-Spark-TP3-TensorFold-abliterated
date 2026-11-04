@@ -217,6 +217,7 @@ pub fn translate(cx: *Cx, body: Value, count: bool) errors.Refused!Value {
         try function.put(a, "name", .{ .string = name });
         if (tool.has("description")) try function.put(a, "description", .{ .string = try string(cx, tool.get("description"), "tool.description", true) });
         try function.put(a, "parameters", schema);
+        if (tool.get("strict")) |strict| try function.put(a, "strict", strict);
         const t = try json.newObject(a);
         try t.put(a, "type", .{ .string = "function" });
         try t.put(a, "function", .{ .object = function });
@@ -311,4 +312,16 @@ test "mia-0029 enabled thinking without budget uses the server default and valid
     const valid = (try json.parse(a, "{\"model\":\"test\",\"max_tokens\":100,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":40}}")).ok;
     const chat = try translate(&cx, valid, false);
     try std.testing.expectEqual(@as(?i64, 40), chat.get("thinking_budget").?.int64());
+}
+
+test "Messages tool histories use the shared ID validation and preserve strict" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    const prefix = "{\"model\":\"test-model\",\"max_tokens\":16,\"tools\":[{\"name\":\"f\",\"strict\":true,\"input_schema\":{\"type\":\"object\"}}],\"messages\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"a\",\"name\":\"f\",\"input\":{}}]},";
+    const good = try translate(&cx, (try json.parse(cx.a, prefix ++ "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"a\",\"content\":\"ok\"}]}]}")).ok, false);
+    try @import("messages.zig").validateToolHistory(&cx, good.get("messages"));
+    try std.testing.expect(good.get("tools").?.array[0].get("function").?.get("strict").?.bool);
+    const bad = try translate(&cx, (try json.parse(cx.a, prefix ++ "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"wrong\",\"content\":\"ok\"}]}]}")).ok, false);
+    try std.testing.expectError(error.Refused, @import("messages.zig").validateToolHistory(&cx, bad.get("messages")));
 }

@@ -25,7 +25,7 @@ const FixtureText = struct {
     eos: [1]u32,
 
     fn text(t: *FixtureText) model_text.Text {
-        return .{ .ctx = t, .vtable = &.{ .encode = encode, .decode = decode, .token_id = tokenId, .token_string = tokenString, .vocab_size = vocabSize, .eos_ids = eosIds, .render = render, .template_source = templateSource } };
+        return .{ .ctx = t, .vtable = &.{ .encode = encode, .decode = decode, .token_id = tokenId, .token_string = tokenString, .vocab_size = vocabSize, .eos_ids = eosIds, .render = render, .template_source = templateSource, .special = special, .output_control = outputControl } };
     }
 
     fn self(ctx: *anyopaque) *FixtureText {
@@ -44,6 +44,17 @@ const FixtureText = struct {
 
     fn tokenId(ctx: *anyopaque, piece: []const u8) ?u32 {
         return self(ctx).tok.specialTokenId(piece);
+    }
+
+    fn outputControl(ctx: *anyopaque, id: u32) bool {
+        if (special(ctx, id)) return true;
+        for (self(ctx).tok.added) |token| if (token.id == id) return true;
+        return false;
+    }
+
+    fn special(ctx: *anyopaque, id: u32) bool {
+        const t = self(ctx);
+        return t.tok.specials.contains(t.tok.id_to_token.get(id) orelse return false);
     }
 
     fn tokenString(ctx: *anyopaque, a: Allocator, id: u32) Allocator.Error![]u8 {
@@ -503,15 +514,43 @@ test "the engine's Messages route streams a DSML call as input_json_delta pieces
 /// Bytes as tokens, for replies the fixture does not hold; with `eos`, id 256 is the end token.
 const ByteText = struct {
     eos: bool = false,
+    const markers = [_][]const u8{ "｜DSML｜", "<think>", "</think>", "<tool_call>", "</tool_call>", "<|channel|>", "<|message|>", "<|return|>", "<|end|>", "<|call|>", "<|start|>" };
+
+    fn special(_: *anyopaque, id: u32) bool {
+        return id >= 257 and id < 257 + markers.len;
+    }
+
+    // Protocol fixtures use explicit control IDs; literal-marker regressions supply plain byte IDs separately.
+    fn tokens(a: Allocator, input: []const u8) Allocator.Error![]u32 {
+        var out: std.ArrayList(u32) = .empty;
+        var at: usize = 0;
+        while (at < input.len) {
+            const found = for (markers, 0..) |marker, i| {
+                if (std.mem.startsWith(u8, input[at..], marker)) {
+                    try out.append(a, @intCast(257 + i));
+                    at += marker.len;
+                    break true;
+                }
+            } else false;
+            if (!found) {
+                try out.append(a, input[at]);
+                at += 1;
+            }
+        }
+        return out.items;
+    }
 
     fn text(t: *ByteText) model_text.Text {
-        return .{ .ctx = t, .vtable = &.{ .encode = FixtureText.encode, .decode = decode, .token_id = tokenId, .token_string = tokenString, .vocab_size = vocabSize, .eos_ids = eosIds, .render = FixtureText.render, .template_source = FixtureText.templateSource } };
+        return .{ .ctx = t, .vtable = &.{ .encode = FixtureText.encode, .decode = decode, .token_id = tokenId, .token_string = tokenString, .vocab_size = vocabSize, .eos_ids = eosIds, .render = FixtureText.render, .template_source = FixtureText.templateSource, .special = special } };
     }
 
     /// The bytes, a character cut short at the end as U+FFFD (the text seam's contract, as the real decoder keeps it).
     fn decode(_: *anyopaque, a: Allocator, ids: []const u32) Allocator.Error![]u8 {
-        const out = try a.alloc(u8, ids.len);
-        for (ids, out) |id, *b| b.* = @intCast(id);
+        var bytes: std.ArrayList(u8) = .empty;
+        for (ids) |id| {
+            if (id >= 257 and id < 257 + markers.len) try bytes.appendSlice(a, markers[id - 257]) else try bytes.append(a, @intCast(id));
+        }
+        const out = bytes.items;
         var back: usize = 0;
         while (back < @min(4, out.len)) {
             back += 1;
@@ -533,7 +572,7 @@ const ByteText = struct {
     }
 
     fn vocabSize(_: *anyopaque) u32 {
-        return 257;
+        return 257 + markers.len;
     }
 
     fn eosIds(ctx: *anyopaque) []const u32 {
@@ -544,8 +583,7 @@ const ByteText = struct {
 
 /// `answer` (no thinking) through the chat route with the tools above, whole or streamed in rounds of 5 bytes.
 fn bytesRun(a: Allocator, answer: []const u8, stream: bool) !Seen {
-    const ids = try a.alloc(u32, answer.len);
-    for (answer, ids) |b, *id| id.* = b;
+    const ids = try ByteText.tokens(a, answer);
     var text: ByteText = .{};
     var backend: ScriptEngine = .{ .ids = ids, .pattern = &.{5}, .cut = false };
     var srv = try server.Server.init(std.testing.allocator, std.testing.io, backend.engine(), text.text(), .{
@@ -590,9 +628,8 @@ const Bytes = struct { pattern: []const usize = &.{5}, stream: bool = true, cut:
 
 /// `answer` (no thinking) through the chat route with the tools above, as `o` says.
 fn bytesAsk(a: Allocator, answer: []const u8, o: Bytes) !Seen {
-    const ids = try a.alloc(u32, answer.len + @intFromBool(o.eos));
-    for (answer, ids[0..answer.len]) |b, *id| id.* = b;
-    if (o.eos) ids[answer.len] = 256;
+    const plain_ids = try ByteText.tokens(a, answer);
+    const ids = if (o.eos) try std.mem.concat(a, u32, &.{ plain_ids, &.{256} }) else plain_ids;
     var text: ByteText = .{ .eos = o.eos };
     var backend: ScriptEngine = .{ .ids = ids, .pattern = o.pattern, .cut = o.cut };
     var srv = try server.Server.init(std.testing.allocator, std.testing.io, backend.engine(), text.text(), .{
@@ -605,7 +642,7 @@ fn bytesAsk(a: Allocator, answer: []const u8, o: Bytes) !Seen {
     defer srv.deinit();
     const stop = if (o.stop) |st| try std.fmt.allocPrint(a, ",\"stop\":[{s}]", .{try json.quote(a, st, .{})}) else "";
     const body = try std.fmt.allocPrint(a, "{{\"model\":\"test-model\",\"messages\":[{{\"role\":\"user\",\"content\":\"x\"}}],\"stream\":{s},\"max_tokens\":{d}{s},\"tools\":{s}}}", .{
-        if (o.stream) "true" else "false", if (o.cut) answer.len else 4096, stop, tools_json,
+        if (o.stream) "true" else "false", if (o.cut) ids.len else 4096, stop, tools_json,
     });
     var conn: Conn = .{ .fd = -1, .peer = "", .buf = &.{}, .gpa = a };
     var seen: Seen = .{ .a = a };

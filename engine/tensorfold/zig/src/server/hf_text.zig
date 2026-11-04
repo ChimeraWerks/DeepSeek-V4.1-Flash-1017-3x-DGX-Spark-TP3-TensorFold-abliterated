@@ -12,7 +12,7 @@ test "guarded HF chat and raw encoding preserve literal Unicode markers" {
     defer arena.deinit();
     const a = arena.allocator();
     const description =
-        \\{"added_tokens":[{"id":8,"content":"<x>","normalized":false,"special":true}],
+        \\{"added_tokens":[{"id":8,"content":"<x>","normalized":false,"special":false}],
         \\ "decoder":{"type":"Sequence","decoders":[{"type":"ByteFallback"},{"type":"Fuse"}]},
         \\ "model":{"type":"BPE","unk_token":null,"byte_fallback":true,
         \\ "vocab":{"l":0,"e":1,"f":2,"t":3,"r":4,"i":5,"g":6,"h":7,"<x>":8,"<":9,"x":10,">":11,"<0xEF>":12,"<0xB7>":13,"<0x90>":14},"merges":[]}}
@@ -23,6 +23,11 @@ test "guarded HF chat and raw encoding preserve literal Unicode markers" {
     var diag: template.Diag = .{};
     h.compiled = try template.compile(std.testing.allocator, h.source, &diag);
     defer h.compiled.?.deinit();
+    var decoded: @import("reply_text.zig").TokenText = .{};
+    _ = try decoded.extend(a, h.text(), &.{ 9, 10, 11, 8, 0, 1, 2, 3 }, true);
+    const split = try @import("reply_text.zig").splitThinkingWith(a, decoded.text.items, true, .{ .open = "", .close = "<x>" }, decoded.markup());
+    try std.testing.expectEqualStrings("<x>", split.reasoning);
+    try std.testing.expectEqualStrings("left", split.answer);
     var cx: @import("errors.zig").Cx = .{ .a = a };
     for ([_][]const u8{
         \\[{"role":"user","content":"left\ufdd0right"}]
@@ -234,6 +239,7 @@ pub const HfText = struct {
             .render = renderFn,
             .template_source = sourceFn,
             .special = specialFn,
+            .output_control = outputControlFn,
             .mask = maskFn,
             .encode_masked = encodeMaskedFn,
         } };
@@ -245,6 +251,13 @@ pub const HfText = struct {
 
     fn maskFn(ctx: *anyopaque, a: Allocator, s: []const u8) Allocator.Error!?[]u8 {
         return self(ctx).tok.maskAdded(a, s);
+    }
+
+    fn outputControlFn(ctx: *anyopaque, id: u32) bool {
+        if (specialFn(ctx, id)) return true;
+        // DeepSeek marks </think> and DSML as added tokens with special:false.
+        for (self(ctx).tok.added) |token| if (token.id == id) return true;
+        return false;
     }
 
     fn specialFn(ctx: *anyopaque, id: u32) bool {

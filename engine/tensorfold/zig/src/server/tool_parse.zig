@@ -45,6 +45,19 @@ fn find(hay: []const u8, needle: []const u8, from: usize) ?usize {
     return std.mem.indexOfPos(u8, hay, from, needle);
 }
 
+fn marker(hay: []const u8, needle: []const u8, from: usize, markup: reply_text.Markup) ?usize {
+    return markup.find(hay, from, needle);
+}
+
+fn markerCI(hay: []const u8, needle: []const u8, from: usize, markup: reply_text.Markup) ?usize {
+    var at = from;
+    while (findCI(hay, needle, at)) |i| {
+        if (markup.allows(hay, i, needle)) return i;
+        at = i + 1;
+    }
+    return null;
+}
+
 /// Python's ``\w`` on one byte, non-ASCII bytes counting as letters.
 fn word(ch: u8) bool {
     return std.ascii.isAlphanumeric(ch) or ch == '_' or ch >= 0x80;
@@ -59,24 +72,28 @@ fn allSpace(s: []const u8) bool {
 /// (start, end, payload) of each tool-call block in order; a block inside an earlier one is part of it.
 /// The text before the first DSML calls block: a ``<tool_call>`` inside one is an argument's text, not a call.
 pub fn beforeDsml(text: []const u8) []const u8 {
-    const v41 = find(text, dsml41_open, 0) orelse text.len;
-    const v4 = find(text, dsml_open, 0) orelse text.len;
+    return beforeDsmlWith(text, .{});
+}
+
+pub fn beforeDsmlWith(text: []const u8, markup: reply_text.Markup) []const u8 {
+    const v41 = marker(text, dsml41_open, 0, markup) orelse text.len;
+    const v4 = marker(text, dsml_open, 0, markup) orelse text.len;
     return text[0..@min(v41, v4)];
 }
 
 /// A reply's call envelopes in order: DeepSeek-V4.1's DSML blocks first, the other forms only in the text around them.
-fn envelopes(a: Allocator, text: []const u8) Allocator.Error![]Envelope {
+fn envelopes(a: Allocator, text: []const u8, markup: reply_text.Markup) Allocator.Error![]Envelope {
     var found: std.ArrayList(Envelope) = .empty;
     var gap: usize = 0;
     var at: usize = 0;
-    while (find(text, dsml41_open, at)) |s| {
-        const e = find(text, dsml41_close, s + dsml41_open.len) orelse break;
-        try tagged(a, text[gap..s], gap, &found);
+    while (marker(text, dsml41_open, at, markup)) |s| {
+        const e = marker(text, dsml41_close, s + dsml41_open.len, markup) orelse break;
+        try tagged(a, text[gap..s], gap, &found, markup);
         try found.append(a, .{ .start = s, .end = e + dsml41_close.len, .payload = text[s .. e + dsml41_close.len] });
         at = e + dsml41_close.len;
         gap = at;
     }
-    try tagged(a, text[gap..], gap, &found);
+    try tagged(a, text[gap..], gap, &found, markup);
     std.mem.sort(Envelope, found.items, {}, struct {
         fn less(_: void, x: Envelope, y: Envelope) bool {
             if (x.start != y.start) return x.start < y.start;
@@ -90,10 +107,10 @@ fn envelopes(a: Allocator, text: []const u8) Allocator.Error![]Envelope {
 }
 
 /// The envelopes other than DeepSeek-V4.1's blocks in ``text``, a slice of the reply that starts at ``base``.
-fn tagged(a: Allocator, text: []const u8, base: usize, out: *std.ArrayList(Envelope)) Allocator.Error!void {
+fn tagged(a: Allocator, text: []const u8, base: usize, out: *std.ArrayList(Envelope), markup: reply_text.Markup) Allocator.Error!void {
     var pos: usize = 0;
-    while (findCI(text, "<tool_call>", pos)) |s| {
-        const e = findCI(text, "</tool_call>", s + 11) orelse break;
+    while (markerCI(text, "<tool_call>", pos, markup)) |s| {
+        const e = markerCI(text, "</tool_call>", s + 11, markup) orelse break;
         try out.append(a, .{ .start = base + s, .end = base + e + 12, .payload = strip(text[s + 11 .. e]) });
         pos = e + 12;
     }
@@ -105,20 +122,21 @@ fn tagged(a: Allocator, text: []const u8, base: usize, out: *std.ArrayList(Envel
         j += 1;
         while (j < text.len and (word(text[j]) or text[j] == '.' or text[j] == '-')) j += 1;
         if (!std.ascii.startsWithIgnoreCase(text[j..], ":tool_call>")) continue;
+        if (markup.token_aware and !markup.allows(text, s, text[s .. j + 11])) continue;
         const closer = try std.mem.concat(a, u8, &.{ "</", text[s + 1 .. j], ":tool_call>" });
-        const e = findCI(text, closer, j + 11) orelse continue;
+        const e = markerCI(text, closer, j + 11, markup) orelse continue;
         try out.append(a, .{ .start = base + s, .end = base + e + closer.len, .payload = strip(text[j + 11 .. e]) });
         pos = e + closer.len;
     }
     pos = 0;
-    while (find(text, "<|tool_call>", pos)) |s| {
-        const e = find(text, "<tool_call|>", s + 12) orelse break;
+    while (marker(text, "<|tool_call>", pos, markup)) |s| {
+        const e = marker(text, "<tool_call|>", s + 12, markup) orelse break;
         try out.append(a, .{ .start = base + s, .end = base + e + 12, .payload = strip(text[s + 12 .. e]) });
         pos = e + 12;
     }
     pos = 0;
-    while (find(text, dsml_open, pos)) |s| {
-        const e = find(text, dsml_close, s + dsml_open.len) orelse break;
+    while (marker(text, dsml_open, pos, markup)) |s| {
+        const e = marker(text, dsml_close, s + dsml_open.len, markup) orelse break;
         try out.append(a, .{ .start = base + s, .end = base + e + dsml_close.len, .payload = text[s .. e + dsml_close.len] });
         pos = e + dsml_close.len;
     }
@@ -126,6 +144,10 @@ fn tagged(a: Allocator, text: []const u8, base: usize, out: *std.ArrayList(Envel
 
 /// ``parse_tool_calls_from_content``: the reply's content and its calls (null when it makes none).
 pub fn parse(a: Allocator, text: []const u8, tools: []const Value, max_calls: ?usize) Allocator.Error!Parsed {
+    return parseWith(a, text, tools, max_calls, .{});
+}
+
+pub fn parseWith(a: Allocator, text: []const u8, tools: []const Value, max_calls: ?usize, markup: reply_text.Markup) Allocator.Error!Parsed {
     if (tools.len == 0) return .{ .content = text, .calls = null };
     var known: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
     for (tools) |tool| {
@@ -133,7 +155,7 @@ pub fn parse(a: Allocator, text: []const u8, tools: []const Value, max_calls: ?u
         try known.put(a, try std.ascii.allocLowerString(a, name), name);
     }
     const schemas = try tool_params.schemas(a, tools);
-    const envs = try envelopes(a, text);
+    const envs = try envelopes(a, text, markup);
     if (envs.len == 0) {
         if (try bareCalls(a, text, &known, max_calls)) |calls| return .{ .content = "", .calls = calls };
         return .{ .content = text, .calls = null };
@@ -145,14 +167,14 @@ pub fn parse(a: Allocator, text: []const u8, tools: []const Value, max_calls: ?u
         try residue.appendSlice(a, text[cursor..env.start]);
         cursor = env.end;
         if (std.mem.startsWith(u8, env.payload, dsml41_open)) {
-            try dsml41Calls(a, env.payload[dsml41_open.len .. env.payload.len - dsml41_close.len], &known, max_calls, &calls);
+            try dsml41Calls(a, env.payload[dsml41_open.len .. env.payload.len - dsml41_close.len], &known, max_calls, &calls, markup);
             continue;
         }
         if (max_calls) |m| if (calls.items.len >= m) continue;
         const parsed: ?[]Call = blk: {
             if (std.mem.startsWith(u8, env.payload, dsml_open)) {
                 const inner = env.payload[dsml_open.len .. env.payload.len - dsml_close.len];
-                break :blk dsmlCalls(a, inner) catch |e| switch (e) {
+                break :blk dsmlCalls(a, inner, markup) catch |e| switch (e) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.Invalid => null,
                 };
@@ -186,10 +208,14 @@ pub fn parse(a: Allocator, text: []const u8, tools: []const Value, max_calls: ?u
 
 /// What closes the call ``text`` ends inside (the model's end token came before its ``
 pub fn closeCall(a: Allocator, text: []const u8, tools: []const Value) Allocator.Error![]const u8 {
+    return closeCallWith(a, text, tools, .{});
+}
+
+pub fn closeCallWith(a: Allocator, text: []const u8, tools: []const Value, markup: reply_text.Markup) Allocator.Error![]const u8 {
     var pos: usize = 0;
     // the opener ``envelopes`` leaves without a closer, so the one appended pairs with it
-    const start = while (findCI(text, "<tool_call>", pos)) |s| {
-        pos = (findCI(text, "</tool_call>", s + 11) orelse break s) + 12;
+    const start = while (markerCI(text, "<tool_call>", pos, markup)) |s| {
+        pos = (markerCI(text, "</tool_call>", s + 11, markup) orelse break s) + 12;
     } else return "";
     const block = text[start + 11 ..];
     const tail = try argumentsClose(a, strip(block));
@@ -487,20 +513,20 @@ fn gemmaCall(a: Allocator, block: []const u8) Error!?Call {
 }
 
 /// Each invoke of a DeepSeek-V4.1 calls block as a call; with a limit, only offered tools with finite arguments, up to it.
-fn dsml41Calls(a: Allocator, block: []const u8, known: *const std.StringArrayHashMapUnmanaged([]const u8), max_calls: ?usize, calls: *std.ArrayList(Value)) Allocator.Error!void {
+fn dsml41Calls(a: Allocator, block: []const u8, known: *const std.StringArrayHashMapUnmanaged([]const u8), max_calls: ?usize, calls: *std.ArrayList(Value), markup: reply_text.Markup) Allocator.Error!void {
     var pos: usize = 0;
-    while (find(block, invoke41_open, pos)) |s| {
+    while (marker(block, invoke41_open, pos, markup)) |s| {
         pos = s + 1;
         const name_start = s + invoke41_open.len;
         const q = std.mem.indexOfScalarPos(u8, block, name_start, '"') orelse continue;
         if (q == name_start or !std.mem.startsWith(u8, block[q..], "\">")) continue;
-        const e = find(block, invoke41_close, q + 2) orelse continue;
+        const e = marker(block, invoke41_close, q + 2, markup) orelse continue;
         pos = e + invoke41_close.len;
         const name = strip(block[name_start..q]);
         const body = block[q + 2 .. e];
         const arguments = try json.newObject(a);
         var p: usize = 0;
-        while (find(body, param41_open, p)) |ps| {
+        while (marker(body, param41_open, p, markup)) |ps| {
             p = ps + 1;
             const ns = ps + param41_open.len;
             const nq = std.mem.indexOfScalarPos(u8, body, ns, '"') orelse continue;
@@ -515,7 +541,7 @@ fn dsml41Calls(a: Allocator, block: []const u8, known: *const std.StringArrayHas
             }
             if (v_start >= body.len or body[v_start] != '>') continue;
             v_start += 1;
-            const pe = find(body, param41_close, v_start) orelse continue;
+            const pe = marker(body, param41_close, v_start, markup) orelse continue;
             p = pe + param41_close.len;
             const value = body[v_start..pe];
             const v: Value = if (json_value) switch (try json.parseText(a, value)) {
@@ -532,16 +558,16 @@ fn dsml41Calls(a: Allocator, block: []const u8, known: *const std.StringArrayHas
 }
 
 /// Every invoke of a DSML block, or Invalid when anything in it is not a well-formed invoke.
-fn dsmlCalls(a: Allocator, block: []const u8) Error![]Call {
+fn dsmlCalls(a: Allocator, block: []const u8, markup: reply_text.Markup) Error![]Call {
     var calls: std.ArrayList(Call) = .empty;
     var at: usize = 0;
     var pos: usize = 0;
-    while (find(block, invoke_open, pos)) |s| {
+    while (marker(block, invoke_open, pos, markup)) |s| {
         pos = s + 1;
         const name_start = s + invoke_open.len;
         const q = std.mem.indexOfScalarPos(u8, block, name_start, '"') orelse continue;
         if (!std.mem.startsWith(u8, block[q..], "\">")) continue;
-        const e = find(block, invoke_close, q + 2) orelse continue;
+        const e = marker(block, invoke_close, q + 2, markup) orelse continue;
         if (!allSpace(block[at..s])) return error.Invalid;
         at = e + invoke_close.len;
         pos = at;
@@ -550,7 +576,7 @@ fn dsmlCalls(a: Allocator, block: []const u8) Error![]Call {
         var p: usize = 0;
         var kept: usize = 0;
         var residue: std.ArrayList(u8) = .empty;
-        while (find(body, param_open, p)) |ps| {
+        while (marker(body, param_open, p, markup)) |ps| {
             p = ps + 1;
             const ns = ps + param_open.len;
             const nq = std.mem.indexOfScalarPos(u8, body, ns, '"') orelse continue;
@@ -558,7 +584,7 @@ fn dsmlCalls(a: Allocator, block: []const u8) Error![]Call {
             const is_string = std.mem.startsWith(u8, flag, "\" string=\"true\">");
             if (!is_string and !std.mem.startsWith(u8, flag, "\" string=\"false\">")) continue;
             const v_start = nq + (if (is_string) "\" string=\"true\">".len else "\" string=\"false\">".len);
-            const pe = find(body, param_close, v_start) orelse continue;
+            const pe = marker(body, param_close, v_start, markup) orelse continue;
             const value = body[v_start..pe];
             try residue.appendSlice(a, body[kept..ps]);
             kept = pe + param_close.len;

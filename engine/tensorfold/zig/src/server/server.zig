@@ -185,10 +185,13 @@ pub const Server = struct {
     /// The call gate and grammar a request asks for, or its refusal when the engine cannot enforce them.
     pub fn checkFeatures(srv: *Server, cx: *Cx, f: Value, has_tools: bool, thinking: bool, prompt_ids: []const u32, tools: []const Value, request: *api.Request) errors.Refused!void {
         _ = prompt_ids;
+        const strict = try tool_specs.constrained(cx, tools, f.field("response_format") != null);
+        const constrained_tools = strict orelse tools;
         const required = if (f.get("tool_call_required")) |r| r.truthy() else false;
-        if (has_tools and required and srv.info.structures) {
+        if (strict != null and !srv.info.structures) return cx.refuse("strict tools require an engine with structured output support");
+        if (has_tools and (required or strict != null) and srv.info.structures) {
             const one_call = if (f.get("tool_call_single")) |x| x.truthy() else false;
-            request.structure = try tool_grammar.structure(srv, cx, tools, !one_call, thinking);
+            request.structure = try tool_grammar.structureMode(srv, cx, constrained_tools, !one_call, thinking, required);
         } else if (has_tools and required) {
             const form = try srv.callForm(cx);
             const opener = if (form) |fm| oneToken(srv, cx.a, fm.opener) else null;
@@ -214,6 +217,7 @@ pub const Server = struct {
             };
         }
         if (try grammar.spec(cx, f)) |s| {
+            if (strict != null) return cx.refuse("structured output should not be used with strict tools");
             if (!srv.info.structures) return cx.refuse("structured output (response_format and the guided_* fields) is not supported by this engine yet");
             request.structure = try srv.compiledStructure(cx, s.kind, s.text, s.field, thinking);
         }

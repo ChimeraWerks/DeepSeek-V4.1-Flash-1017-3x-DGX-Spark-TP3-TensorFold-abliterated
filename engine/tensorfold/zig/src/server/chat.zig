@@ -49,6 +49,7 @@ pub const Sink = struct {
 const ping_after_ns: i96 = 25 * std.time.ns_per_s;
 
 pub const Reply = struct {
+    markup: reply_text.Markup = .{},
     content: []const u8,
     stop_sequence: ?[]const u8,
     reasoning: ?[]const u8,
@@ -366,7 +367,7 @@ const Generation = struct {
     calls: ?tool_stream.Streamer = null,
     collected: std.ArrayList(u32) = .empty,
     token_ids: bool = false, // the request asked for its ids back (Input.token_ids)
-    visible: reply_text.Incremental = .{},
+    visible: reply_text.TokenText = .{},
     hidden: std.ArrayList(u8) = .empty, // reused for the answer without its call blocks
     streamed: Shown = .{}, // what content streamed, kept apart from the decode buffer that grows under slices
     streamed_reasoning: Shown = .{},
@@ -386,7 +387,7 @@ const Generation = struct {
     fn closeCall(g: *const Generation, text: []const u8) Allocator.Error![]const u8 {
         const t = g.collected.items;
         if (g.tools.len == 0 or t.len == 0 or !g.eos(t[t.len - 1])) return "";
-        return tool_parse.closeCall(g.a, text, g.tools);
+        return tool_parse.closeCallWith(g.a, text, g.tools, g.visible.markup());
     }
 
     /// The engine's stop check, here: the newest tokens' text holds a stop string.
@@ -427,12 +428,14 @@ const Generation = struct {
             }
             try fresh.append(g.a, t);
         }
-        const all = try g.visible.extend(g.a, g.srv.text, decodeText, fresh.items);
+        const all = try g.visible.extend(g.a, g.srv.text, fresh.items, false);
         const text = g.stops.visible(all, true);
+        const markup = g.visible.markup();
+        if (g.calls) |*c| c.markup = markup;
         if (g.visible.pending()) return; // a character still split across tokens
         var answer = text;
         if (g.thinking) {
-            const split = try reply_text.splitThinking(g.a, text, false, g.srv.markers);
+            const split = try reply_text.splitThinkingWith(g.a, text, false, g.srv.markers, markup);
             const piece = g.streamed_reasoning.after(split.reasoning, true);
             if (piece.len > 0) {
                 try g.streamed_reasoning.set(g.a, split.reasoning, piece);
@@ -440,8 +443,8 @@ const Generation = struct {
             }
             answer = split.answer;
         }
-        const shown = if (g.calls != null) try reply_text.hideInto(g.a, &g.hidden, answer, false) else answer;
-        const visible_content = reply_text.streamingVisible(shown);
+        const shown = if (g.calls != null) try reply_text.hideIntoWith(g.a, &g.hidden, answer, false, markup) else answer;
+        const visible_content = reply_text.streamingVisibleWith(shown, markup);
         // Hold leading whitespace while a tool-only reply is still possible; later prose sends it intact.
         const vis = if (g.calls != null and g.streamed.text.items.len == 0 and
             reply_text.pyStrip(visible_content).len == 0) "" else visible_content;
@@ -449,7 +452,7 @@ const Generation = struct {
         if (g.calls) |*c| {
             // thinking off, the finish reads Harmony channels out of a text that holds their marker, so its parse no
             // longer reads this answer: the DSML streamer stops, and the finish follows the parse
-            if (!g.thinking and std.mem.indexOf(u8, answer, "<|channel|>") != null) c.dsml.off = true;
+            if (!g.thinking and markup.find(answer, 0, "<|channel|>") != null) c.dsml.off = true;
             // a block under way ends before this round's prose, which can only come after it: a text delta between a
             // call's header and its last piece ends that call for a client (LiteLLM's Messages stream, /v1/responses)
             if (c.dsml.midCall()) {
@@ -465,7 +468,7 @@ const Generation = struct {
         }
         if (g.calls) |*c| {
             var out: std.ArrayList(Value) = .empty;
-            try c.feed(tool_parse.beforeDsml(answer), &out); // never the reasoning, nor a DSML block's arguments: a call they quote is not made
+            try c.feed(tool_parse.beforeDsmlWith(answer, markup), &out); // never the reasoning, nor a DSML block's arguments: a call they quote is not made
             try c.feedDsml(answer, &out); // DeepSeek-V4.1's DSML calls as they decode, never the reasoning
             for (out.items) |d| try g.emit(sink, d);
         }
@@ -550,20 +553,30 @@ const Generation = struct {
         };
         const finished_ns = nowNs(g.srv.io);
         const content_tokens = if (g.ignore_eos) g.collected.items else reply_text.stripTrailing(g.collected.items, g.srv.eos);
-        const raw = try g.srv.text.decode(a, content_tokens);
+        var decoded: reply_text.TokenText = .{};
+        const raw = try decoded.extend(a, g.srv.text, content_tokens, true);
+        g.visible = decoded;
         const visible = g.stops.visible(raw, false);
         // closed before the think split, so a call ending an unclosed think block is the answer
         const close = try g.closeCall(visible);
-        const text = if (close.len > 0) try std.mem.concat(a, u8, &.{ visible, close }) else visible;
+        if (close.len > 0) {
+            decoded.text.shrinkRetainingCapacity(visible.len);
+            while (decoded.spans.items.len > 0 and decoded.spans.items[decoded.spans.items.len - 1].end > visible.len) _ = decoded.spans.pop();
+            try decoded.text.appendSlice(a, close);
+            try decoded.spans.append(a, .{ .start = visible.len, .end = decoded.text.items.len });
+        }
+        const text = if (close.len > 0) decoded.text.items else visible;
+        const markup = decoded.markup();
+        if (g.calls) |*c| c.markup = markup;
         var content: []const u8 = text;
         var reasoning: ?[]const u8 = null;
         if (g.thinking) {
-            const split = try reply_text.splitThinking(a, text, true, g.srv.markers);
+            const split = try reply_text.splitThinkingWith(a, text, true, g.srv.markers, markup);
             const r = reply_text.pyStrip(split.reasoning);
             reasoning = if (r.len > 0) r else null;
             content = split.answer;
         } else {
-            const h = reply_text.parseHarmony(text);
+            const h = reply_text.parseHarmonyWith(text, markup);
             content = h.content;
             reasoning = h.reasoning;
         }
@@ -571,10 +584,10 @@ const Generation = struct {
             const thought = g.streamed_reasoning.text.items;
             if (reasoning) |r| if (std.mem.startsWith(u8, r, thought) and r.len > thought.len)
                 try g.emit(sink, try deltaOf(a, "reasoning_content", r[thought.len..]));
-            var shown = if (g.calls != null) try reply_text.hideToolCalls(a, content, true) else content;
+            var shown = if (g.calls != null) try reply_text.hideIntoWith(a, &g.hidden, content, true, markup) else content;
             // Drop held whitespace only after a real call parsed; whitespace-only answers are still sent.
             if (g.calls != null and g.streamed.text.items.len == 0 and reply_text.pyStrip(shown).len == 0) {
-                const parsed = try tool_parse.parse(a, content, g.tools, null);
+                const parsed = try tool_parse.parseWith(a, content, g.tools, null, markup);
                 if (parsed.calls != null) shown = "";
             }
             const sent = g.streamed.text.items;
@@ -665,6 +678,7 @@ const Generation = struct {
         if (m.telemetry.len > 0) if ((try json.parse(a, m.telemetry)) == .ok) try spec.put(a, "proposer", (try json.parse(a, m.telemetry)).ok);
         const think_end: ?u32 = if (thinking) g.srv.text.tokenId(g.srv.markers.close) else null;
         const reply: Reply = .{
+            .markup = markup,
             .content = content,
             .stop_sequence = g.stops.matched(raw),
             .reasoning = reasoning,
@@ -702,10 +716,6 @@ const StopHook = struct {
         return false;
     }
 };
-
-fn decodeText(t: anytype, a: Allocator, tokens: []const u32) ![]u8 {
-    return t.decode(a, tokens);
-}
 
 /// ``{key: text}``: a streamed delta (role, content or reasoning_content).
 pub fn deltaOf(a: Allocator, key: []const u8, text: []const u8) Allocator.Error!Value {

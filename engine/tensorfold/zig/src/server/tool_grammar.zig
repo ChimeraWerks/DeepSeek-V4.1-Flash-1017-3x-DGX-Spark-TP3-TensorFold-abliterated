@@ -56,13 +56,17 @@ pub fn style(rendered: []const u8) ?Style {
 
 /// The grammar for a reply that must call one of `tools`: one call, or (`parallel`) one or more, then the end.
 pub fn structure(srv: *Server, cx: *Cx, tools: []const Value, parallel: bool, thinking: bool) errors.Refused!api.Structure {
+    return structureMode(srv, cx, tools, parallel, thinking, true);
+}
+
+pub fn structureMode(srv: *Server, cx: *Cx, tools: []const Value, parallel: bool, thinking: bool, required: bool) errors.Refused!api.Structure {
     const s = style(try probeMarkup(srv, cx, tools)) orelse return cx.refuse("tool_choice \"required\" or a named function needs a chat template that writes <tool_call> calls (XML parameters or a JSON object) or DeepSeek's DSML calls, and this one does not: send \"auto\"");
-    const text = build(cx.a, s, tools, parallel) catch |e| switch (e) {
+    const text = buildMode(cx.a, s, tools, parallel, required) catch |e| switch (e) {
         error.BadToolParameters => return cx.refuse("tool_choice required: function.parameters or input_schema must have type object at the top level and in every anyOf/oneOf/allOf branch"),
         error.OutOfMemory => return error.OutOfMemory,
     };
     var out = try srv.compiledStructure(cx, .structural_tag, text, "tool_choice \"required\" or a named function", thinking);
-    out.ban = try spelled(cx.a, srv.text, s);
+    out.ban = if (required) try spelled(cx.a, srv.text, s) else &.{};
     return out;
 }
 
@@ -91,6 +95,10 @@ fn spelled(a: Allocator, text: Text, s: Style) Allocator.Error![]const u32 {
 
 /// The structural tag's JSON text (xgrammar's form).
 pub fn build(a: Allocator, s: Style, tools: []const Value, parallel: bool) error{ OutOfMemory, BadToolParameters }![]const u8 {
+    return buildMode(a, s, tools, parallel, true);
+}
+
+pub fn buildMode(a: Allocator, s: Style, tools: []const Value, parallel: bool, required: bool) error{ OutOfMemory, BadToolParameters }![]const u8 {
     const calls = try a.alloc(Value, tools.len);
     for (tools, calls) |t, *c| c.* = try call(a, s, try tool_specs.toolName(a, t), try parameters(a, t));
     const one: Value = if (calls.len == 1) calls[0] else try node(a, "or", &.{.{ "elements", .{ .array = calls } }});
@@ -106,7 +114,25 @@ pub fn build(a: Allocator, s: Style, tools: []const Value, parallel: bool) error
         if (parallel) try parts.append(a, try node(a, "star", &.{.{ "content", try node(a, "sequence", &.{.{ "elements", try list(a, &.{ ws, one }) }}) }}));
         try parts.append(a, ws);
     }
-    const format = try node(a, "sequence", &.{.{ "elements", .{ .array = parts.items } }});
+    const format = if (required) try node(a, "sequence", &.{.{ "elements", .{ .array = parts.items } }}) else blk: {
+        // Free prose until the actual call opener; a schema never forces auto to make a call.
+        const opener = if (dsmlOf(s)) |d| d.open else "<tool_call>";
+        const closer = if (dsmlOf(s)) |d| d.close else "</tool_call>";
+        var inner: std.ArrayList(Value) = .empty;
+        if (dsmlOf(s) != null) {
+            try inner.appendSlice(a, &.{ try constant(a, "\n"), one });
+            if (parallel) try inner.append(a, try node(a, "star", &.{.{ "content", one }}));
+        } else {
+            // call() includes the common outer tags; the dispatched tag already owns them.
+            for (calls) |*c| {
+                const elements = c.get("elements").?.array;
+                c.* = try node(a, "sequence", &.{.{ "elements", .{ .array = elements[1 .. elements.len - 1] } }});
+            }
+            try inner.append(a, if (calls.len == 1) calls[0] else try node(a, "or", &.{.{ "elements", .{ .array = calls } }}));
+        }
+        const tag = try node(a, "tag", &.{ .{ "begin", .{ .string = opener } }, .{ "content", try node(a, "sequence", &.{.{ "elements", .{ .array = inner.items } }}) }, .{ "end", .{ .string = closer } } });
+        break :blk try node(a, "triggered_tags", &.{ .{ "triggers", try list(a, &.{.{ .string = opener }}) }, .{ "tags", try list(a, &.{tag}) }, .{ "stop_after_first", .{ .bool = !parallel } } });
+    };
     return json.stringify(a, try node(a, "structural_tag", &.{.{ "format", format }}), .{ .ascii = false, .compact = true });
 }
 
@@ -453,5 +479,23 @@ test "DSML grammars through libtfgrammar, a checkpoint's tokenizer and its templ
             std.debug.print("case {d}: took {d} of {d} ids, ended {}: {s}\n", .{ i, w.taken, case.ids.len, w.ended, try text.decode(a, case.ids[0..@min(case.ids.len, w.taken + 1)]) });
             return error.TestUnexpectedResult;
         }
+    }
+}
+
+test "strict auto grammar allows prose and constrains an optional call" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var cx: Cx = .{ .a = a };
+    const tools = (try json.parse(a, "[{\"function\":{\"name\":\"f\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"string\"}}}}}]")).ok.array;
+    const normalized = (try tool_specs.constrained(&cx, tools, false)).?;
+    for ([_]Style{ .dsml41, .dsml, .xml, .json }) |s| {
+        const built = try buildMode(a, s, normalized, false, false);
+        const format = (try json.parse(a, built)).ok.get("format").?;
+        try std.testing.expectEqualStrings("triggered_tags", format.strField("type").?);
+        try std.testing.expect(format.get("stop_after_first").?.bool);
+        try std.testing.expect(!json.truthyField(format, "at_least_one"));
+        try std.testing.expect(std.mem.indexOf(u8, built, "\"additionalProperties\":false") != null);
+        try std.testing.expect(std.mem.indexOf(u8, built, "\"required\":[\"x\"]") != null);
     }
 }

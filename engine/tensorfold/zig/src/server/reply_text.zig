@@ -21,6 +21,108 @@ pub const calls = [_][2][]const u8{
     .{ "<\u{ff5c}DSML\u{ff5c} calls>", "</\u{ff5c}DSML\u{ff5c} calls>" },
 };
 
+/// Byte ranges decoded from actual special IDs, not ordinary tokens spelling the same text.
+pub const Span = struct { start: usize, end: usize };
+pub const Markup = struct {
+    text: []const u8 = "",
+    spans: []const Span = &.{},
+    token_aware: bool = false,
+
+    pub fn allows(m: Markup, text: []const u8, at: usize, tag: []const u8) bool {
+        if (!m.token_aware) return true;
+        const offset = @intFromPtr(text.ptr) -| @intFromPtr(m.text.ptr);
+        // A copy of the reply (a joined prefix, hidden call text) has no token map: fall back to spelling rather than lose its markers.
+        if (@intFromPtr(text.ptr) < @intFromPtr(m.text.ptr) or offset + text.len > m.text.len) return true;
+        const dsml = "\u{ff5c}DSML\u{ff5c}";
+        var start = at;
+        var len = tag.len;
+        if (std.mem.indexOf(u8, tag, dsml)) |i| {
+            start += i;
+            len = dsml.len;
+        } else {
+            // Channel names are ordinary text after their special delimiter.
+            for ([_][]const u8{ "<|channel>", "<|channel|>" }) |prefix| if (std.mem.startsWith(u8, tag, prefix)) {
+                len = prefix.len;
+                break;
+            };
+        }
+        for (m.spans) |span| if (span.start <= offset + start and span.end >= offset + start + len) return true;
+        return false;
+    }
+
+    pub fn find(m: Markup, text: []const u8, from: usize, tag: []const u8) ?usize {
+        var at = from;
+        while (findTag(text, at, tag)) |i| {
+            if (m.allows(text, i, tag)) return i;
+            at = i + 1;
+        }
+        return null;
+    }
+
+    pub fn partial(m: Markup, text: []const u8, tag: []const u8) usize {
+        const held = partialTag(text, tag);
+        if (held == 0 or !m.token_aware) return held;
+        const prefix = tag[0..held];
+        // A not-yet-written token can follow the '<' or paragraph break already decoded.
+        const dsml = "\u{ff5c}DSML\u{ff5c}";
+        if (std.mem.indexOf(u8, tag, dsml)) |i| {
+            if (held <= i) return held;
+            if (held < i + dsml.len) return held;
+            return if (m.allows(text, text.len - held, tag[0 .. i + dsml.len])) held else 0;
+        }
+        // Special tokens arrive whole. A plain prefix must not be interpreted as control syntax.
+        return if (m.allows(text, text.len - held, prefix)) held else 0;
+    }
+};
+
+/// Decode ordinary runs together (including split UTF-8) and retain each special token's byte span.
+pub const TokenText = struct {
+    text: std.ArrayList(u8) = .empty,
+    spans: std.ArrayList(Span) = .empty,
+    plain: Incremental = .{},
+    copied: usize = 0,
+
+    pub fn markup(t: *const TokenText) Markup {
+        return .{ .text = t.text.items, .spans = t.spans.items, .token_aware = true };
+    }
+
+    pub fn pending(t: *const TokenText) bool {
+        return t.plain.pending();
+    }
+
+    pub fn extend(t: *TokenText, a: Allocator, source: anytype, tokens: []const u32, finished: bool) Allocator.Error![]const u8 {
+        for (tokens) |id| {
+            if (source.isOutputControl(id)) {
+                const piece = try source.decode(a, &.{id});
+                try t.flush(a, source);
+                const start = t.text.items.len;
+                try t.text.appendSlice(a, piece);
+                try t.spans.append(a, .{ .start = start, .end = t.text.items.len });
+            } else {
+                const all = try t.plain.extend(a, source, decode, &.{id});
+                try t.text.appendSlice(a, all[t.copied..]);
+                t.copied = all.len;
+            }
+        }
+        if (finished) try t.flush(a, source);
+        return t.text.items;
+    }
+
+    fn decode(source: anytype, a: Allocator, tokens: []const u32) Allocator.Error![]const u8 {
+        return source.decode(a, tokens);
+    }
+
+    fn flush(t: *TokenText, a: Allocator, source: anytype) Allocator.Error!void {
+        if (t.plain.pending()) {
+            const before = try source.decode(a, t.plain.tokens.items[t.plain.prefix..t.plain.read]);
+            const after = try source.decode(a, t.plain.tokens.items[t.plain.prefix..]);
+            try t.text.appendSlice(a, afterChars(after, charCount(before)));
+        }
+        t.plain = .{};
+        t.copied = 0;
+    }
+};
+
 /// ``text.find(tag, from)`` led by a vector scan for the tag's first byte: markup is rare in prose, so it is fast.
 pub fn findTag(text: []const u8, from: usize, tag: []const u8) ?usize {
     if (tag.len == 0) return if (from <= text.len) from else null;
@@ -57,44 +159,48 @@ pub const Split = struct { reasoning: []const u8, answer: []const u8 };
 
 /// (reasoning, answer) of a thinking reply; while it streams, a tail that could begin a marker is held back.
 pub fn splitThinking(a: Allocator, full: []const u8, finished: bool, m: Markers) Allocator.Error!Split {
+    return splitThinkingWith(a, full, finished, m, .{});
+}
+
+pub fn splitThinkingWith(a: Allocator, full: []const u8, finished: bool, m: Markers, markup: Markup) Allocator.Error!Split {
     var text = full;
-    if (m.open.len > 0 and !std.mem.startsWith(u8, text, m.open)) {
-        if (find(text, m.open)) |start| if (start > 0) {
+    if (m.open.len > 0 and !(std.mem.startsWith(u8, text, m.open) and markup.allows(text, 0, m.open))) {
+        if (markup.find(text, 0, m.open)) |start| if (start > 0) {
             var prefix = text[0..start];
-            prefix = prefix[0 .. prefix.len - partialTag(prefix, m.open)]; // a stray partial opener
-            const inner = try splitThinking(a, text[start..], finished, m);
+            prefix = prefix[0 .. prefix.len - markup.partial(prefix, m.open)]; // a stray partial opener
+            const inner = try splitThinkingWith(a, text[start..], finished, m, markup);
             return .{ .reasoning = inner.reasoning, .answer = try std.mem.concat(a, u8, &.{ prefix, inner.answer }) };
         };
         if (!finished) {
-            var held = @max(partialTag(text, m.open), partialTag(text, m.close));
-            for (calls) |c| held = @max(held, partialTag(text, c[0]));
+            var held = @max(markup.partial(text, m.open), markup.partial(text, m.close));
+            for (calls) |c| held = @max(held, markup.partial(text, c[0]));
             return .{ .reasoning = "", .answer = text[0 .. text.len - held] };
         }
         return .{ .reasoning = "", .answer = text };
     }
     if (m.open.len > 0) {
         text = trimNewlines(text[m.open.len..]);
-    } else if (std.mem.startsWith(u8, text, think_open)) {
+    } else if ((std.mem.startsWith(u8, text, think_open) and markup.allows(text, 0, think_open))) {
         text = trimNewlines(text[think_open.len..]);
     } else if (!finished and std.mem.startsWith(u8, think_open, text)) {
         return .{ .reasoning = "", .answer = "" }; // held while the reply may still be writing that opener
     }
-    if (find(text, m.close)) |end| return .{ .reasoning = text[0..end], .answer = trimNewlines(text[end + m.close.len ..]) };
+    if (markup.find(text, 0, m.close)) |end| return .{ .reasoning = text[0..end], .answer = trimNewlines(text[end + m.close.len ..]) };
     var call: ?usize = null;
-    for (calls) |c| if (find(text, c[0])) |at| {
+    for (calls) |c| if (markup.find(text, 0, c[0])) |at| {
         if (call == null or at < call.?) call = at;
     };
     if (call) |at| {
         // a call written before the block closes: held while the block may still close, the answer if the reply ends
         if (!finished) return .{ .reasoning = text[0..at], .answer = "" };
-        for (calls) |c| if (std.mem.startsWith(u8, text[at..], c[0]) and find(text[at..], c[1]) != null)
+        for (calls) |c| if (std.mem.startsWith(u8, text[at..], c[0]) and markup.find(text[at..], 0, c[1]) != null)
             return .{ .reasoning = text[0..at], .answer = text[at..] };
         return .{ .reasoning = text, .answer = "" };
     }
     var held: usize = 0;
     if (!finished) {
-        held = partialTag(text, m.close);
-        for (calls) |c| held = @max(held, partialTag(text, c[0]));
+        held = markup.partial(text, m.close);
+        for (calls) |c| held = @max(held, markup.partial(text, c[0]));
     }
     return .{ .reasoning = text[0 .. text.len - held], .answer = "" };
 }
@@ -107,12 +213,16 @@ pub fn hideToolCalls(a: Allocator, text: []const u8, finished: bool) Allocator.E
 
 /// ``hideToolCalls`` into ``out`` (cleared first); text without a call block comes back as a slice of ``text``.
 pub fn hideInto(a: Allocator, out: *std.ArrayList(u8), text: []const u8, finished: bool) Allocator.Error![]const u8 {
+    return hideIntoWith(a, out, text, finished, .{});
+}
+
+pub fn hideIntoWith(a: Allocator, out: *std.ArrayList(u8), text: []const u8, finished: bool, markup: Markup) Allocator.Error![]const u8 {
     out.clearRetainingCapacity();
     var pos: usize = 0;
     while (true) {
         var start: ?usize = null;
         var which: usize = 0;
-        for (calls, 0..) |c, i| if (findTag(text, pos, c[0])) |at| {
+        for (calls, 0..) |c, i| if (markup.find(text, pos, c[0])) |at| {
             if (start == null or at < start.?) {
                 start = at;
                 which = i;
@@ -122,7 +232,7 @@ pub fn hideInto(a: Allocator, out: *std.ArrayList(u8), text: []const u8, finishe
             const tail = text[pos..];
             var held: usize = 0;
             if (!finished) for (calls) |c| {
-                held = @max(held, partialTag(tail, c[0]));
+                held = @max(held, markup.partial(tail, c[0]));
             };
             if (pos == 0) return text[0 .. text.len - held];
             try out.appendSlice(a, tail[0 .. tail.len - held]);
@@ -130,7 +240,7 @@ pub fn hideInto(a: Allocator, out: *std.ArrayList(u8), text: []const u8, finishe
         }
         try out.appendSlice(a, text[pos..start.?]);
         const opener = calls[which][0];
-        const end = findTag(text, start.? + opener.len, calls[which][1]) orelse return out.items;
+        const end = markup.find(text, start.? + opener.len, calls[which][1]) orelse return out.items;
         pos = end + calls[which][1].len;
     }
 }
@@ -147,24 +257,32 @@ pub const Harmony = struct { content: []const u8, reasoning: ?[]const u8 };
 
 /// Harmony's final and analysis channels; other text passes unchanged.
 pub fn parseHarmony(text: []const u8) Harmony {
-    if (find(text, "<|channel|>") == null) return .{ .content = text, .reasoning = null };
+    return parseHarmonyWith(text, .{});
+}
+
+pub fn parseHarmonyWith(text: []const u8, markup: Markup) Harmony {
+    if (markup.find(text, 0, "<|channel|>") == null) return .{ .content = text, .reasoning = null };
     var reasoning: ?[]const u8 = null;
-    if (find(text, harmony_analysis)) |i| {
+    if (harmonyFind(markup, text, harmony_analysis)) |i| {
         var r = text[i + harmony_analysis.len ..];
-        r = cutAt(r, harmony_final);
-        for (harmony_ends) |e| r = cutAt(r, e);
+        r = harmonyCut(markup, r, harmony_final);
+        for (harmony_ends) |e| r = harmonyCut(markup, r, e);
         reasoning = r;
     }
-    const f = find(text, harmony_final) orelse return .{ .content = "", .reasoning = reasoning };
+    const f = harmonyFind(markup, text, harmony_final) orelse return .{ .content = "", .reasoning = reasoning };
     var content = text[f + harmony_final.len ..];
-    for (harmony_ends) |e| content = cutAt(content, e);
+    for (harmony_ends) |e| content = harmonyCut(markup, content, e);
     return .{ .content = content, .reasoning = reasoning };
 }
 
 /// The part of partly decoded output that should stream.
 pub fn streamingVisible(text: []const u8) []const u8 {
-    if (find(text, "<|channel|>") == null) return text;
-    return parseHarmony(text).content;
+    return streamingVisibleWith(text, .{});
+}
+
+pub fn streamingVisibleWith(text: []const u8, markup: Markup) []const u8 {
+    if (markup.find(text, 0, "<|channel|>") == null) return text;
+    return parseHarmonyWith(text, markup).content;
 }
 
 pub fn stripTrailing(tokens: []const u32, stops: []const u32) []const u32 {
@@ -371,4 +489,61 @@ test "DeepSeek-V4.1's calls take their two newlines: text streams without them, 
     // a call written inside the think block: the reasoning ends where the calls start, as the reference reads it
     const t = try splitThinking(a, "plan\n\n" ++ block, true, think_markers);
     try std.testing.expectEqualStrings("plan", t.reasoning);
+}
+
+fn harmonyFind(markup: Markup, text: []const u8, marker: []const u8) ?usize {
+    return markup.find(text, 0, marker);
+}
+
+fn harmonyCut(markup: Markup, text: []const u8, marker: []const u8) []const u8 {
+    return if (harmonyFind(markup, text, marker)) |i| text[0..i] else text;
+}
+
+test "token-aware thinking keeps plain markers at every byte boundary" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const literal = "literal </think> and <｜DSML｜ calls> stay in reasoning. ";
+    const text = literal ++ "</think>\n\nAnswer </think> <｜DSML｜ calls> literal.";
+    const spans = [_]Span{.{ .start = literal.len, .end = literal.len + "</think>".len }};
+    const markup: Markup = .{ .text = text, .spans = &spans, .token_aware = true };
+    var sent: []const u8 = "";
+    for (0..text.len + 1) |end| {
+        const split = try splitThinkingWith(a, text[0..end], false, think_markers, markup);
+        try std.testing.expect(std.mem.startsWith(u8, split.reasoning, sent));
+        try std.testing.expect(std.mem.startsWith(u8, literal, split.reasoning));
+        sent = split.reasoning;
+    }
+    const final = try splitThinkingWith(a, text, true, think_markers, markup);
+    try std.testing.expectEqualStrings(literal, final.reasoning);
+    try std.testing.expectEqualStrings("Answer </think> <｜DSML｜ calls> literal.", final.answer);
+    var hidden: std.ArrayList(u8) = .empty;
+    try std.testing.expectEqualStrings(final.answer, try hideIntoWith(a, &hidden, final.answer, true, markup));
+    const plain: Markup = .{ .text = text, .token_aware = true };
+    try std.testing.expectEqualStrings(text, (try splitThinkingWith(a, text, true, think_markers, plain)).reasoning);
+}
+
+test "token decoder distinguishes a real ID from the same plain bytes" {
+    const Fake = struct {
+        fn isOutputControl(_: @This(), id: u32) bool {
+            return id == 1000;
+        }
+        fn decode(_: @This(), a: Allocator, tokens: []const u32) Allocator.Error![]u8 {
+            var out: std.ArrayList(u8) = .empty;
+            for (tokens) |id| {
+                if (id == 1000) try out.appendSlice(a, "</think>") else try out.append(a, @intCast(id));
+            }
+            return out.items;
+        }
+    };
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var decoded: TokenText = .{};
+    for ("literal </think>") |byte| _ = try decoded.extend(a, Fake{}, &.{byte}, false);
+    _ = try decoded.extend(a, Fake{}, &.{ 1000, 'o', 'k' }, true);
+    const split = try splitThinkingWith(a, decoded.text.items, true, think_markers, decoded.markup());
+    try std.testing.expectEqualStrings("literal </think>", split.reasoning);
+    try std.testing.expectEqualStrings("ok", split.answer);
+    try std.testing.expectEqual(@as(usize, 1), decoded.spans.items.len);
 }

@@ -35,6 +35,7 @@ fn closing(rest: []const u8, text: []const u8) ?usize {
 /// Streams Qwen's XML calls as JSON argument deltas matching the final parser.
 pub const Streamer = struct {
     a: Allocator,
+    markup: reply_text.Markup = .{},
     schemas: tool_params.Schemas,
     known: std.StringHashMapUnmanaged([]const u8) = .empty,
     current: []const u8 = "",
@@ -90,7 +91,7 @@ pub const Streamer = struct {
                 .outside => {
                     if (text.len < s.searched) s.searched = s.pos;
                     const from = @min(text.len, @max(s.pos, s.searched -| ("<tool_call>".len - 1)));
-                    const j = reply_text.findTag(text, from, "<tool_call>") orelse {
+                    const j = s.markup.find(text, from, "<tool_call>") orelse {
                         s.searched = text.len;
                         return;
                     };
@@ -199,6 +200,7 @@ pub const Streamer = struct {
 
     fn feedDsmlTo(s: *Streamer, t: []const u8, out: *std.ArrayList(Value), one_block: bool) Allocator.Error!void {
         const d = &s.dsml;
+        d.markup = s.markup;
         const a = s.a;
         // the saved positions hold only in a text that extends the one read before; a shorter one turns the streamer
         // off, and the finish then follows the parse (Dsml.verify checks the whole text once)
@@ -213,12 +215,12 @@ pub const Streamer = struct {
                 .outside => {
                     if (one_block) return;
                     // envelopes(): the next block from the end of the last, and only one that closes is the parse's
-                    const i = findIn(t, tool_parse.dsml41_open, @max(d.pos, d.from), null);
+                    const i = findIn(d.markup, t, tool_parse.dsml41_open, @max(d.pos, d.from), null);
                     if (i != .at) {
                         d.from = @max(d.pos, t.len -| (tool_parse.dsml41_open.len - 1));
                         return;
                     }
-                    if ((d.sent.items.len == 0 and s.streamed) or foreignCall(t[d.gap..i.at])) {
+                    if ((d.sent.items.len == 0 and s.streamed) or foreignCall(t[d.gap..i.at], d.markup)) {
                         d.off = true;
                         return;
                     }
@@ -228,7 +230,7 @@ pub const Streamer = struct {
                     d.block_calls = 0;
                     d.state = .block;
                 },
-                .block => switch (findIn(t, tool_parse.invoke41_open, d.pos, d.block_end)) {
+                .block => switch (findIn(d.markup, t, tool_parse.invoke41_open, d.pos, d.block_end)) {
                     .wait => return,
                     .none => {
                         // the block's closer: every invoke in it is decided, and the calls it held go out
@@ -245,7 +247,7 @@ pub const Streamer = struct {
                         d.state = .name;
                     },
                 },
-                .name => switch (findIn(t, "\"", d.name_start, d.block_end)) {
+                .name => switch (findIn(d.markup, t, "\"", d.name_start, d.block_end)) {
                     .wait => return,
                     .none => d.state = .block,
                     .at => |q| {
@@ -310,7 +312,7 @@ pub const Streamer = struct {
                     d.state = .block;
                     continue;
                 } else switch (d.state) {
-                    .body => switch (findIn(t, tool_parse.param41_open, d.p, d.limit())) {
+                    .body => switch (findIn(d.markup, t, tool_parse.param41_open, d.p, d.limit())) {
                         .wait => return,
                         .none => {
                             // the invoke's closer: the call is whole, and its brace waits
@@ -325,7 +327,7 @@ pub const Streamer = struct {
                             d.state = .key;
                         },
                     },
-                    .key => switch (findIn(t, "\"", d.ns, d.limit())) {
+                    .key => switch (findIn(d.markup, t, "\"", d.ns, d.limit())) {
                         .wait => return,
                         .none => d.state = .body,
                         .at => |nq| {
@@ -363,7 +365,7 @@ pub const Streamer = struct {
                             }
                         },
                     },
-                    .string_value => switch (findIn(t, tool_parse.param41_close, d.at, d.limit())) {
+                    .string_value => switch (findIn(d.markup, t, tool_parse.param41_close, d.at, d.limit())) {
                         .at => |pe| {
                             try d.value(a, t[d.at..pe], out);
                             try d.piece(a, "\"", out);
@@ -377,13 +379,13 @@ pub const Streamer = struct {
                         },
                         .wait => {
                             const rest = t[d.at..];
-                            const keep = @max(reply_text.partialTag(rest, tool_parse.param41_close), openSequence(rest));
+                            const keep = @max(d.markup.partial(rest, tool_parse.param41_close), openSequence(rest));
                             try d.value(a, rest[0 .. rest.len - keep], out);
                             d.at = t.len - keep;
                             return;
                         },
                     },
-                    .json_value => switch (findIn(t, tool_parse.param41_close, d.at, d.limit())) {
+                    .json_value => switch (findIn(d.markup, t, tool_parse.param41_close, d.at, d.limit())) {
                         .at => |pe| {
                             const raw = t[d.v..pe];
                             const parsed: Value = switch (try json.parseText(a, raw)) {
@@ -430,9 +432,9 @@ pub const SentCall = struct {
 /// far is inside the slice, since no DSML closer can overlap another piece of DSML markup.
 const Found = union(enum) { at: usize, none, wait };
 
-fn findIn(t: []const u8, needle: []const u8, from: usize, limit: ?usize) Found {
+fn findIn(markup: reply_text.Markup, t: []const u8, needle: []const u8, from: usize, limit: ?usize) Found {
     const hay = t[0..@min(t.len, limit orelse t.len)];
-    if (from <= hay.len) if (std.mem.indexOfPos(u8, hay, from, needle)) |i| return .{ .at = i };
+    if (from <= hay.len) if (if (needle.len > 0 and needle[0] == '<') markup.find(hay, from, needle) else std.mem.indexOfPos(u8, hay, from, needle)) |i| return .{ .at = i };
     return if (limit != null) .none else .wait;
 }
 
@@ -450,7 +452,8 @@ fn openSequence(s: []const u8) usize {
 }
 
 /// Another call form in the text before a DSML block: tool_parse.parse reads its calls there too, in text order.
-fn foreignCall(text: []const u8) bool {
+fn foreignCall(text: []const u8, markup: reply_text.Markup) bool {
+    if (markup.token_aware) return markup.find(text, 0, "<tool_call>") != null or markup.find(text, 0, "<|tool_call>") != null or markup.find(text, 0, tool_parse.dsml_open) != null;
     return std.ascii.findIgnoreCase(text, "<tool_call>") != null or std.ascii.findIgnoreCase(text, ":tool_call>") != null or
         std.mem.indexOf(u8, text, "<|tool_call>") != null or std.mem.indexOf(u8, text, tool_parse.dsml_open) != null;
 }
@@ -461,6 +464,7 @@ fn foreignCall(text: []const u8) bool {
 /// character is held); any other value goes out when its parameter closes, as the parse writes it; a call's closing
 /// brace waits for the next header or for its block's closer.
 pub const Dsml = struct {
+    markup: reply_text.Markup = .{},
     known: std.StringArrayHashMapUnmanaged([]const u8) = .empty, // tool_parse.parse's offered names, lower-cased
     sent: std.ArrayList(SentCall) = .empty,
     off: bool = false, // another call form came first: the reply's calls go out when it ends, as without this patch
@@ -532,13 +536,13 @@ pub const Dsml = struct {
     fn bounds(d: *Dsml, t: []const u8) void {
         if (d.state == .outside) return;
         if (d.block_end == null) {
-            if (d.block_from <= t.len) if (std.mem.indexOfPos(u8, t, d.block_from, tool_parse.dsml41_close)) |i| {
+            if (d.block_from <= t.len) if (d.markup.find(t, d.block_from, tool_parse.dsml41_close)) |i| {
                 d.block_end = i;
             };
             if (d.block_end == null) d.block_from = @max(d.block_from, t.len -| (tool_parse.dsml41_close.len - 1));
         }
         if (!d.end_pending) return;
-        switch (findIn(t, tool_parse.invoke41_close, d.end_from, d.block_end)) {
+        switch (findIn(d.markup, t, tool_parse.invoke41_close, d.end_from, d.block_end)) {
             .at => |i| {
                 d.end = i;
                 d.end_pending = false;
@@ -707,6 +711,7 @@ fn callTag(name: []const u8) bool {
 
 /// ``parallel_tool_calls: false`` keeps one call and hides call markup from streamed prose.
 pub const Policy = struct {
+    token_aware: bool = false, // generation already hid only real token markers
     single: bool = false,
     filter: TextFilter = .{},
 
@@ -716,7 +721,7 @@ pub const Policy = struct {
 
     /// Filters a str delta's text (dict deltas lose tool_calls and filter content), or passes it through.
     pub fn text(p: *Policy, a: Allocator, s: []const u8) Allocator.Error![]const u8 {
-        return if (p.single) p.filter.feed(a, s) else s;
+        return if (p.single and !p.token_aware) p.filter.feed(a, s) else s;
     }
 
     pub fn flush(p: *Policy) []const u8 {
@@ -724,7 +729,7 @@ pub const Policy = struct {
     }
 
     pub fn content(p: *const Policy, a: Allocator, s: []const u8) Allocator.Error![]const u8 {
-        if (!p.single) return s;
+        if (!p.single or p.token_aware) return s;
         var f: TextFilter = .{};
         const head = try f.feed(a, s);
         return std.mem.concat(a, u8, &.{ head, f.finish() });
@@ -732,7 +737,7 @@ pub const Policy = struct {
 
     /// ``parsed_content``: a parsed reply's content, whole envelopes the parser left as text kept and the rest filtered, so an unclosed envelope stays hidden.
     pub fn parsedContent(p: *const Policy, a: Allocator, s: []const u8) Allocator.Error![]const u8 {
-        if (!p.single) return s;
+        if (!p.single or p.token_aware) return s;
         var out: std.ArrayList(u8) = .empty;
         var cursor: usize = 0;
         while (try wholeEnvelope(a, s, cursor)) |e| : (cursor = e.end) {
@@ -1013,4 +1018,52 @@ test "a text that does not extend the one read turns the streamer off instead of
     try t.feedDsml(streamed_text[0..40], &out);
     t.dsml.verify("other text, longer than forty bytes, that does not start with the first");
     try std.testing.expect(t.dsml.off);
+}
+
+test "DSML token provenance survives every stream byte split and literal closing tags" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const tools = (try json.parse(a, "[{\"function\":{\"name\":\"f\"}}]")).ok.array;
+    const lead = "literal <｜DSML｜ calls>\n";
+    const start = "<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"f\">\n<｜DSML｜ parameter name=\"x\" string=\"true\">";
+    const value = "literal </｜DSML｜ parameter> and </think> stay";
+    const tail = "</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls>";
+    const text = lead ++ start ++ value ++ tail;
+    var spans: std.ArrayList(reply_text.Span) = .empty;
+    const marker_text = "｜DSML｜";
+    var pos: usize = lead.len;
+    while (std.mem.indexOfPos(u8, text, pos, marker_text)) |at| {
+        pos = at + marker_text.len;
+        if (at >= lead.len + start.len and at < lead.len + start.len + value.len) continue;
+        try spans.append(a, .{ .start = at, .end = pos });
+    }
+    const markup: reply_text.Markup = .{ .text = text, .spans = spans.items, .token_aware = true };
+    const parsed = try tool_parse.parseWith(a, text, tools, null, markup);
+    try std.testing.expectEqualStrings(reply_text.pyStrip(lead), parsed.content);
+    try std.testing.expectEqual(@as(usize, 1), parsed.calls.?.len);
+    const arguments = (try json.parse(a, parsed.calls.?[0].get("function").?.strField("arguments").?)).ok;
+    try std.testing.expectEqualStrings(value, arguments.strField("x").?);
+    for (0..text.len + 1) |split| {
+        var streamer = try Streamer.init(a, tools);
+        streamer.markup = markup;
+        var out: std.ArrayList(Value) = .empty;
+        try streamer.feedDsml(text[0..split], &out);
+        try streamer.feedDsml(text, &out);
+        try std.testing.expectEqual(@as(usize, 1), streamer.dsml.streamed().len);
+        try std.testing.expect(streamer.dsml.streamed()[0].same(parsed.calls.?[0]));
+    }
+    var streamer = try Streamer.init(a, tools);
+    streamer.markup = markup;
+    var out: std.ArrayList(Value) = .empty;
+    var hidden: std.ArrayList(u8) = .empty;
+    for (0..text.len + 1) |end| {
+        try streamer.feedDsml(text[0..end], &out);
+        const visible = try reply_text.hideIntoWith(a, &hidden, text[0..end], false, markup);
+        try std.testing.expect(std.mem.startsWith(u8, lead, visible));
+    }
+    try std.testing.expect(streamer.dsml.streamed()[0].same(parsed.calls.?[0]));
+    const plain: reply_text.Markup = .{ .text = text, .token_aware = true };
+    try std.testing.expect((try tool_parse.parseWith(a, text, tools, null, plain)).calls == null);
+    try std.testing.expectEqualStrings(text, try reply_text.hideIntoWith(a, &hidden, text, true, plain));
 }

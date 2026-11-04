@@ -13,7 +13,7 @@ const Conn = @import("http_conn.zig").Conn;
 /// Bytes as tokens; every prompt renders as "prompt" (6 tokens).
 const TestText = struct {
     fn text(t: *@This()) model_text.Text {
-        return .{ .ctx = t, .vtable = &.{ .encode = encode, .decode = decode, .token_id = tokenId, .token_string = tokenString, .vocab_size = vocabSize, .eos_ids = eosIds, .render = render, .template_source = templateSource } };
+        return .{ .ctx = t, .vtable = &.{ .encode = encode, .decode = decode, .token_id = tokenId, .token_string = tokenString, .vocab_size = vocabSize, .eos_ids = eosIds, .render = render, .template_source = templateSource, .special = special } };
     }
 
     fn encode(_: *anyopaque, a: std.mem.Allocator, input: []const u8, _: bool) model_text.Error![]u32 {
@@ -23,13 +23,25 @@ const TestText = struct {
     }
 
     fn decode(_: *anyopaque, a: std.mem.Allocator, ids: []const u32) std.mem.Allocator.Error![]u8 {
-        const decoded = try a.alloc(u8, ids.len);
-        for (ids, decoded) |id, *byte| byte.* = @intCast(id);
-        return decoded;
+        var decoded: std.ArrayList(u8) = .empty;
+        for (ids) |id| {
+            if (id == 256) try decoded.appendSlice(a, "</think>") else if (id == 257) try decoded.appendSlice(a, "｜DSML｜") else try decoded.append(a, @intCast(id));
+        }
+        var at: usize = 0;
+        while (at < decoded.items.len) {
+            const n = std.unicode.utf8ByteSequenceLength(decoded.items[at]) catch 1;
+            if (at + n > decoded.items.len) return std.mem.concat(a, u8, &.{ decoded.items[0..at], "\u{fffd}" });
+            at += n;
+        }
+        return decoded.items;
     }
 
-    fn tokenId(_: *anyopaque, _: []const u8) ?u32 {
-        return null;
+    fn tokenId(_: *anyopaque, piece: []const u8) ?u32 {
+        return if (std.mem.eql(u8, piece, "</think>")) 256 else null;
+    }
+
+    fn special(_: *anyopaque, id: u32) bool {
+        return id == 256 or id == 257;
     }
 
     fn tokenString(_: *anyopaque, a: std.mem.Allocator, id: u32) std.mem.Allocator.Error![]u8 {
@@ -37,7 +49,7 @@ const TestText = struct {
     }
 
     fn vocabSize(_: *anyopaque) u32 {
-        return 256;
+        return 258;
     }
 
     fn eosIds(_: *anyopaque) []const u32 {
@@ -55,17 +67,23 @@ const TestText = struct {
 
 /// An 8-token window whose engine answers "hi" at once.
 const HiEngine = struct {
+    tokens: []const u32 = &.{ 'h', 'i' },
+    window: u32 = 8,
+    submissions: usize = 0,
     fn engine(e: *@This()) api.Engine {
         return .{ .ctx = e, .vtable = &.{ .info = info, .submit = submit, .cancel = cancel, .status = status, .memory = memory } };
     }
 
-    fn info(_: *anyopaque) api.Info {
-        return .{ .context_window = 8 };
+    fn info(ctx: *anyopaque) api.Info {
+        const e: *HiEngine = @ptrCast(@alignCast(ctx));
+        return .{ .context_window = e.window };
     }
 
-    fn submit(_: *anyopaque, id: api.Id, _: *const api.Request, sink: api.Sink) api.SubmitError!void {
+    fn submit(ctx: *anyopaque, id: api.Id, _: *const api.Request, sink: api.Sink) api.SubmitError!void {
+        const e: *HiEngine = @ptrCast(@alignCast(ctx));
+        e.submissions += 1;
         sink.event(sink.ctx, id, &.{ .prefilled = 0 });
-        sink.event(sink.ctx, id, &.{ .tokens = &.{ 'h', 'i' } });
+        for (e.tokens) |token| sink.event(sink.ctx, id, &.{ .tokens = &.{token} });
         sink.event(sink.ctx, id, &.{ .finished = .{ .reason = .stop } });
     }
 
@@ -82,6 +100,14 @@ const HiEngine = struct {
 
 /// What the route's output saw: a whole reply's status, error code and sampling label, or a stream and its first role.
 const Seen = struct {
+    tokens: ?[]const u32 = null,
+    submissions: usize = 0,
+    answer: [2048]u8 = undefined,
+    answer_len: usize = 0,
+    reasoning: [2048]u8 = undefined,
+    reasoning_len: usize = 0,
+    calls: usize = 0,
+
     gone_at_open: bool = false, // the client is gone when the stream opens
     opened: bool = false,
     events: usize = 0,
@@ -90,6 +116,22 @@ const Seen = struct {
     context_code: bool = false,
     label: ?enum { exact, greedy } = null,
     preparing: i64 = 0,
+
+    fn capture(c: *Seen, message: json.Value) void {
+        if (message.strField("content")) |value| {
+            const n = @min(value.len, c.answer.len - c.answer_len);
+            @memcpy(c.answer[c.answer_len..][0..n], value[0..n]);
+            c.answer_len += n;
+        }
+        if (message.strField("reasoning_content")) |value| {
+            const n = @min(value.len, c.reasoning.len - c.reasoning_len);
+            @memcpy(c.reasoning[c.reasoning_len..][0..n], value[0..n]);
+            c.reasoning_len += n;
+        }
+        if (message.get("tool_calls")) |calls| if (calls == .array) {
+            c.calls += calls.array.len;
+        };
+    }
 
     fn out(c: *Seen) openai.Out {
         return .{ .ctx = c, .vt = &.{ .open = open, .event = event, .reply = reply } };
@@ -110,16 +152,19 @@ const Seen = struct {
             c.context_code = code == .string and std.mem.eql(u8, code.string, "context_length_exceeded");
             return;
         }
-        if (c.events != 1) return;
         const choices = p.get("choices") orelse return;
         if (choices != .array or choices.array.len == 0) return;
-        const role = (choices.array[0].get("delta") orelse return).get("role") orelse return;
+        const delta = choices.array[0].get("delta") orelse return;
+        c.capture(delta);
+        if (c.events != 1) return;
+        const role = delta.get("role") orelse return;
         c.role_first = role == .string and std.mem.eql(u8, role.string, "assistant");
     }
 
     fn reply(ctx: *anyopaque, status: u16, payload: json.Value) void {
         const c: *Seen = @ptrCast(@alignCast(ctx));
         c.status = status;
+        if (payload.get("choices")) |choices| if (choices == .array and choices.array.len > 0) if (choices.array[0].get("message")) |message| c.capture(message);
         if (payload.get("tensorfold")) |t| if (t.get("sampling")) |l| if (l == .string) {
             c.label = if (std.mem.eql(u8, l.string, "exact")) .exact else if (std.mem.eql(u8, l.string, "greedy")) .greedy else null;
         };
@@ -145,6 +190,10 @@ fn send(route: Route, body: []const u8) !Seen {
 fn sendTo(route: Route, body: []const u8, start: Seen) !Seen {
     var text: TestText = .{};
     var backend: HiEngine = .{};
+    if (start.tokens) |tokens| {
+        backend.tokens = tokens;
+        backend.window = 8192;
+    }
     var srv = try server.Server.init(std.testing.allocator, std.testing.io, backend.engine(), text.text(), .{
         .served_name = "test-model",
         .model_ids = &.{"test-model"},
@@ -166,6 +215,7 @@ fn sendTo(route: Route, body: []const u8, start: Seen) !Seen {
     var seen = start;
     openai.run(srv, a, seen.out(), .{ .conn = &conn }, true, chat);
     seen.preparing = srv.preparing.load(.acquire);
+    seen.submissions = backend.submissions;
     return seen;
 }
 
@@ -227,17 +277,28 @@ const SpaceEngine = struct {
     fn engine(e: *@This()) api.Engine {
         return .{ .ctx = e, .vtable = &.{ .info = info, .submit = submit, .cancel = HiEngine.cancel, .status = HiEngine.status, .memory = HiEngine.memory } };
     }
-    fn info(_: *anyopaque) api.Info { return .{ .context_window = 4096 }; }
+    fn info(_: *anyopaque) api.Info {
+        return .{ .context_window = 4096 };
+    }
     fn submit(ctx: *anyopaque, id: api.Id, _: *const api.Request, sink: api.Sink) api.SubmitError!void {
         const e: *SpaceEngine = @ptrCast(@alignCast(ctx));
         var tokens: [2048]u32 = undefined;
-        for (e.answer, tokens[0..e.answer.len]) |byte, *token| token.* = byte;
+        var len: usize = 0;
+        var byte: usize = 0;
+        while (byte < e.answer.len) {
+            if (std.mem.startsWith(u8, e.answer[byte..], "｜DSML｜")) {
+                tokens[len] = 257;
+                byte += "｜DSML｜".len;
+            } else {
+                tokens[len] = e.answer[byte];
+                byte += 1;
+            }
+            len += 1;
+        }
         sink.event(sink.ctx, id, &.{ .prefilled = 0 });
         var pos: usize = 0;
-        while (pos < e.answer.len) {
-            var end = @min(e.answer.len, pos + e.chunk_size);
-            // The byte-token fake returns raw bytes, so keep UTF-8 characters whole.
-            while (end < e.answer.len and e.answer[end] & 0xc0 == 0x80) end += 1;
+        while (pos < len) {
+            const end = @min(len, pos + e.chunk_size);
             sink.event(sink.ctx, id, &.{ .tokens = tokens[pos..end] });
             pos = end;
         }
@@ -278,7 +339,10 @@ fn exerciseSpace(answer: []const u8, expected: []const u8, called: bool, tools: 
     var text: TestText = .{};
     var backend: SpaceEngine = .{ .answer = answer, .chunk_size = chunk_size };
     var srv = try server.Server.init(std.testing.allocator, std.testing.io, backend.engine(), text.text(), .{
-        .served_name = "test-model", .model_ids = &.{"test-model"}, .enable_thinking = false, .use_drafts = false,
+        .served_name = "test-model",
+        .model_ids = &.{"test-model"},
+        .enable_thinking = false,
+        .use_drafts = false,
     }, null);
     defer srv.deinit();
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -312,4 +376,47 @@ test "whitespace with tools disabled is unchanged" {
 }
 test "prose before a call retains its leading whitespace" {
     try exerciseSpace("\n\nLook up.\n" ++ space_call, "\n\nLook up.\n", true, true, 1);
+}
+
+test "invalid tool histories and duplicate names refuse before opening Chat and Messages streams" {
+    for ([_][]const u8{
+        "{\"model\":\"test-model\",\"messages\":[{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"a\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"wrong\",\"content\":\"bad\"}],\"stream\":true,\"max_tokens\":1}",
+        "{\"model\":\"test-model\",\"messages\":[{\"role\":\"user\",\"content\":\"x\"}],\"tools\":[{\"function\":{\"name\":\"f\"}},{\"function\":{\"name\":\"f\"}}],\"stream\":true,\"max_tokens\":1}",
+    }) |body| {
+        const seen = try send(.chat, body);
+        try std.testing.expectEqual(@as(?u16, 400), seen.status);
+        try std.testing.expect(!seen.opened);
+        try std.testing.expectEqual(@as(usize, 0), seen.events);
+        try std.testing.expectEqual(@as(usize, 0), seen.submissions);
+    }
+    const seen = try send(.messages, "{\"model\":\"test-model\",\"max_tokens\":1,\"stream\":true,\"messages\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"a\",\"name\":\"f\",\"input\":{}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"wrong\",\"content\":\"bad\"}]}]}");
+    try std.testing.expectEqual(@as(?u16, 400), seen.status);
+    try std.testing.expect(!seen.opened);
+    try std.testing.expectEqual(@as(usize, 0), seen.events);
+}
+
+test "token markers stay literal through Chat Messages and Responses in streamed and final replies" {
+    const thought = "literal </think> and <｜DSML｜ calls> remain thoughts.";
+    const answer = "literal <｜DSML｜ calls><｜DSML｜ invoke name=\"f\"></｜DSML｜ invoke></｜DSML｜ calls> remains text.";
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tokens: std.ArrayList(u32) = .empty;
+    for (thought) |byte| try tokens.append(a, byte);
+    try tokens.append(a, 256);
+    for (answer) |byte| try tokens.append(a, byte);
+    for ([_]bool{ false, true }) |stream| for ([_]Route{ .chat, .messages, .responses }) |route| {
+        const body = switch (route) {
+            .chat => "{\"model\":\"test-model\",\"max_tokens\":1024,\"thinking\":{\"type\":\"enabled\"},\"messages\":[{\"role\":\"user\",\"content\":\"x\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"f\"}}]}",
+            .messages => "{\"model\":\"test-model\",\"max_tokens\":1024,\"thinking\":{\"type\":\"enabled\"},\"messages\":[{\"role\":\"user\",\"content\":\"x\"}],\"tools\":[{\"name\":\"f\",\"input_schema\":{\"type\":\"object\"}}]}",
+            .responses => "{\"model\":\"test-model\",\"max_output_tokens\":1024,\"reasoning\":{\"effort\":\"high\"},\"input\":\"x\",\"tools\":[{\"type\":\"function\",\"name\":\"f\"}]}",
+        };
+        const request = (try json.parse(a, body)).ok;
+        try request.object.put(a, "stream", .{ .bool = stream });
+        const seen = try sendTo(route, try json.stringify(a, request, .{}), .{ .tokens = tokens.items });
+        try std.testing.expectEqual(@as(usize, 1), seen.submissions);
+        try std.testing.expectEqualStrings(thought, seen.reasoning[0..seen.reasoning_len]);
+        try std.testing.expectEqualStrings(answer, seen.answer[0..seen.answer_len]);
+        try std.testing.expectEqual(@as(usize, 0), seen.calls);
+    };
 }

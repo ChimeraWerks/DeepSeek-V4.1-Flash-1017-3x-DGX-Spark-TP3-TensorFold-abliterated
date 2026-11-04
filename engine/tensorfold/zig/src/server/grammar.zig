@@ -4,6 +4,7 @@ const api = @import("engine_api");
 const json = @import("json.zig");
 const errors = @import("errors.zig");
 const pyrepr = @import("pyrepr.zig");
+const strict_schema = @import("strict_schema.zig");
 const tool_specs = @import("tool_specs.zig");
 const Value = json.Value;
 const Cx = errors.Cx;
@@ -61,10 +62,14 @@ pub fn spec(cx: *Cx, body: Value) errors.Refused!?Spec {
         if (kind != null and kind.? == .string and std.mem.eql(u8, name, "json_schema")) {
             const js = rf.get("json_schema");
             if (js == null or js.? != .object or js.?.field("schema") == null) return cx.refuse("response_format json_schema needs json_schema.schema (a JSON schema object)");
-            return .{ .kind = .json_schema, .text = try schemaText(cx, js.?.get("schema").?, "response_format json_schema.schema") };
+            const raw = js.?.get("schema").?;
+            const schema = if (try strict_schema.enabled(cx, js.?)) try strict_schema.normalize(cx, raw, false) else raw;
+            return .{ .kind = .json_schema, .text = try schemaText(cx, schema, "response_format json_schema.schema") };
         }
+        if (kind != null and kind.? == .string and std.mem.eql(u8, name, "regex"))
+            return .{ .kind = .regex, .text = try text(cx, rf.get("regex") orelse .null, "response_format.regex") };
         if (!(kind != null and kind.? == .string and std.mem.eql(u8, name, "text")))
-            return cx.fail(.request, "response_format type must be text, json_object or json_schema, not {s}", .{try pyrepr.repr(cx.a, kind)});
+            return cx.fail(.request, "response_format type must be text, json_object, json_schema or regex, not {s}", .{try pyrepr.repr(cx.a, kind)});
     }
     const guided = [_]struct { []const u8, Kind }{ .{ "guided_json", .json_schema }, .{ "guided_regex", .regex }, .{ "guided_choice", .choice }, .{ "guided_grammar", .grammar } };
     for (guided) |g| if (body.field(g[0])) |v| return .{ .kind = g[1], .text = try read(cx, g[1], v, g[0]), .field = g[0] };
@@ -98,4 +103,35 @@ pub fn refusal(cx: *Cx, body: Value) errors.Refused!void {
     const tools = body.get("tools");
     if (tools != null and tools.?.truthy() and try tool_specs.choiceRequiresCall(cx.a, body.get("tool_choice")))
         return cx.fail(.request, "{s} cannot be combined with tool_choice \"required\" or a named function: send one", .{s.field});
+}
+
+test "response_format regex shares guided_regex and rejects malformed patterns" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    const a = cx.a;
+    const rf = (try json.parse(a, "{\"response_format\":{\"type\":\"regex\",\"regex\":\"[a-z]+\"}}")).ok;
+    const guided = (try json.parse(a, "{\"guided_regex\":\"[a-z]+\"}")).ok;
+    const x = (try spec(&cx, rf)).?;
+    const y = (try spec(&cx, guided)).?;
+    try std.testing.expectEqual(y.kind, x.kind);
+    try std.testing.expectEqualStrings(y.text, x.text);
+    try std.testing.expectEqualStrings("response_format", x.field);
+    for ([_][]const u8{ "{\"response_format\":{\"type\":\"regex\"}}", "{\"response_format\":{\"type\":\"regex\",\"regex\":\"\"}}", "{\"response_format\":{\"type\":\"regex\",\"regex\":7}}" }) |raw|
+        try std.testing.expectError(error.Refused, spec(&cx, (try json.parse(a, raw)).ok));
+    const required = (try json.parse(a, "{\"response_format\":{\"type\":\"regex\",\"regex\":\"x\"},\"tools\":[{}],\"tool_choice\":\"required\"}")).ok;
+    try std.testing.expectError(error.Refused, refusal(&cx, required));
+}
+
+test "strict response format normalizes the decoder schema only" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    const body = (try json.parse(cx.a, "{\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"strict\":true,\"schema\":{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"string\"}}}}}}")).ok;
+    const before = try json.stringify(cx.a, body, .{});
+    const result = (try spec(&cx, body)).?;
+    const schema = (try json.parse(cx.a, result.text)).ok;
+    try std.testing.expect(!schema.get("additionalProperties").?.bool);
+    try std.testing.expectEqualStrings("x", schema.get("required").?.array[0].string);
+    try std.testing.expectEqualStrings(before, try json.stringify(cx.a, body, .{}));
 }

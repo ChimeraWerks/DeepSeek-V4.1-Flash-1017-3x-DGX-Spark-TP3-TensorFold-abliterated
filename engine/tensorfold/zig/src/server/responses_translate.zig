@@ -5,6 +5,7 @@ const errors = @import("errors.zig");
 const fields = @import("fields.zig");
 const pyrepr = @import("pyrepr.zig");
 const tool_specs = @import("tool_specs.zig");
+const response_tools = @import("responses_tools.zig");
 const Value = json.Value;
 const Cx = errors.Cx;
 const Allocator = std.mem.Allocator;
@@ -24,6 +25,7 @@ pub const Request = struct {
     added: []Value,
     store: bool,
     stream: bool,
+    tools: response_tools.Set,
 };
 
 fn kindOf(v: Value) ?Value {
@@ -93,7 +95,7 @@ fn output(cx: *Cx, o: ?Value) errors.Refused!Value {
 pub fn messages(cx: *Cx, items: []const Value) errors.Refused![]Value {
     const a = cx.a;
     var out: std.ArrayList(*json.Object) = .empty;
-    var thought: ?[]const u8 = null;
+    var reasoning_open = false;
     for (items) |item| {
         if (item != .object) return cx.refuse("each input item must be an object");
         var kind: ?Value = item.get("type");
@@ -105,22 +107,31 @@ pub fn messages(cx: *Cx, items: []const Value) errors.Refused![]Value {
                 if (std.mem.eql(u8, r, role)) break true;
             } else false;
             if (!ok or item.get("role").? != .string) return cx.refuse("a message's role must be user, assistant, system or developer");
-            const m = try json.newObject(a);
+            const reuse = reasoning_open and std.mem.eql(u8, role, "assistant");
+            const m = if (reuse) out.items[out.items.len - 1] else try json.newObject(a);
             try m.put(a, "role", .{ .string = role });
             try m.put(a, "content", try content(cx, item.get("content")));
-            if (std.mem.eql(u8, role, "assistant")) if (thought) |t| {
-                try m.put(a, "reasoning_content", .{ .string = t });
-                thought = null;
-            };
-            try out.append(a, m);
-        } else if (std.mem.eql(u8, k, "function_call")) {
+            if (!reuse) try out.append(a, m);
+            reasoning_open = false;
+        } else if (std.mem.eql(u8, k, "function_call") or std.mem.eql(u8, k, "custom_tool_call")) {
             const call_id = item.strField("call_id");
             const name = item.strField("name");
             if (call_id == null or name == null) return cx.refuse("a function_call item needs a call_id and a name");
             const function = try json.newObject(a);
             try function.put(a, "name", .{ .string = name.? });
-            const args = item.get("arguments");
-            try function.put(a, "arguments", if (args != null and args.?.truthy()) args.? else .{ .string = "{}" });
+            if (std.mem.eql(u8, k, "custom_tool_call")) {
+                const input = item.strField("input") orelse return cx.refuse("a custom_tool_call needs string input");
+                const args = try json.newObject(a);
+                try args.put(a, "input", .{ .string = input });
+                try function.put(a, "arguments", .{ .string = try json.stringify(a, .{ .object = args }, .{ .ascii = false }) });
+            } else {
+                const args = item.get("arguments");
+                try function.put(a, "arguments", if (args != null and args.?.truthy()) args.? else .{ .string = "{}" });
+                if (item.field("namespace")) |ns| {
+                    if (ns != .string) return cx.refuse("a function_call namespace must be a string");
+                    try function.put(a, "namespace", ns);
+                }
+            }
             const call = try json.newObject(a);
             try call.put(a, "id", .{ .string = call_id.? });
             try call.put(a, "type", .{ .string = "function" });
@@ -133,67 +144,72 @@ pub fn messages(cx: *Cx, items: []const Value) errors.Refused![]Value {
                 try out.append(a, m);
             }
             const last = out.items[out.items.len - 1];
-            if (thought) |t| {
-                try last.put(a, "reasoning_content", .{ .string = t });
-                thought = null;
-            }
+            reasoning_open = false;
             const existing = last.get("tool_calls");
             const before: []const Value = if (existing != null and existing.? == .array) existing.?.array else &.{};
             try last.put(a, "tool_calls", .{ .array = try std.mem.concat(a, Value, &.{ before, &.{.{ .object = call }} }) });
-        } else if (std.mem.eql(u8, k, "function_call_output")) {
+        } else if (std.mem.eql(u8, k, "function_call_output") or std.mem.eql(u8, k, "custom_tool_call_output")) {
             const call_id = item.strField("call_id") orelse return cx.refuse("a function_call_output item needs the call_id of its call");
             const m = try json.newObject(a);
             try m.put(a, "role", .{ .string = "tool" });
             try m.put(a, "tool_call_id", .{ .string = call_id });
-            try m.put(a, "content", try output(cx, item.get("output")));
+            try m.put(a, "content", try output(cx, if (std.mem.eql(u8, k, "custom_tool_call_output")) item.field("output") orelse .{ .string = "" } else item.get("output")));
             try out.append(a, m);
+            reasoning_open = false;
         } else if (std.mem.eql(u8, k, "reasoning")) {
-            var texts: std.ArrayList(u8) = .empty;
-            var any = false;
-            if (item.get("content")) |c| if (c == .array) for (c.array) |p| if (p == .object) {
-                any = true;
-                if (p.strField("text")) |t| try texts.appendSlice(a, t);
+            var texts: std.ArrayList([]const u8) = .empty;
+            if (item.get("content")) |c| if (c == .array) for (c.array) |p| {
+                if (p.strField("text")) |t| try texts.append(a, t);
             };
-            if (json.truthyField(item, "encrypted_content") and !any) return cx.refuse("encrypted reasoning is not supported: send the reasoning item's content");
-            thought = if (texts.items.len > 0) texts.items else null;
-        } else return cx.fail(.request, "input items of type {s} are not supported: send messages, function_call, function_call_output and reasoning items", .{try pyrepr.repr(a, kind)});
+            const joined = try std.mem.join(a, "\n", texts.items);
+            if (joined.len > 0) {
+                try flushThought(a, &out, joined);
+                reasoning_open = true;
+            }
+        } else return cx.fail(.request, "input items of type {s} are not supported: send messages, function or custom tool calls and outputs, and reasoning items", .{try pyrepr.repr(a, kind)});
     }
     const result = try a.alloc(Value, out.items.len);
     for (out.items, result) |m, *slot| slot.* = .{ .object = m };
     return result;
 }
 
-fn tools(cx: *Cx, raw: ?Value) errors.Refused!?[]Value {
-    const value = raw orelse return null;
-    if (value == .null) return null;
-    if (value != .array) return cx.refuse("tools must be a list");
-    var out: std.ArrayList(Value) = .empty;
-    for (value.array) |tool| {
-        const kind = kindOf(tool);
-        if (kind == null or kind.? != .string or !std.mem.eql(u8, kind.?.string, "function")) return cx.fail(.request, "tools of type {s} are not supported: this server runs function tools only", .{try pyrepr.repr(cx.a, kind)});
-        const name = tool.strField("name") orelse "";
-        if (name.len == 0) return cx.refuse("a function tool needs a name");
-        const function = try json.newObject(cx.a);
-        for ([_][]const u8{ "name", "description", "parameters", "strict" }) |k| if (tool.field(k)) |v| try function.put(cx.a, k, v);
-        const t = try json.newObject(cx.a);
-        try t.put(cx.a, "type", .{ .string = "function" });
-        try t.put(cx.a, "function", .{ .object = function });
-        try out.append(cx.a, .{ .object = t });
+fn emptyContent(value: Value) bool {
+    if (value == .string) return value.string.len == 0;
+    if (value != .array) return false;
+    for (value.array) |part| {
+        const t = part.strField("text") orelse return false;
+        if (t.len != 0) return false;
     }
-    return out.items;
+    return true;
+}
+
+fn flushThought(a: Allocator, out: *std.ArrayList(*json.Object), thought: []const u8) Allocator.Error!void {
+    const last = if (out.items.len > 0) out.items[out.items.len - 1] else null;
+    const reuse = if (last) |m| blk: {
+        const v: Value = .{ .object = m };
+        break :blk std.mem.eql(u8, v.strField("role") orelse "", "assistant") and emptyContent(v.get("content") orelse .null);
+    } else false;
+    const m = if (reuse) last.? else try json.newObject(a);
+    if (!reuse) {
+        try m.put(a, "role", .{ .string = "assistant" });
+        try m.put(a, "content", .{ .string = "" });
+        try out.append(a, m);
+    }
+    const before = (Value{ .object = m }).strField("reasoning_content");
+    try m.put(a, "reasoning_content", .{ .string = if (before) |b| try std.mem.join(a, "\n", &.{ b, thought }) else thought });
 }
 
 const Choice = struct { choice: ?Value, offered: ?[]Value };
 
-fn toolChoice(cx: *Cx, raw: ?Value, offered: ?[]Value) errors.Refused!Choice {
+fn toolChoice(cx: *Cx, raw: ?Value, offered: ?[]Value, set: *response_tools.Set) errors.Refused!Choice {
     const choice = raw orelse return .{ .choice = null, .offered = offered };
     if (choice == .null) return .{ .choice = null, .offered = offered };
     if (choice == .string) for ([_][]const u8{ "none", "auto", "required" }) |s| if (std.mem.eql(u8, s, choice.string)) return .{ .choice = choice, .offered = offered };
     const kind = kindOf(choice);
     const k = if (kind != null and kind.? == .string) kind.?.string else "";
-    if (std.mem.eql(u8, k, "function") and choice.strField("name") != null) {
+    if ((std.mem.eql(u8, k, "function") or std.mem.eql(u8, k, "custom")) and choice.strField("name") != null) {
         const function = try json.newObject(cx.a);
-        try function.put(cx.a, "name", .{ .string = choice.strField("name").? });
+        try function.put(cx.a, "name", .{ .string = try set.name(cx, choice.strField("namespace"), choice.strField("name").?) });
         const c = try json.newObject(cx.a);
         try c.put(cx.a, "type", .{ .string = "function" });
         try c.put(cx.a, "function", .{ .object = function });
@@ -207,12 +223,12 @@ fn toolChoice(cx: *Cx, raw: ?Value, offered: ?[]Value) errors.Refused!Choice {
         if (allowed != null and allowed.?.truthy() and allowed.? != .array) return cx.refuse("allowed_tools may name function tools only");
         for (list) |t| {
             const tk = kindOf(t);
-            if (tk == null or tk.? != .string or !std.mem.eql(u8, tk.?.string, "function")) return cx.refuse("allowed_tools may name function tools only");
+            if (tk == null or tk.? != .string or (!std.mem.eql(u8, tk.?.string, "function") and !std.mem.eql(u8, tk.?.string, "custom"))) return cx.refuse("allowed_tools may name function tools only");
         }
         var kept: std.ArrayList(Value) = .empty;
         for (offered orelse &.{}) |t| {
             const name = t.get("function").?.get("name").?;
-            for (list) |allow| if (allow.get("name")) |n| if (json.equal(n, name)) {
+            for (list) |allow| if (allow.get("name")) |n| if (n == .string and std.mem.eql(u8, try set.name(cx, allow.strField("namespace"), n.string), name.string)) {
                 try kept.append(cx.a, t);
                 break;
             };
@@ -287,8 +303,8 @@ pub fn translate(cx: *Cx, body: Value, history: anytype) errors.Refused!Request 
     const added = try messages(cx, given.array);
     const parent = body.field("previous_response_id");
     const earlier: []Value = if (parent) |p| try history.conversation(cx, p) else &.{};
-    const offered = try tools(cx, body.get("tools"));
-    const choice = try toolChoice(cx, body.get("tool_choice"), offered);
+    var set = try response_tools.Set.init(cx, body.get("tools"));
+    const choice = try toolChoice(cx, body.get("tool_choice"), set.offered, &set);
     const chat = try json.newObject(a);
     for (passed) |k| if (body.get(k)) |v| try chat.put(a, k, v);
     var msgs: std.ArrayList(Value) = .empty;
@@ -300,7 +316,7 @@ pub fn translate(cx: *Cx, body: Value, history: anytype) errors.Refused!Request 
     }
     try msgs.appendSlice(a, earlier);
     try msgs.appendSlice(a, added);
-    try chat.put(a, "messages", .{ .array = msgs.items });
+    try chat.put(a, "messages", .{ .array = try set.mapMessages(cx, msgs.items) });
     if (choice.offered) |o| try chat.put(a, "tools", .{ .array = o });
     if (choice.choice) |c| try chat.put(a, "tool_choice", c);
     if (body.field("max_output_tokens")) |m| try chat.put(a, "max_tokens", m);
@@ -340,5 +356,117 @@ pub fn translate(cx: *Cx, body: Value, history: anytype) errors.Refused!Request 
     try echo.put(a, "truncation", .{ .string = "disabled" });
     try echo.put(a, "user", body.get("user") orelse .null);
     try echo.put(a, "background", .{ .bool = false });
-    return .{ .chat = .{ .object = chat }, .echo = echo, .added = added, .store = store, .stream = json.truthyField(body, "stream") };
+    return .{ .chat = .{ .object = chat }, .echo = echo, .added = added, .store = store, .stream = json.truthyField(body, "stream"), .tools = set };
+}
+
+test "reasoning joins parts and items, keeps empty and encrypted items, and survives at end" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var cx: Cx = .{ .a = a };
+    const input = (try json.parse(a,
+        \\[{"type":"reasoning","content":[{"text":"alpha"},{"text":"beta"}]},{"type":"reasoning","content":[]},{"type":"reasoning","encrypted_content":"opaque"},{"type":"reasoning","content":[{"text":"gamma"}]}]
+    )).ok;
+    const terminal = try messages(&cx, input.array);
+    try std.testing.expectEqual(@as(usize, 1), terminal.len);
+    try std.testing.expectEqualStrings("alpha\nbeta\ngamma", terminal[0].get("reasoning_content").?.string);
+    try std.testing.expectEqualStrings("", terminal[0].get("content").?.string);
+    const answer = (try json.parse(a, "[{\"role\":\"assistant\",\"content\":\"answer\"}]")).ok;
+    const answered = try messages(&cx, try std.mem.concat(a, Value, &.{ input.array, answer.array }));
+    try std.testing.expectEqual(@as(usize, 1), answered.len);
+    try std.testing.expectEqualStrings("alpha\nbeta\ngamma", answered[0].get("reasoning_content").?.string);
+    const user = (try json.parse(a, "[{\"role\":\"user\",\"content\":\"next\"}]")).ok;
+    const next = try messages(&cx, try std.mem.concat(a, Value, &.{ input.array, user.array }));
+    try std.testing.expectEqual(@as(usize, 2), next.len);
+    try std.testing.expectEqualStrings("alpha\nbeta\ngamma", next[0].get("reasoning_content").?.string);
+    const encrypted = (try json.parse(a, "[{\"type\":\"reasoning\",\"encrypted_content\":\"opaque\"}]")).ok;
+    try std.testing.expectEqual(@as(usize, 0), (try messages(&cx, encrypted.array)).len);
+}
+
+test "custom tool history encodes input and accepts omitted output" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var cx: Cx = .{ .a = a };
+    const input = (try json.parse(a,
+        \\[{"type":"custom_tool_call","call_id":"c1","name":"apply_patch","input":"*** Begin Patch\n+é\n*** End Patch"},{"type":"custom_tool_call_output","call_id":"c1"}]
+    )).ok;
+    const out = try messages(&cx, input.array);
+    const args = out[0].get("tool_calls").?.array[0].get("function").?.get("arguments").?.string;
+    try std.testing.expectEqualStrings(input.array[0].get("input").?.string, (try json.parse(a, args)).ok.get("input").?.string);
+    try std.testing.expectEqualStrings("", out[1].get("content").?.string);
+    try std.testing.expectEqualStrings("c1", out[1].get("tool_call_id").?.string);
+}
+
+test "Responses choices select mapped namespaces and custom tools while regex stays Chat only" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var cx: Cx = .{ .a = a };
+    const decl = (try json.parse(a,
+        \\[{"type":"custom","name":"apply_patch"},{"type":"namespace","name":"files","tools":[{"type":"function","name":"read"}]}]
+    )).ok;
+    var set = try response_tools.Set.init(&cx, decl);
+    for ([_][2][]const u8{
+        .{ "{\"type\":\"custom\",\"name\":\"apply_patch\"}", "apply_patch" },
+        .{ "{\"type\":\"function\",\"namespace\":\"files\",\"name\":\"read\"}", "files::read" },
+    }) |c| {
+        const choice = try toolChoice(&cx, (try json.parse(a, c[0])).ok, set.offered, &set);
+        try std.testing.expectEqualStrings(c[1], choice.choice.?.get("function").?.get("name").?.string);
+    }
+    const allowed = (try json.parse(a, "{\"type\":\"allowed_tools\",\"tools\":[{\"type\":\"function\",\"namespace\":\"files\",\"name\":\"read\"}]}")).ok;
+    const filtered = try toolChoice(&cx, allowed, set.offered, &set);
+    try std.testing.expectEqual(@as(usize, 1), filtered.offered.?.len);
+    try std.testing.expectEqualStrings("files::read", filtered.offered.?[0].get("function").?.get("name").?.string);
+    const regex = (try json.parse(a, "{\"format\":{\"type\":\"regex\",\"regex\":\"x\"}}")).ok;
+    try std.testing.expectError(error.Refused, format(&cx, regex));
+}
+
+test "ordinary Responses requests keep the same chat prompt inputs" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var cx: Cx = .{ .a = a };
+    const NoHistory = struct {
+        pub fn conversation(_: @This(), _: *Cx, _: Value) errors.Refused![]Value {
+            return &.{};
+        }
+    };
+    const raw =
+        \\{"model":"test","input":[{"role":"user","content":"hello"},{"type":"function_call","call_id":"c1","name":"read","arguments":"{}"},{"type":"function_call_output","call_id":"c1","output":"ok"}],"tools":[{"type":"function","name":"read","description":"read","parameters":{"type":"object"},"strict":false}],"tool_choice":"auto"}
+    ;
+    const request = try translate(&cx, (try json.parse(a, raw)).ok, NoHistory{});
+    const expected = (try json.parse(a,
+        \\{"model":"test","messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"read","arguments":"{}"}}]},{"role":"tool","tool_call_id":"c1","content":"ok"}],"tools":[{"type":"function","function":{"name":"read","description":"read","parameters":{"type":"object"},"strict":false}}],"tool_choice":"auto"}
+    )).ok;
+    try std.testing.expectEqualStrings(try json.stringify(a, expected, .{}), try json.stringify(a, request.chat, .{}));
+}
+
+test "reasoning following answered and empty assistant messages preserves order" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var cx: Cx = .{ .a = a };
+    const raw = (try json.parse(a,
+        \\[{"role":"assistant","content":"old answer"},{"type":"reasoning","content":[{"text":"new thought"}]},{"type":"reasoning","content":[]},{"role":"assistant","content":"new answer"},{"type":"reasoning","content":[{"text":"terminal"}]}]
+    )).ok;
+    const out = try messages(&cx, raw.array);
+    try std.testing.expectEqual(@as(usize, 3), out.len);
+    try std.testing.expectEqualStrings("old answer", out[0].get("content").?.string);
+    try std.testing.expectEqualStrings("new thought", out[1].get("reasoning_content").?.string);
+    try std.testing.expectEqualStrings("new answer", out[1].get("content").?.string);
+    try std.testing.expectEqualStrings("terminal", out[2].get("reasoning_content").?.string);
+}
+
+test "reasoning reuses an assistant with empty content parts" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var cx: Cx = .{ .a = a };
+    const raw = (try json.parse(a,
+        \\[{"role":"assistant","content":[]},{"type":"reasoning","content":[{"text":"thought"}]},{"type":"reasoning","content":[{"text":"more"}]}]
+    )).ok;
+    const out = try messages(&cx, raw.array);
+    try std.testing.expectEqual(@as(usize, 1), out.len);
+    try std.testing.expectEqualStrings("thought\nmore", out[0].get("reasoning_content").?.string);
 }

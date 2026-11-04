@@ -1,5 +1,6 @@
 //! Offered tools and tool_choice as the template should see them (``tools.active_tool_specs``).
 const std = @import("std");
+const strict_schema = @import("strict_schema.zig");
 const json = @import("json.zig");
 const errors = @import("errors.zig");
 const Value = json.Value;
@@ -73,9 +74,14 @@ pub fn active(cx: *Cx, tools: ?Value, choice: ?Value) errors.Refused![]Value {
     var specs: []Value = &.{};
     if (tools) |t| if (t != .null) {
         if (t != .array) return cx.other("tools must be a list");
+        var names: std.StringHashMapUnmanaged(void) = .empty;
         for (t.array, 0..) |tool, i| {
             if (tool != .object) return cx.fail(.other, "tools[{d}] must be an object", .{i});
-            if ((try toolName(cx.a, tool)).len == 0) return cx.fail(.other, "tools[{d}] must include a function name", .{i});
+            const name = try toolName(cx.a, tool);
+            if (name.len == 0) return cx.fail(.other, "tools[{d}] must include a function name", .{i});
+            if ((try names.getOrPut(cx.a, name)).found_existing) return cx.refuse("Tool names must be unique.");
+            const function = definition(tool);
+            if (try strict_schema.enabled(cx, function)) _ = try strictParameters(cx, function);
         }
         specs = t.array;
     };
@@ -94,4 +100,61 @@ pub fn active(cx: *Cx, tools: ?Value, choice: ?Value) errors.Refused![]Value {
     for (specs) |tool| if (std.mem.eql(u8, try toolName(cx.a, tool), requested)) try named.append(cx.a, tool);
     if (named.items.len == 0) return cx.fail(.other, "tool_choice requested unknown tool '{s}'", .{requested});
     return named.items;
+}
+
+pub fn definition(tool: Value) Value {
+    const function = tool.get("function") orelse return tool;
+    return if (function == .object) function else tool;
+}
+
+fn strictParameters(cx: *Cx, function: Value) errors.Refused!Value {
+    const schema = function.field("parameters") orelse function.field("input_schema") orelse blk: {
+        const empty = try json.newObject(cx.a);
+        try empty.put(cx.a, "type", .{ .string = "object" });
+        break :blk Value{ .object = empty };
+    };
+    return strict_schema.normalize(cx, schema, true);
+}
+
+/// The decoder gets a normalized copy; the template keeps the request as written.
+pub fn constrained(cx: *Cx, tools: []const Value, has_format: bool) errors.Refused!?[]const Value {
+    var strict: usize = 0;
+    for (tools) |tool| if (try strict_schema.enabled(cx, definition(tool))) {
+        strict += 1;
+    };
+    if (strict == 0) return null;
+    if (strict != tools.len) return cx.refuse("Cannot use strict tool with non-strict tool in the same request");
+    if (has_format) return cx.refuse("response_format should not be used with tools");
+    const out = try cx.a.alloc(Value, tools.len);
+    for (tools, out) |tool, *slot| {
+        const function = try json.copyObject(cx.a, definition(tool).object);
+        try function.put(cx.a, "parameters", try strictParameters(cx, .{ .object = function }));
+        if (tool.has("function")) {
+            const copy = try json.copyObject(cx.a, tool.object);
+            try copy.put(cx.a, "function", .{ .object = function });
+            slot.* = .{ .object = copy };
+        } else slot.* = .{ .object = function };
+    }
+    return out;
+}
+
+test "duplicate offered names and strict constraints are request errors" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    const duplicate = (try json.parse(cx.a, "[{\"function\":{\"name\":\"f\"}},{\"function\":{\"name\":\"f\"}}]")).ok;
+    for ([_]?Value{ null, .{ .string = "none" } }) |choice| {
+        try std.testing.expectError(error.Refused, active(&cx, duplicate, choice));
+        try std.testing.expectEqualStrings("Tool names must be unique.", cx.message);
+        try std.testing.expectEqual(errors.Kind.request, cx.kind);
+    }
+    const strict = (try json.parse(cx.a, "[{\"function\":{\"name\":\"f\",\"strict\":true}}]")).ok;
+    const normalized = (try constrained(&cx, strict.array, false)).?;
+    try std.testing.expect(!definition(normalized[0]).get("parameters").?.get("additionalProperties").?.bool);
+    try std.testing.expect(!definition(strict.array[0]).has("parameters"));
+    try std.testing.expectError(error.Refused, constrained(&cx, strict.array, true));
+    const mixed = (try json.parse(cx.a, "[{\"function\":{\"name\":\"f\",\"strict\":true}},{\"function\":{\"name\":\"g\"}}]")).ok;
+    try std.testing.expectError(error.Refused, constrained(&cx, mixed.array, false));
+    const disabled = try active(&cx, mixed, .{ .string = "none" });
+    try std.testing.expectEqual(@as(?[]const Value, null), try constrained(&cx, disabled, true));
 }

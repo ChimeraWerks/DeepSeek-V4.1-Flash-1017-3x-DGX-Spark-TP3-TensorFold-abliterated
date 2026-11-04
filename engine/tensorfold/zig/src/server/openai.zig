@@ -159,6 +159,7 @@ fn plan(srv: *Server, cx: *Cx, is_chat: bool, raw: Value) errors.Refused!Plan {
     const take: ?*messages.Images = if (srv.info.vision != null) &images else null;
     // the client's text stays text: a control token's spelling in it does not become the token (issue #21)
     if (is_chat) {
+        try messages.validateToolHistory(cx, body.get("messages"));
         input.messages = try messages.normalizeImages(cx, try messages.requestMessages(cx, srv.text, body.get("messages")), "system", srv.needs_user_after_tool, take);
         input.tools = try tool_specs.active(cx, try messages.maskControls(cx.a, srv.text, body.get("tools")), body.get("tool_choice"));
     } else if (body.get("messages")) |m| if (m == .array and m.array.len > 0) {
@@ -187,7 +188,7 @@ fn plan(srv: *Server, cx: *Cx, is_chat: bool, raw: Value) errors.Refused!Plan {
     if (thinking.effort) |e| try sampling.put(cx.a, "reasoning_effort", .{ .string = e });
     if (thinking.enable) |on| try sampling.put(cx.a, "enable_thinking", .{ .bool = on });
     input.fields = .{ .object = sampling };
-    var policy: tool_stream.Policy = .{};
+    var policy: tool_stream.Policy = .{ .token_aware = true };
     if (body.field("parallel_tool_calls")) |p| {
         if (p != .bool) return cx.refuse("parallel_tool_calls must be a boolean");
         policy.single = !p.bool;
@@ -363,7 +364,7 @@ const Run = struct {
     fn attachCalls(r: *Run, reply: *chat.Reply) Allocator.Error!?[]Value {
         const tools = r.plan.input.tools;
         if (tools.len == 0) return null;
-        const parsed = try tool_parse.parse(r.a, reply.content, tools, r.plan.policy.maxCalls());
+        const parsed = try tool_parse.parseWith(r.a, reply.content, tools, r.plan.policy.maxCalls(), reply.markup);
         const calls = parsed.calls orelse {
             if (r.plan.policy.single) reply.content = try r.plan.policy.parsedContent(r.a, parsed.content);
             return null;

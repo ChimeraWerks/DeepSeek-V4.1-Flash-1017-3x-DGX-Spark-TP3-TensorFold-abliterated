@@ -40,6 +40,8 @@ pub const Text = struct {
         template_source: *const fn (ctx: *anyopaque) []const u8,
         /// Whether an id is a special token (an added token flagged special); null: none are known.
         special: ?*const fn (ctx: *anyopaque, id: u32) bool = null,
+        /// Output control IDs, including added delimiters not flagged special by the tokenizer.
+        output_control: ?*const fn (ctx: *anyopaque, id: u32) bool = null,
         /// A client's text with every added token written in it made plain (null: none in it, or no such tokenizer).
         mask: ?*const fn (ctx: *anyopaque, a: Allocator, s: []const u8) Allocator.Error!?[]u8 = null,
         /// Rendered chat only; ordinary raw encode does not decode caller-text guards.
@@ -90,6 +92,11 @@ pub const Text = struct {
 
     pub fn templateSource(t: Text) []const u8 {
         return t.vtable.template_source(t.ctx);
+    }
+
+    pub fn isOutputControl(t: Text, id: u32) bool {
+        const f = t.vtable.output_control orelse return t.isSpecial(id);
+        return f(t.ctx, id);
     }
 
     pub fn isSpecial(t: Text, id: u32) bool {

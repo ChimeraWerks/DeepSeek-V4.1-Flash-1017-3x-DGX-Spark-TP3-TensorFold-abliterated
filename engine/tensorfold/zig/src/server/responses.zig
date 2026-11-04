@@ -9,6 +9,8 @@ const sse = @import("sse.zig");
 const pyrepr = @import("pyrepr.zig");
 const ids = @import("ids.zig");
 const translate_mod = @import("responses_translate.zig");
+const response_tools = @import("responses_tools.zig");
+const CustomInput = @import("responses_custom_input.zig").Parser;
 const Server = @import("server.zig").Server;
 const Conn = @import("http_conn.zig").Conn;
 const Value = json.Value;
@@ -185,7 +187,7 @@ pub fn post(srv: *Server, conn: *Conn, a: Allocator) void {
     base.put(a, "output", .{ .array = &.{} }) catch return;
     base.put(a, "usage", .null) catch return;
     for (t.echo.keys(), t.echo.values()) |k, v| base.put(a, k, v) catch return;
-    var reply: Reply = .{ .srv = srv, .a = a, .conn = conn, .base = base, .streaming = t.stream, .keep = t.store, .added = t.added, .cx = &cx };
+    var reply: Reply = .{ .srv = srv, .a = a, .conn = conn, .base = base, .streaming = t.stream, .keep = t.store, .added = t.added, .cx = &cx, .tools = t.tools };
     var out: Wire = .{ .reply = &reply };
     openai.run(srv, a, out.out(), .{ .conn = conn }, true, t.chat);
     if (out.opened or conn.broken) return;
@@ -238,6 +240,8 @@ const Reply = struct {
     items: std.ArrayList(*json.Object) = .empty,
     current: ?*json.Object = null,
     calls: std.AutoArrayHashMapUnmanaged(i64, *json.Object) = .empty,
+    tools: response_tools.Set = .{},
+    custom: std.AutoArrayHashMapUnmanaged(*json.Object, CustomInput) = .empty,
     seq: u64 = 0,
     final: ?Value = null,
 
@@ -301,12 +305,16 @@ const Reply = struct {
             try r.put(part.?, "type", .{ .string = "reasoning_text" });
             try r.put(part.?, "text", .{ .string = "" });
         } else {
-            try r.put(item, "id", .{ .string = ids.make(r.a, "fc_", 32) catch return error.Closed });
-            try r.put(item, "type", .{ .string = "function_call" });
+            const custom = r.tools.custom_patch and std.mem.eql(u8, name, "apply_patch");
+            const resolved = r.tools.resolve(name);
+            try r.put(item, "id", .{ .string = ids.make(r.a, if (custom) "ctc_" else "fc_", 32) catch return error.Closed });
+            try r.put(item, "type", .{ .string = if (custom) "custom_tool_call" else "function_call" });
             try r.put(item, "call_id", .{ .string = call_id });
-            try r.put(item, "name", .{ .string = name });
-            try r.put(item, "arguments", .{ .string = "" });
+            try r.put(item, "name", .{ .string = if (resolved) |n| n.local else name });
+            if (resolved) |n| try r.put(item, "namespace", .{ .string = n.namespace });
+            try r.put(item, if (custom) "input" else "arguments", .{ .string = "" });
             try r.put(item, "status", .{ .string = "in_progress" });
+            if (custom) r.custom.put(r.a, item, .{}) catch return error.Closed;
         }
         r.items.append(r.a, item) catch return error.Closed;
         r.current = item;
@@ -326,7 +334,11 @@ const Reply = struct {
         try r.put(item, "status", .{ .string = status });
         const where_id = item.get("id").?;
         const where_index = try r.int(r.index(item));
-        if (std.mem.eql(u8, item.get("type").?.string, "function_call")) {
+        if (std.mem.eql(u8, item.get("type").?.string, "custom_tool_call")) {
+            const tail = r.custom.getPtr(item).?.finish(r.a) catch return error.Closed;
+            try r.customDelta(item, tail);
+            try r.event("response.custom_tool_call_input.done", &.{ .{ "item_id", where_id }, .{ "output_index", where_index }, .{ "input", item.get("input").? } });
+        } else if (std.mem.eql(u8, item.get("type").?.string, "function_call")) {
             try r.event("response.function_call_arguments.done", &.{ .{ "item_id", where_id }, .{ "output_index", where_index }, .{ "name", item.get("name").? }, .{ "arguments", item.get("arguments").? } });
         } else {
             const part = item.get("content").?.array[0].object;
@@ -375,10 +387,20 @@ const Reply = struct {
                 break :blk made;
             };
             if (textOf(function.get("arguments"))) |args| {
-                try r.put(item, "arguments", .{ .string = std.mem.concat(r.a, u8, &.{ item.get("arguments").?.string, args }) catch return error.Closed });
-                try r.event("response.function_call_arguments.delta", &.{ .{ "item_id", item.get("id").? }, .{ "output_index", try r.int(r.index(item)) }, .{ "delta", .{ .string = args } } });
+                if (r.custom.getPtr(item)) |parser| {
+                    try r.customDelta(item, parser.feed(r.a, args) catch return error.Closed);
+                } else {
+                    try r.put(item, "arguments", .{ .string = std.mem.concat(r.a, u8, &.{ item.get("arguments").?.string, args }) catch return error.Closed });
+                    try r.event("response.function_call_arguments.delta", &.{ .{ "item_id", item.get("id").? }, .{ "output_index", try r.int(r.index(item)) }, .{ "delta", .{ .string = args } } });
+                }
             }
         }
+    }
+
+    fn customDelta(r: *Reply, item: *json.Object, text: []const u8) E!void {
+        if (text.len == 0) return;
+        try r.put(item, "input", .{ .string = std.mem.concat(r.a, u8, &.{ item.get("input").?.string, text }) catch return error.Closed });
+        try r.event("response.custom_tool_call_input.delta", &.{ .{ "item_id", item.get("id").? }, .{ "output_index", try r.int(r.index(item)) }, .{ "delta", .{ .string = text } } });
     }
 
     fn usage(r: *Reply, chat: ?Value) E!Value {
@@ -484,3 +506,111 @@ const Reply = struct {
         return r.finish(if (reason != null and reason.? == .string) reason.?.string else null, data.get("usage"), data.get("tensorfold"));
     }
 };
+
+test "Responses namespace and custom output replay through request translation" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var cx: Cx = .{ .a = a };
+    const NoHistory = struct {
+        pub fn conversation(_: @This(), _: *Cx, _: Value) errors.Refused![]Value {
+            return &.{};
+        }
+    };
+    const body = (try json.parse(a,
+        \\{"input":"edit then inspect","tools":[{"type":"custom","name":"apply_patch"},{"type":"namespace","name":"files","tools":[{"type":"function","name":"read","parameters":{"type":"object"}}]}]}
+    )).ok;
+    const request = try translate_mod.translate(&cx, body, NoHistory{});
+    var reply: Reply = .{ .srv = undefined, .a = a, .conn = undefined, .base = try json.newObject(a), .streaming = false, .keep = false, .added = request.added, .cx = &cx, .tools = request.tools };
+    const chunks = [_][]const u8{
+        \\{"tool_calls":[{"index":0,"id":"c1","function":{"name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\\n+\\uD83D"}}]}
+        ,
+        \\{"tool_calls":[{"index":0,"function":{"arguments":"\\uDE00\\n*** End Patch\"}"}}]}
+        ,
+        \\{"tool_calls":[{"index":1,"id":"c2","function":{"name":"files::read","arguments":"{\"path\":\"x\"}"}}]}
+        ,
+    };
+    for (chunks) |chunk| try reply.delta((try json.parse(a, chunk)).ok);
+    try reply.close("completed");
+    const output = try reply.itemsValue();
+    try std.testing.expectEqualStrings("custom_tool_call", output.array[0].get("type").?.string);
+    try std.testing.expectEqualStrings("*** Begin Patch\n+😀\n*** End Patch", output.array[0].get("input").?.string);
+    try std.testing.expect(!output.array[0].has("arguments"));
+    try std.testing.expectEqualStrings("files", output.array[1].get("namespace").?.string);
+    try std.testing.expectEqualStrings("read", output.array[1].get("name").?.string);
+    const results = (try json.parse(a,
+        \\[{"type":"custom_tool_call_output","call_id":"c1","output":"patched"},{"type":"function_call_output","call_id":"c2","output":"contents"}]
+    )).ok;
+    const replay = try json.copyObject(a, body.object);
+    try replay.put(a, "input", .{ .array = try std.mem.concat(a, Value, &.{ output.array, results.array }) });
+    const next = try translate_mod.translate(&cx, .{ .object = replay }, NoHistory{});
+    const calls = next.chat.get("messages").?.array[0].get("tool_calls").?.array;
+    try std.testing.expectEqualStrings("apply_patch", calls[0].get("function").?.get("name").?.string);
+    try std.testing.expectEqualStrings("files::read", calls[1].get("function").?.get("name").?.string);
+    const args = (try json.parse(a, calls[0].get("function").?.get("arguments").?.string)).ok;
+    try std.testing.expectEqualStrings(output.array[0].get("input").?.string, args.get("input").?.string);
+    // A stored canonical message remaps when the next request's declarations change.
+    const Stored = struct {
+        items: []Value,
+        pub fn conversation(h: @This(), _: *Cx, _: Value) errors.Refused![]Value {
+            return h.items;
+        }
+    };
+    const changed = (try json.parse(a,
+        \\{"previous_response_id":"r1","input":"continue","tools":[{"type":"function","name":"files::read"},{"type":"namespace","name":"files","tools":[{"type":"function","name":"read"}]}]}
+    )).ok;
+    const stored = try translate_mod.translate(&cx, changed, Stored{ .items = next.added });
+    const stored_calls = stored.chat.get("messages").?.array[0].get("tool_calls").?.array;
+    try std.testing.expectEqualStrings("files::read_1", stored_calls[1].get("function").?.get("name").?.string);
+}
+
+test "Responses model DSML output restores custom and namespace calls in streamed and whole paths" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var cx: Cx = .{ .a = a };
+    const decl = (try json.parse(a,
+        \\[{"type":"custom","name":"apply_patch"},{"type":"namespace","name":"files","tools":[{"type":"function","name":"read","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}]}]
+    )).ok;
+    const set = try response_tools.Set.init(&cx, decl);
+    const model =
+        \\<｜DSML｜ calls><｜DSML｜ invoke name="apply_patch"><｜DSML｜ parameter name="input" string="true">*** Begin Patch
+        \\+é "quoted" \ literal
+        \\*** End Patch</｜DSML｜ parameter></｜DSML｜ invoke><｜DSML｜ invoke name="files::read"><｜DSML｜ parameter name="path" string="true">x</｜DSML｜ parameter></｜DSML｜ invoke></｜DSML｜ calls>
+    ;
+    var streamed: Reply = .{ .srv = undefined, .a = a, .conn = undefined, .base = try json.newObject(a), .streaming = false, .keep = false, .added = &.{}, .cx = &cx, .tools = set };
+    var parser = try @import("tool_stream.zig").Streamer.init(a, set.offered.?);
+    for (1..model.len + 1) |end| {
+        var deltas: std.ArrayList(Value) = .empty;
+        try parser.feedDsml(model[0..end], &deltas);
+        for (deltas.items) |d| try streamed.delta(d);
+    }
+    try streamed.close("completed");
+    const incremental = try streamed.itemsValue();
+    try std.testing.expectEqual(@as(usize, 2), incremental.array.len);
+    const parsed = try @import("tool_parse.zig").parse(a, model, set.offered.?, null);
+    try std.testing.expectEqual(@as(usize, 2), parsed.calls.?.len);
+    var whole: Reply = .{ .srv = undefined, .a = a, .conn = undefined, .base = try json.newObject(a), .streaming = false, .keep = false, .added = &.{}, .cx = &cx, .tools = set };
+    for (parsed.calls.?, 0..) |call, i| {
+        const c = try json.copyObject(a, call.object);
+        try c.put(a, "index", try json.intValue(a, i));
+        const d = try json.newObject(a);
+        const list = try a.alloc(Value, 1);
+        list[0] = .{ .object = c };
+        try d.put(a, "tool_calls", .{ .array = list });
+        try whole.delta(.{ .object = d });
+    }
+    try whole.close("completed");
+    const complete = try whole.itemsValue();
+    try std.testing.expectEqualStrings("*** Begin Patch\n+é \"quoted\" \\ literal\n*** End Patch", incremental.array[0].get("input").?.string);
+    for (incremental.array, complete.array) |x, y| {
+        for ([_][]const u8{ "type", "name", "namespace", "input", "arguments", "status" }) |key|
+            try std.testing.expect(json.equal(x.get(key) orelse .null, y.get(key) orelse .null));
+    }
+    const replay = try translate_mod.messages(&cx, incremental.array);
+    var next_set = try response_tools.Set.init(&cx, decl);
+    const mapped = try next_set.mapMessages(&cx, replay);
+    const calls = mapped[0].get("tool_calls").?.array;
+    try std.testing.expectEqualStrings("files::read", calls[1].get("function").?.get("name").?.string);
+    try std.testing.expectEqualStrings(incremental.array[0].get("input").?.string, (try json.parse(a, calls[0].get("function").?.get("arguments").?.string)).ok.get("input").?.string);
+}

@@ -240,6 +240,38 @@ fn replayedReasoning(cx: *Cx, o: *json.Object, role: []const u8) !*json.Object {
     return withField(cx, o, "reasoning_content", r);
 }
 
+/// Tool results belong to the immediately preceding assistant call group; checking does not reorder history.
+pub fn validateToolHistory(cx: *Cx, messages: ?Value) errors.Refused!void {
+    const list = messages orelse return;
+    if (list != .array) return;
+    var i: usize = 0;
+    while (i < list.array.len) : (i += 1) {
+        const message = list.array[i];
+        const role = message.strField("role") orelse continue;
+        if (std.mem.eql(u8, role, "tool")) return cx.refuse("Messages with role 'tool' must be a response to a preceding message with 'tool_calls'");
+        if (!std.mem.eql(u8, role, "assistant")) continue;
+        const calls = message.field("tool_calls") orelse continue;
+        if (calls != .array) return cx.refuse("tool_calls must be an array");
+        var ids: std.StringHashMapUnmanaged(bool) = .empty;
+        for (calls.array) |call| {
+            const id = call.strField("id") orelse return cx.refuse("tool_calls must include a string id");
+            if (id.len == 0) return cx.refuse("tool_calls must include a non-empty id");
+            const entry = try ids.getOrPut(cx.a, id);
+            if (entry.found_existing) return cx.fail(.request, "Duplicate value for 'tool_call_id' of {s} in message[{d}]", .{ id, i });
+            entry.value_ptr.* = false;
+        }
+        for (calls.array) |_| {
+            i += 1;
+            if (i >= list.array.len or !std.mem.eql(u8, list.array[i].strField("role") orelse "", "tool"))
+                return cx.refuse("An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. (insufficient tool messages following tool_calls message)");
+            const id = list.array[i].strField("tool_call_id") orelse return cx.refuse("tool messages must include a string tool_call_id");
+            const seen = ids.getPtr(id) orelse return cx.fail(.request, "An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id', The following tool_call_ids did not have response messages: {s}", .{id});
+            if (seen.*) return cx.fail(.request, "Duplicate value for 'tool_call_id' of {s} in message[{d}]", .{ id, i });
+            seen.* = true;
+        }
+    }
+}
+
 pub fn normalize(cx: *Cx, messages: ?Value, late_system: []const u8, needs_user_after_tool: bool) errors.Refused!Value {
     return normalizeImages(cx, messages, late_system, needs_user_after_tool, null);
 }
@@ -608,4 +640,26 @@ test "an assistant turn's reasoning field reaches the template as reasoning_cont
     try std.testing.expect(out.array[4].get("reasoning_content") == null); // an empty reasoning adds nothing
     try std.testing.expect(out.array[5].get("reasoning_content") == null); // only assistant turns
     try std.testing.expect(messages.array[1].get("reasoning_content") == null); // the request itself unchanged
+}
+
+test "tool history validates IDs before inference without reordering results" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    const good = (try json.parse(cx.a, "[{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"a\"},{\"id\":\"b\"}]},{\"role\":\"tool\",\"tool_call_id\":\"b\"},{\"role\":\"tool\",\"tool_call_id\":\"a\"},{\"role\":\"user\",\"content\":\"continue\"}]")).ok;
+    const before = try json.stringify(cx.a, good, .{});
+    try validateToolHistory(&cx, good);
+    try std.testing.expectEqualStrings(before, try json.stringify(cx.a, good, .{}));
+    for ([_][]const u8{
+        "[{\"role\":\"tool\",\"tool_call_id\":\"a\"}]",
+        "[{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"a\"},{\"id\":\"a\"}]}]",
+        "[{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"a\"}]},{\"role\":\"tool\",\"tool_call_id\":\"wrong\"}]",
+        "[{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"a\"},{\"id\":\"b\"}]},{\"role\":\"tool\",\"tool_call_id\":\"a\"},{\"role\":\"tool\",\"tool_call_id\":\"a\"}]",
+        "[{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"a\"}]},{\"role\":\"user\",\"content\":\"continue\"}]",
+        "[{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"a\"}]}]",
+    }) |raw| {
+        try std.testing.expectError(error.Refused, validateToolHistory(&cx, (try json.parse(cx.a, raw)).ok));
+        try std.testing.expectEqual(errors.Kind.request, cx.kind);
+        try std.testing.expectEqual(@as(u16, 400), cx.status());
+    }
 }
