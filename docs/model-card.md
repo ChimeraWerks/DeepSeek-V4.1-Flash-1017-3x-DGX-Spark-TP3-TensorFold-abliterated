@@ -13,7 +13,7 @@ The v1.2 TP3 recipe runs **DeepSeek V4.1 Flash 1017, EXL3 3.84 bpw, mrfakename-e
 | Quantization | EXL3, 3.8361 bpw for quantized linear layers excluding output head; title rounds to 3.84 |
 | Output head | 6-bit, excluded from headline bitrate |
 | Selected edit | [mrfakename](https://huggingface.co/mrfakename/DeepSeek-V4.1-Flash-1017-abliterated), revision `517efab9` |
-| Recipe | v1.2, engine `591d9dc`, native profile `v1.2`, serving API 0.1.5 |
+| Recipe | v1.2, engine `678ea1b`, native profile `v1.2`, serving API 0.1.5 |
 | Runtime | Exactly three DGX Spark GB10 systems, TP3; 8M KV / C16 / graph 128 / R48 / top_k 20 / spill 256 GiB |
 | Model label suffix | `chimera-dsv41-flash-1017-abliterated-exl3` |
 | Weights | [ChimeraWerks/DeepSeek-V4.1-Flash-1017-EXL3-3.84bpw-abliterated](https://huggingface.co/ChimeraWerks/DeepSeek-V4.1-Flash-1017-EXL3-3.84bpw-abliterated), commit `2fa62d7` |

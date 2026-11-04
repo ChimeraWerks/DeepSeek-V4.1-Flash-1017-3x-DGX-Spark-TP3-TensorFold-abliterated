@@ -180,3 +180,161 @@ test "a DSML block is read from its own tags: <tool_call> text around it or in a
     try std.testing.expectEqualStrings("Hi. ", tool_parse.beforeDsml("Hi. " ++ block ++ " more"));
     try std.testing.expectEqualStrings("no block", tool_parse.beforeDsml("no block"));
 }
+
+/// One `write` call in a DSML block of either spelling (DeepSeek-V4.1's when `v41`), its `content` value as given.
+fn dsmlWrite(a: std.mem.Allocator, v41: bool, value: []const u8) ![]const u8 {
+    const D = "\u{ff5c}DSML\u{ff5c}";
+    const s = if (v41) " " else "";
+    const block = if (v41) "calls" else "tool_calls";
+    return std.mem.concat(a, u8, &.{ "<", D, s, block, ">\n<", D, s, "invoke name=\"write\">\n<", D, s, "parameter name=\"content\" string=\"true\">", value, "</", D, s, "parameter>\n</", D, s, "invoke>\n</", D, s, block, ">" });
+}
+
+/// The streamed text never takes back what it showed, and it ends as the whole parse's content.
+fn expectStreamAgrees(a: std.mem.Allocator, text: []const u8, content: []const u8) !void {
+    const reply_text = @import("reply_text.zig");
+    const final = try reply_text.hideToolCalls(a, text, true);
+    try std.testing.expectEqualStrings(content, std.mem.trim(u8, final, " \t\r\n"));
+    try expectNoRetraction(a, text);
+}
+
+/// Each streamed byte only adds to what was shown before it, up to the end of the reply.
+fn expectNoRetraction(a: std.mem.Allocator, text: []const u8) !void {
+    const reply_text = @import("reply_text.zig");
+    var before: []const u8 = "";
+    for (0..text.len + 2) |n| {
+        const shown = if (n <= text.len) try reply_text.hideToolCalls(a, text[0..n], false) else try reply_text.hideToolCalls(a, text, true);
+        if (!std.mem.startsWith(u8, shown, before)) {
+            std.debug.print("after {d} bytes the stream showed {s}, taking back part of {s}\n", .{ n, shown, before });
+            return error.TestUnexpectedResult;
+        }
+        before = try a.dupe(u8, shown);
+    }
+}
+
+test "a DSML value that holds the block's own tags stays in the call, and none of them reaches the text" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const tools = (try json.parse(a, "[{\"type\":\"function\",\"function\":{\"name\":\"write\"}}]")).ok.array;
+    const D = "\u{ff5c}DSML\u{ff5c}";
+    for ([_]bool{ true, false }) |v41| {
+        const open = if (v41) "<" ++ D ++ " calls>" else "<" ++ D ++ "tool_calls>";
+        const close = if (v41) "</" ++ D ++ " calls>" else "</" ++ D ++ "tool_calls>";
+        // a file about DSML: the value holds the closer (#14), the opener (parsed before the change too), or both
+        const values = [_][]const u8{
+            try std.mem.concat(a, u8, &.{ "end: ", close }),
+            try std.mem.concat(a, u8, &.{ "start: ", open }),
+            try std.mem.concat(a, u8, &.{ open, " inner ", close }),
+            try std.mem.concat(a, u8, &.{ close, " then ", open }),
+        };
+        for (values) |value| {
+            const block = try dsmlWrite(a, v41, value);
+            const want = try std.mem.concat(a, u8, &.{ "{\"content\":\"", value, "\"}" });
+            const r = try parse(a, block, tools, null);
+            try std.testing.expectEqual(@as(usize, 1), r.calls.?.len);
+            try std.testing.expectEqualStrings(want, r.calls.?[0].get("function").?.get("arguments").?.string);
+            try std.testing.expectEqualStrings("", r.content);
+            try expectStreamAgrees(a, block, "");
+            // prose around the block: before it streams at once, after it streams once the block has closed
+            const around = try std.mem.concat(a, u8, &.{ "Writing.\n\n", block, "\nDone." });
+            const ra = try parse(a, around, tools, null);
+            try std.testing.expectEqual(@as(usize, 1), ra.calls.?.len);
+            try std.testing.expectEqualStrings("Writing.\n\n\nDone.", ra.content);
+            // the stream drops the two newlines that belong to a V4.1 block (reply_text.calls)
+            try expectStreamAgrees(a, around, if (v41) "Writing.\nDone." else "Writing.\n\n\nDone.");
+        }
+    }
+}
+
+test "around a DSML block: prose that quotes its closer, several blocks, both spellings, a reply cut inside one" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const tools = (try json.parse(a, "[{\"type\":\"function\",\"function\":{\"name\":\"write\"}}]")).ok.array;
+    const D = "\u{ff5c}DSML\u{ff5c}";
+    for ([_]bool{ true, false }) |v41| {
+        const close = if (v41) "</" ++ D ++ " calls>" else "</" ++ D ++ "tool_calls>";
+        const plain = try dsmlWrite(a, v41, "plain");
+        // prose after a complete block that quotes the closer: the call and the prose both stay, as before the change
+        const quoted = try std.mem.concat(a, u8, &.{ plain, "\nA block ends with ", close, "." });
+        const rq = try parse(a, quoted, tools, null);
+        try std.testing.expectEqual(@as(usize, 1), rq.calls.?.len);
+        try std.testing.expect(std.mem.indexOf(u8, rq.content, try std.mem.concat(a, u8, &.{ "ends with ", close })) != null);
+        try expectStreamAgrees(a, quoted, rq.content);
+        // two blocks with prose between them: two calls, the prose kept
+        const twice = try std.mem.concat(a, u8, &.{ plain, "\nThen.\n", try dsmlWrite(a, v41, try std.mem.concat(a, u8, &.{ "end: ", close })) });
+        const rt = try parse(a, twice, tools, null);
+        try std.testing.expectEqual(@as(usize, 2), rt.calls.?.len);
+        try std.testing.expectEqualStrings("Then.", rt.content);
+        try expectStreamAgrees(a, twice, "Then.");
+        // a reply cut inside a block whose value holds the closer: the first closer ends it, as it always did (the
+        // parser drops the cut invoke), and the stream takes nothing back on the way there
+        for ([_][]const u8{ try std.mem.concat(a, u8, &.{ "end: ", close }), "plain" }) |value| {
+            const full = try dsmlWrite(a, v41, value);
+            const cut = full[0 .. full.len - close.len];
+            const rc = try parse(a, cut, tools, null);
+            try std.testing.expect(rc.calls == null or rc.calls.?.len == 0);
+            try expectNoRetraction(a, cut);
+        }
+        // a name that holds the closer reads as no structure: the first closer ends the block, as it always did, so the
+        // complete invoke before it is still recovered, whether the reply ends in that name or goes on past it
+        const named = try std.mem.concat(a, u8, &.{ if (v41) "<" ++ D ++ " calls>\n<" ++ D ++ " invoke name=\"write\"></" ++ D ++ " invoke>\n<" ++ D ++ " invoke name=\"" else "<" ++ D ++ "tool_calls>\n<" ++ D ++ "invoke name=\"write\"></" ++ D ++ "invoke>\n<" ++ D ++ "invoke name=\"", close });
+        const longer = try std.mem.concat(a, u8, &.{ named, if (v41) "\"></" ++ D ++ " invoke>" else "\"></" ++ D ++ "invoke>", close });
+        for ([_][]const u8{ named, longer }) |text| {
+            const rn = try parse(a, text, tools, null);
+            if (v41) {
+                try std.testing.expectEqual(@as(usize, 1), rn.calls.?.len);
+                try std.testing.expectEqualStrings("write", rn.calls.?[0].get("function").?.get("name").?.string);
+            }
+            try expectNoRetraction(a, text);
+        }
+        // a block whose invoke never closes, then a whole block: the second block's call stays, as it always did (the
+        // open invoke must not borrow the second block's closers)
+        const inv = if (v41) "<" ++ D ++ " invoke name=\"" else "<" ++ D ++ "invoke name=\"";
+        const invc = if (v41) "</" ++ D ++ " invoke>" else "</" ++ D ++ "invoke>";
+        const opn = if (v41) "<" ++ D ++ " calls>" else "<" ++ D ++ "tool_calls>";
+        const unclosed = try std.mem.concat(a, u8, &.{ opn, "\n", inv, "broken\">\n", close, "\n", opn, "\n", inv, "write\">", invc, "\n", close });
+        const ru = try parse(a, unclosed, tools, null);
+        if (v41) {
+            try std.testing.expectEqual(@as(usize, 1), ru.calls.?.len);
+            try std.testing.expectEqualStrings("write", ru.calls.?[0].get("function").?.get("name").?.string);
+        }
+        try expectNoRetraction(a, unclosed);
+    }
+    // a V4 block whose JSON value (string="false") holds a whole V4.1 block: the V4.1 call is kept, as it always was,
+    // though the V4 block reads past its first closer (its value is not JSON, so reading it whole gives no call)
+    const nested = "<" ++ D ++ "tool_calls>\n<" ++ D ++ "invoke name=\"write\">\n<" ++ D ++ "parameter name=\"content\" string=\"false\">\n</" ++ D ++ "tool_calls>\n<" ++ D ++ " calls>\n<" ++ D ++ " invoke name=\"write\"></" ++ D ++ " invoke>\n</" ++ D ++ " calls>\n</" ++ D ++ "parameter>\n</" ++ D ++ "invoke>\n</" ++ D ++ "tool_calls>";
+    const rn = try parse(a, nested, tools, null);
+    try std.testing.expectEqual(@as(usize, 1), rn.calls.?.len);
+    try std.testing.expectEqualStrings("write", rn.calls.?[0].get("function").?.get("name").?.string);
+    try expectNoRetraction(a, nested);
+    // both spellings in one reply: one call each
+    const mixed = try std.mem.concat(a, u8, &.{ try dsmlWrite(a, true, "one"), "\nand\n", try dsmlWrite(a, false, "two") });
+    const rm = try parse(a, mixed, tools, null);
+    try std.testing.expectEqual(@as(usize, 2), rm.calls.?.len);
+    try std.testing.expectEqualStrings("and", rm.content);
+    try expectStreamAgrees(a, mixed, "and");
+}
+
+test "a spelled closer in a value is text, a token closer in a value is read past" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const reply_text = @import("reply_text.zig");
+    const tools = (try json.parse(a, "[{\"type\":\"function\",\"function\":{\"name\":\"write\"}}]")).ok.array;
+    const D = "\u{ff5c}DSML\u{ff5c}";
+    const close = "</" ++ D ++ " calls>";
+    const text = try dsmlWrite(a, true, "end: " ++ close);
+    var all: std.ArrayList(reply_text.Span) = .empty;
+    var at: usize = 0;
+    while (std.mem.indexOfPos(u8, text, at, D)) |i| : (at = i + D.len) try all.append(a, .{ .start = i, .end = i + D.len });
+    const inner = std.mem.indexOf(u8, text, "end: ").? + "end: </".len;
+    var outer: std.ArrayList(reply_text.Span) = .empty;
+    for (all.items) |s| if (s.start != inner) try outer.append(a, s);
+    for ([_][]const reply_text.Span{ all.items, outer.items }) |spans| {
+        const markup: reply_text.Markup = .{ .text = text, .spans = spans, .token_aware = true };
+        const r = try tool_parse.parseWith(a, text, tools, null, markup);
+        try std.testing.expectEqual(@as(usize, 1), r.calls.?.len);
+        try std.testing.expectEqualStrings("", r.content);
+    }
+}

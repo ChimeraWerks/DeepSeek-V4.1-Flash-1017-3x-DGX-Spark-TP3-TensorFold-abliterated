@@ -21,7 +21,7 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = Path("serving/src/chimera_sparks")
 ACTIVE_RELEASE = "v1.2"
-ACTIVE_ENGINE = "591d9dc"
+ACTIVE_ENGINE = "678ea1b"
 ACTIVE_RECIPE_PATCHES = "chimera-tensorfold-patches-20261103"
 # Frozen releases: each keeps a manifest in release/history and a bundled native profile.
 HISTORY = {"v1": "7d5b4d8", "v1.1": "14803a3"}

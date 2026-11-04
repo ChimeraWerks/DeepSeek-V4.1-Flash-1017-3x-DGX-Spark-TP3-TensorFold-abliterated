@@ -2,7 +2,7 @@
   "schema_version": 1,
   "release": "v1.2",
   "engine": {
-    "commit": "591d9dc",
+    "commit": "678ea1b",
     "tensorfold_base": "cebcf1e",
     "streams": 16,
     "graph_cap": 128,
@@ -125,7 +125,7 @@
       "--top-k=${TOP_K}"
     ],
     "source_delta": {
-      "base_commit": "591d9dc",
+      "base_commit": "678ea1b",
       "path": "engine/tensorfold/zig/src/server/metrics.zig",
       "changes": [
         "One documentation comment describes an external metrics sampler generically.",
@@ -160,7 +160,7 @@
     "redistribution_status": "published"
   },
   "labels": {
-    "TF_DS_ENGINE_ID": "chimera-tensorfold-tp3-591d9dc",
+    "TF_DS_ENGINE_ID": "chimera-tensorfold-tp3-678ea1b",
     "TF_DS_RECIPE_PATCHES": "chimera-tensorfold-patches-20261103",
     "TF_DS_MODEL_REVISION": "1bae0e1088993b9b82de08f59de5be5a34e42170-chimera-dsv41-flash-1017-abliterated-exl3"
   },

@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "release": "v1.2",
-  "engine_commit": "591d9dc",
-  "source_manifest_sha256": "b9025d4cffdcbb88d436a8a7e6b078d1b0c06748c8f228336e1bf50382c9f0e4",
+  "engine_commit": "678ea1b",
+  "source_manifest_sha256": "7f5ee3d7b3e964ad6585c18b49df25dbe7145af4a5616c67762fe09f8490d216",
   "compiler": {
     "version": "0.17.0",
     "executable_sha256": "7c61539af19fa4082c94848f1c2b57b89e76dc6cfd5bd4c57764c3caf8f82272"
@@ -51,9 +51,9 @@
     "checked_with": "engine/build/verify_embedded_fatbins.py"
   },
   "production_stage_sha256": {
-    "tensorfold-native": "90355ab8148663b4e075d6c199123e068f344ec1b6f478b835ad10393316da2c",
-    "tf-dsv41-lanes": "a5c1edaaaaf9b3eeab25209438920e71a2e2ba30bb84e4ddb0a4c4b6e37b4278",
-    "tf-dsv41-check": "07e0376a2cc451517a88856dd24aeb5473343fd80a987dd76dc26b462556c61d"
+    "tensorfold-native": "69ab4a18de185bd706ba0e5d98cee75361e9babc42b8d035c34768bdd6c05914",
+    "tf-dsv41-lanes": "abf9aa617e0777690b190e8f7c2d38b630e9955bde097ed8e0a0969e2409be29",
+    "tf-dsv41-check": "22f822077e183f9a7e304fec6de5c9cfdb58f5410fb2609eef3d7d90efe1b334"
   },
   "optional_kernels_sha256": {
     "dsv41_reduced_head.final.fatbin": "8705da7238d386587cbef1d351a491805df7e5854520df5f6b6e9522a1013c87"
@@ -71,7 +71,7 @@
   },
   "qualification": "CPU/source/build comparison only; not GPU or end-to-end serving acceptance. The production stage hashes are the hashes checked on each Spark when the binaries were staged.",
   "source_delta": {
-    "base_commit": "591d9dc",
+    "base_commit": "678ea1b",
     "path": "engine/tensorfold/zig/src/server/metrics.zig",
     "changes": [
       "One documentation comment describes an external metrics sampler generically.",
@@ -83,7 +83,7 @@
   "public_tree_rebuild": {
     "comparison": "fresh-cache rebuild of this public tree, from a different source path, against the production binaries",
     "status": "succeeded",
-    "source_manifest_sha256": "8b4215501b331eb8e6c2be7dab4c8bf51145bd2640875b01dd2213afb37aa252",
+    "source_manifest_sha256": "eaa3f3bd0a38d185624faedcf064c7be685ded945da74560fafb2dd912fda0f5",
     "build_steps_passed": 11,
     "build_steps_total": 11,
     "changed_source_files": [
@@ -91,8 +91,8 @@
     ],
     "binaries": {
       "tensorfold-native": {
-        "production_sha256": "90355ab8148663b4e075d6c199123e068f344ec1b6f478b835ad10393316da2c",
-        "rebuilt_sha256": "dfe58d59a26fd46382084d008ecdf1a3aeff123cc9f7c6c4a42daa4e29638844",
+        "production_sha256": "69ab4a18de185bd706ba0e5d98cee75361e9babc42b8d035c34768bdd6c05914",
+        "rebuilt_sha256": "94e7bdb691843258e7dd85c27afe1466f49972c659da97670011697b1930f343",
         "whole_file_identical": false,
         "allocated_sections_compared": 22,
         "allocated_sections_identical": true,
@@ -107,8 +107,8 @@
         ]
       },
       "tf-dsv41-lanes": {
-        "production_sha256": "a5c1edaaaaf9b3eeab25209438920e71a2e2ba30bb84e4ddb0a4c4b6e37b4278",
-        "rebuilt_sha256": "2952b6d67229a949216caf5a3e879ed01e670ebfe7336699a126d277a0390d99",
+        "production_sha256": "abf9aa617e0777690b190e8f7c2d38b630e9955bde097ed8e0a0969e2409be29",
+        "rebuilt_sha256": "fe4215520c31bb2005b3faabc35699a90a094a9a59f88a4f4164922a1840ffe7",
         "whole_file_identical": false,
         "allocated_sections_compared": 22,
         "allocated_sections_identical": true,
@@ -123,8 +123,8 @@
         ]
       },
       "tf-dsv41-check": {
-        "production_sha256": "07e0376a2cc451517a88856dd24aeb5473343fd80a987dd76dc26b462556c61d",
-        "rebuilt_sha256": "d7ba1945e933b1fc54341a2c0026387f3c3e82cf79b789101ba4dcf768fe230a",
+        "production_sha256": "22f822077e183f9a7e304fec6de5c9cfdb58f5410fb2609eef3d7d90efe1b334",
+        "rebuilt_sha256": "87983c5823a3f596a33e785c6df12dcdb5f955c2465ef0a635679e0ee492c775",
         "whole_file_identical": false,
         "allocated_sections_compared": 22,
         "allocated_sections_identical": true,

@@ -6,7 +6,7 @@ The [release manifest](../release/manifest.json) defines the v1.2 configuration 
 
 | Setting | Value |
 |---|---|
-| Engine and API | TensorFold `591d9dc`, serving API 0.1.5 |
+| Engine and API | TensorFold `678ea1b`, serving API 0.1.5 |
 | Decode streams | 16 |
 | CUDA graph cap / round rows | 128 / R48 |
 | KV pool | 8,000,000 tokens |

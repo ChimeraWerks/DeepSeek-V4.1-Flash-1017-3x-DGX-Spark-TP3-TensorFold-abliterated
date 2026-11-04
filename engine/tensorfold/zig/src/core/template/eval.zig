@@ -329,6 +329,15 @@ fn binop(c: *Ctx, op: ast.BinOp, l: Value, r: Value) Error!Value {
         const safe = l.str.safe or r.str.safe;
         const ls = if (safe and !l.str.safe) try htmlEscape(c, l.str.s) else l.str.s;
         const rs = if (safe and !r.str.safe) try htmlEscape(c, r.str.s) else r.str.s;
+        // Templates build their output as `set ns.out = ns.out + "..."`: plain concat copies the whole prefix
+        // every time and the arena keeps every old string, so a long conversation costs O(n^2) bytes (GBs on
+        // agent sessions). When the left string is the arena's last block, grow it in place instead.
+        const lsm = @constCast(ls);
+        if (rt.a.resize(lsm, ls.len + rs.len)) {
+            const grown = lsm.ptr[0 .. ls.len + rs.len];
+            @memcpy(grown[ls.len..], rs);
+            return .{ .str = .{ .s = grown, .safe = safe } };
+        }
         return .{ .str = .{ .s = try std.mem.concat(rt.a, u8, &.{ ls, rs }), .safe = safe } };
     }
     if (op == .add and l == .list and r == .list and l.list.seq == r.list.seq and (l.list.seq == .list or l.list.seq == .tuple))

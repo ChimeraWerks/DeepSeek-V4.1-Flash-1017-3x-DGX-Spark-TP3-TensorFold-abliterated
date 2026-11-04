@@ -2,7 +2,7 @@
 
 `tensorfold/` contains the TensorFold native Zig engine with BertholomusAI's
 `dsv41` family for DeepSeek V4.1 Flash. Release v1.2 uses engine source
-`591d9dc`, plus one metrics documentation-comment edit and one test-name wording
+`678ea1b`, plus one metrics documentation-comment edit and one test-name wording
 edit. Serving logic is unchanged by those edits. `14803a3` is the historical
 v1.1 engine and `7d5b4d8` the historical v1 engine.
 
@@ -30,7 +30,7 @@ Ported from other recipes and credited in [CREDITS.md](../CREDITS.md): structure
 output and required tool calls, image cache identity, idle RDMA parking, prefill
 yield and admission, prefix retention, and LakyFx 1.2.8's prefill work.
 
-### Since v1.1 (`14803a3` to `591d9dc`)
+### Since v1.1 (`14803a3` to `678ea1b`)
 
 [CHANGELOG.md](../CHANGELOG.md) lists the checks that were run.
 

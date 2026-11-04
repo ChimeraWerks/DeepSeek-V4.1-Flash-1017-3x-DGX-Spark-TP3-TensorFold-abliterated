@@ -194,7 +194,7 @@ screen. Every arm: [refusal.csv](v1/refusal.csv).
 
 ## Run a comparison
 
-Use the historical sparkDash revision and version for v1 comparisons. Record the collector revision for new runs. Start with the [lifecycle scripts](../docs/reproduction.md), then match modes, prompt categories, stream counts and output budgets. Match engine `cebcf1e` for v1; runs on `7d5b4d8`, `14803a3` or `591d9dc` are separate measurements.
+Use the historical sparkDash revision and version for v1 comparisons. Record the collector revision for new runs. Start with the [lifecycle scripts](../docs/reproduction.md), then match modes, prompt categories, stream counts and output budgets. Match engine `cebcf1e` for v1; runs on `7d5b4d8`, `14803a3` or `678ea1b` are separate measurements.
 
 Record weight identity, engine/API/collector versions, settings, topology, clocks and affinity. Stop unrelated traffic, warm the engine and apply the cooldown gate before each section. Keep prompts, actual token counts, cache state, timing boundaries and errors in private run records. Publish numeric summaries without credentials or host details.
 

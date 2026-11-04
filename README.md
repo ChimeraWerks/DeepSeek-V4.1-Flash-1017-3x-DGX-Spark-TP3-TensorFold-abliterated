@@ -26,10 +26,10 @@ Weights: **[Hugging Face](https://huggingface.co/ChimeraWerks/DeepSeek-V4.1-Flas
 
 ## Current release: v1.2
 
-v1.2 is the setup running in production: engine `591d9dc`, native profile `v1.2`, the same weights as v1.1. What changed is in the
+v1.2 is the setup running in production: engine `678ea1b`, native profile `v1.2`, the same weights as v1.1. What changed is in the
 [changelog](CHANGELOG.md).
 
-Spot checks on the production engine, 4 November 2026:
+Spot checks on engine `591d9dc`, 4 November 2026:
 
 | Check | Result |
 | --- | --- |
@@ -52,7 +52,7 @@ checks against that engine, so the decode figures are not comparable with the [d
 | Capacity | 1,048,576-token context configured (largest measured prompt 131,090); 8M-token KV pool, 16 streams, 256 GiB NVMe spill |
 | Model | MoE, 384 routed experts, top-6, 1 shared, 40 layers, MLA, DSpark MTP drafter, Engram; `1bae0e1` |
 | Weights | 3.84 bpw EXL3 composition plus [mrfakename](https://huggingface.co/mrfakename/DeepSeek-V4.1-Flash-1017-abliterated)'s rank-2 refusal-removal edit, re-encoded at 6 bits |
-| Engine | TensorFold `dsv41`, `14803a3` for these numbers, with the LakyFx 1.2.8 prefill port and our TP3 work; v1.2 runs `591d9dc` |
+| Engine | TensorFold `dsv41`, `14803a3` for these numbers, with the LakyFx 1.2.8 prefill port and our TP3 work; v1.2 runs `678ea1b` |
 
 ## Prefill
 
@@ -442,7 +442,7 @@ Measured on the Sparks and left out because they lost speed or headroom ([develo
 
 ```
 scripts/          prep-sparks, preflight, prepare, start, smoke-test, status, stop
-engine/           TensorFold dsv41 source at 591d9dc, build script and kernel inputs
+engine/           TensorFold dsv41 source at 678ea1b, build script and kernel inputs
 serving/          OpenAI-compatible serving API
 tools/            Spark host prep, cluster deployer, rank preparation and release checks
 release/          manifest, native profiles, weight provenance, build hashes

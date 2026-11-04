@@ -98,6 +98,11 @@ test "feature probes match Python jinja2" {
     for (probes) |p| try expect(p[0], shared, .{ .text = p[1], .raised = p[2] });
 }
 
+test "a string grown in place leaves the strings it was built from as they were" {
+    const source = "{% set a = x + 'y' %}{% set b = a + '1' %}{% set c = a + '2' %}{% set a = a + '3' %}{{b}},{{c}},{{a}},{{x}}";
+    try expect(source, "{\"x\":\"x\"}", .{ .text = "xy1,xy2,xy3,x", .raised = null });
+}
+
 test "engine bridge: NUL content, merged system prompt and generation prompt" {
     try expect("{% for m in messages %}{{m.role}}:{{m.content}}{% endfor %}{% if add_generation_prompt %}assistant:{% endif %}",
         \\{"messages":[{"role":"system","content":"first\n\nsecond"},{"role":"user","content":"a\u0000b"}]}

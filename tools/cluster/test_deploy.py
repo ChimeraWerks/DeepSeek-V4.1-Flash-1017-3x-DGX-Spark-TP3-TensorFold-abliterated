@@ -151,7 +151,7 @@ def test_cluster_release_assertions_cannot_silently_fork_defaults(d, monkeypatch
 
 
 def test_matching_cluster_release_assertions_preserve_production(d, monkeypatch):
-    for key, value in {"ENGINE_COMMIT": "591d9dc", "STREAMS": "16", "POOL_TOKENS": "8000000",
+    for key, value in {"ENGINE_COMMIT": "678ea1b", "STREAMS": "16", "POOL_TOKENS": "8000000",
                        "CONTEXT_TOKENS": "1048576", "GRAPH_CAP": "128", "SPILL_GIB": "256",
                        "MEMORY_RESERVE_GIB": "4", "TOP_K": "20"}.items():
         monkeypatch.setenv(key, value)
@@ -376,7 +376,7 @@ def test_old_units_only_matches_the_selected_recipe(d, monkeypatch):
 
 def test_manifest_and_example_contract(d):
     manifest = json.loads((ROOT / "release/manifest.json").read_text())
-    assert manifest["engine"]["commit"] == "591d9dc" and manifest["engine"]["tensorfold_base"] == "cebcf1e"
+    assert manifest["engine"]["commit"] == "678ea1b" and manifest["engine"]["tensorfold_base"] == "cebcf1e"
     assert manifest["serving"]["version"] == "0.1.5"
     assert manifest["weights"]["model_revision"] == "1bae0e1088993b9b82de08f59de5be5a34e42170"
     # The published Hugging Face weights commit, verified on the hub after upload; never a placeholder.
@@ -508,7 +508,7 @@ def test_v12_default_labels_and_configuration_are_rank_consistent_and_history_is
     assert current["weights"]["arm"] == "chimera-dsv41-flash-1017-abliterated-exl3"
     assert current["weights"]["artifact_arm"] == historical["weights"]["arm"]
     current_envs = [json.loads(d.get_env_json(rank)) for rank in range(3)]
-    assert all(env["TF_DS_ENGINE_ID"] == "chimera-tensorfold-tp3-591d9dc" for env in current_envs)
+    assert all(env["TF_DS_ENGINE_ID"] == "chimera-tensorfold-tp3-678ea1b" for env in current_envs)
     assert all(env["TF_DS_RECIPE_PATCHES"] == "chimera-tensorfold-patches-20261103" for env in current_envs)
     assert all(env["TF_DS_POOL_TOKENS"] == "8000000" for env in current_envs)
     assert all(env["TF_DS_PREFILL_COMPUTE_ROWS"] == "8192" for env in current_envs)

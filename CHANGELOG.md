@@ -2,30 +2,34 @@
 
 DeepSeek V4.1 Flash 1017 abliterated EXL3 3.84 bpw runs across three NVIDIA DGX Spark systems with TensorFold tensor parallelism 3 (TP3).
 
-v1.2 uses engine base `591d9dc` with exactly two non-runtime edits in `zig/src/server/metrics.zig`. A documentation comment and a test name describe external metrics samplers generically. Serving logic is unchanged by them. Rebuild comparison results: `release/build-verification.json`.
+v1.2 uses engine base `678ea1b` with exactly two non-runtime edits in `zig/src/server/metrics.zig`. A documentation comment and a test name describe external metrics samplers generically. Serving logic is unchanged by them. Rebuild comparison results: `release/build-verification.json`.
 
 ## 2026-11-04 v1.2
 
 The weights, KV pool, stream count, spill and sampling defaults are unchanged from v1.1.
 
-Checks on the production engine, 2026-11-04, against the previous production engine `8f4faf6` (an unreleased build between v1.1 and v1.2):
+Checks on engine `591d9dc`, 2026-11-04, against the previous production engine `8f4faf6` (an unreleased build between v1.1 and v1.2):
 
 - Terminal-Bench prompts: 13 of 13 token-identical.
 - Decode: 60.9 tok/s single stream and 158.4 tok/s at 8 streams, unchanged within noise. These are quick regression checks, not comparable with the benchmark tables.
 - Output parsing matched DeepSeek's `deepseek-recipe` in 9 of 9 thinking plus tool call cases.
+- Engine `678ea1b` against `591d9dc`: Terminal-Bench prompts 13 of 13 token-identical.
 
-Engine `14803a3` to `591d9dc`:
+Engine `14803a3` to `678ea1b`:
 
 - Enabled prefill layer slices (`TF_DS_PREFILL_SLICE=5`): running streams decode between slices of a long prompt chunk.
 - Matched `deepseek-recipe` prompt rendering: the `response_format` schema reaches the template, tools or a schema add an empty system block when needed, a `thinking` object decides the mode, Messages tool JSON keeps chat key order, and a prefix continuation leaves off the end token.
 - Matched `deepseek-recipe` on Responses: every reasoning item is kept, the custom `apply_patch` tool and `response_format` regex work, and tool namespaces are flattened and restored.
 - Matched `deepseek-recipe` on output and validation: think and DSML markers count only as real tokens, broken tool history and duplicate tool names are refused before inference, and strict tool and response schemas are enforced.
 - These match the listed behaviors, not all of `deepseek-recipe`. What still differs includes effort numbers, default thinking, default output caps, sampling clamps, deferred tools, system images and logprobs.
+- Kept a DSML tool call whole when a parameter value holds its block's closer (Mia 4x patch 0052, hecisaza).
+- Reduced head memory: template strings grow in place (Mia 4x PR 41, Keenni), and each picture is prepared in its own scratch (Mia 2x PR 112, marknx).
 - Fixed replayed `reasoning` fields (Mia's patch 0047, nuk3s), undrained GET and DELETE bodies (Mia's patch 0046, Christopher A. Williamson), a finished-job race (found in Mia PR 94 review, hecisaza), a first-token finish that skipped its release (TensorFold `ed39acc5`, laudney) and an uninitialized read-ahead start.
 - Added opt-in features, all off in production: dead-checkpoint batches, first-continuation hints, draft calibration, first-draft depth, keyed drafts, reduced output heads, restore-room waits, graph telemetry and streamed tool calls. The launch sets all but streamed tool calls to off explicitly; see [engine/README.md](engine/README.md).
 
 Release:
 
+- Added vision job retention from LakyFx 4.0.3: finished image bodies expire after one hour and results after seven days, so storage no longer fills up and refuses new jobs.
 - Selected native profile `v1.2`, recipe patches `chimera-tensorfold-patches-20261103`; kept `v1`, `v1.1` and their manifests for history.
 - Added `release/history/v1.1.json` and moved the v1.1 build record to `release/history/v1.1-build-verification.json`.
 - `release/build-verification.json` records the production hashes and a rebuild of the public tree: all 22 allocated ELF sections match in each binary.
