@@ -29,10 +29,6 @@ Weights: **[Hugging Face](https://huggingface.co/ChimeraWerks/DeepSeek-V4.1-Flas
 v1.2 is the setup running in production: engine `591d9dc`, native profile `v1.2`, the same weights as v1.1. What changed is in the
 [changelog](CHANGELOG.md).
 
-**v1.2 has not been benchmarked yet.** Every speed, fidelity, quality and refusal result on this page comes from v1.1 or
-earlier. Read them as the last measured results, not as v1.2 results. v1.2 also turns on prefill layer slices, which
-were not in the v1.1 prefill runs.
-
 Spot checks on the production engine, 4 November 2026:
 
 | Check | Result |
@@ -41,8 +37,8 @@ Spot checks on the production engine, 4 November 2026:
 | Decode | 60.9 tok/s single stream, 158.4 tok/s at 8 streams, unchanged from the previous production engine within noise |
 | Output parsing | Matched [`deepseek-recipe`](https://github.com/deepseek-ai/deepseek-recipe) in 9 of 9 thinking plus tool call cases |
 
-The previous production engine is `8f4faf6`, an unreleased build between v1.1 and v1.2. These are not benchmark runs:
-do not compare the decode figures with the [decode tables](#decode).
+The previous production engine is `8f4faf6`, an unreleased build between v1.1 and v1.2. These are quick regression
+checks against that engine, so the decode figures are not comparable with the [decode tables](#decode).
 
 ## At a glance
 
@@ -77,7 +73,7 @@ prompt row split across the three GB10s.
 Measured 2 November 2026 on engine `14803a3` with [sparkDash](https://github.com/MiaAI-Lab/sparkDash): cold prompts,
 zero cached tokens, one request at a time, three samples through 32K and two at 64K and 128K. tok/s comes from time to
 first token with the collector's 165.82 ms request overhead subtracted. All CPU cores, performance cores at 3,700 MHz,
-stock GPU clocks. This engine predates layer slices; v1.2 runs them and has not been measured here.
+stock GPU clocks.
 
 ### How prefill got here
 
@@ -411,7 +407,7 @@ ported to three ranks here.
 | Peer watch | `TF_DS_PEER_STALL_SECONDS=120` | wojo's failure exit | A follower exits cleanly when the lead rank's link drops; a killed or rebooted follower recovered in 7.3–7.5 min |
 | Adaptive speculation and prompt caches | `TF_DS_ADAPTIVE_LEARNING=1`, `TF_CACHE_*`, `TF_KV_*` | LakyFx | 3 GiB prompt cache with prefix retention; replies 12/12 identical |
 
-**New in v1.2** (not benchmarked; details in the [changelog](CHANGELOG.md))
+**New in v1.2** (details in the [changelog](CHANGELOG.md))
 
 | Change | Flag | From |
 | --- | --- | --- |

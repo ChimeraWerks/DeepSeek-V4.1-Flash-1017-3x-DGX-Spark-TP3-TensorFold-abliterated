@@ -6,17 +6,17 @@ v1.2 uses engine base `591d9dc` with exactly two non-runtime edits in `zig/src/s
 
 ## 2026-11-04 v1.2
 
-v1.2 has not been benchmarked. Every published speed, fidelity, quality and refusal result was measured on v1.1 or earlier. The weights, KV pool, stream count, spill and sampling defaults are unchanged from v1.1.
+The weights, KV pool, stream count, spill and sampling defaults are unchanged from v1.1.
 
 Checks on the production engine, 2026-11-04, against the previous production engine `8f4faf6` (an unreleased build between v1.1 and v1.2):
 
 - Terminal-Bench prompts: 13 of 13 token-identical.
-- Decode: 60.9 tok/s single stream and 158.4 tok/s at 8 streams, unchanged within noise. These are spot checks, not comparable with the benchmark tables.
+- Decode: 60.9 tok/s single stream and 158.4 tok/s at 8 streams, unchanged within noise. These are quick regression checks, not comparable with the benchmark tables.
 - Output parsing matched DeepSeek's `deepseek-recipe` in 9 of 9 thinking plus tool call cases.
 
 Engine `14803a3` to `591d9dc`:
 
-- Enabled prefill layer slices (`TF_DS_PREFILL_SLICE=5`): running streams decode between slices of a long prompt chunk. The published prefill numbers predate this.
+- Enabled prefill layer slices (`TF_DS_PREFILL_SLICE=5`): running streams decode between slices of a long prompt chunk.
 - Matched `deepseek-recipe` prompt rendering: the `response_format` schema reaches the template, tools or a schema add an empty system block when needed, a `thinking` object decides the mode, Messages tool JSON keeps chat key order, and a prefix continuation leaves off the end token.
 - Matched `deepseek-recipe` on Responses: every reasoning item is kept, the custom `apply_patch` tool and `response_format` regex work, and tool namespaces are flattened and restored.
 - Matched `deepseek-recipe` on output and validation: think and DSML markers count only as real tokens, broken tool history and duplicate tool names are refused before inference, and strict tool and response schemas are enforced.

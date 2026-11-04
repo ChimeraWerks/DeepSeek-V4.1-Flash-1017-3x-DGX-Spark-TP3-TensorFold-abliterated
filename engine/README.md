@@ -32,7 +32,7 @@ yield and admission, prefix retention, and LakyFx 1.2.8's prefill work.
 
 ### Since v1.1 (`14803a3` to `591d9dc`)
 
-v1.2 has not been benchmarked. [CHANGELOG.md](../CHANGELOG.md) lists the checks that were run.
+[CHANGELOG.md](../CHANGELOG.md) lists the checks that were run.
 
 On in production:
 

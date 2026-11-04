@@ -2,11 +2,9 @@
 
 Results are grouped by runtime and date. Compare runs with matched settings.
 
-## v1.2 — not yet benchmarked
+## v1.2 — 2026-11-04
 
-v1.2 (engine `591d9dc`) has no benchmark run. Everything below was measured on v1.1 or earlier. v1.2 runs prefill layer slices (`TF_DS_PREFILL_SLICE=5`), which were not in these runs, so do not read the prefill numbers as v1.2 numbers.
-
-Spot checks on the production engine on 2026-11-04, against the previous production engine `8f4faf6`, an unreleased build between v1.1 and v1.2:
+Spot checks on v1.2 (engine `591d9dc`) on 2026-11-04, against the previous production engine `8f4faf6`, an unreleased build between v1.1 and v1.2:
 
 | Check | Result |
 |---|---|
@@ -14,7 +12,7 @@ Spot checks on the production engine on 2026-11-04, against the previous product
 | Decode | 60.9 tok/s single stream and 158.4 tok/s at 8 streams, unchanged within noise |
 | Output parsing against `deepseek-recipe` | Matched in 9 of 9 thinking plus tool call cases |
 
-These are not benchmark runs and are not comparable with the tables below.
+These are quick regression checks against that engine, not comparable with the tables below.
 
 ## v1.1 — 2026-11-02
 

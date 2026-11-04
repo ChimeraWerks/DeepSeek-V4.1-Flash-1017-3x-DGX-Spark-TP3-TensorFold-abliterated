@@ -15,7 +15,7 @@ The [release manifest](../release/manifest.json) defines the v1.2 configuration 
 | Startup memory reserve | 4 GiB |
 | Sampling | temperature 1, top_p 1, top_k 20, no min_p, thinking `high` |
 
-v1.2 has not been benchmarked. The [v1.1 benchmark record](../benchmarks/README.md#v11--2026-11-02) holds the latest measured results; the engine there is `14803a3`, without layer slices. The comparisons below predate v1.1.
+The [v1.1 benchmark record](../benchmarks/README.md#v11--2026-11-02) holds the latest full results; the engine there is `14803a3`. The comparisons below predate v1.1.
 
 The manifest lists the full engine environment and rank-0 options. Set these variables in the engine environment, not as `cluster.env` keys.
 

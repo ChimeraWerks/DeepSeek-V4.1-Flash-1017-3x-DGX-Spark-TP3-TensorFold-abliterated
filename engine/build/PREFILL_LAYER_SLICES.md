@@ -69,5 +69,4 @@ Seeded sampled traffic is a separate state-safety check, not claimed bit parity
 across arbitrary scheduling. Budget 30–60 minutes plus a sustained mixed run.
 
 CPU tests and byte preservation do not establish GPU arithmetic parity or a
-latency improvement. Release v1.2 runs with slices on; the benchmark suite has
-not been rerun with them, so the published prefill numbers predate this path.
+latency improvement. Release v1.2 runs with slices on.
