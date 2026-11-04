@@ -85,7 +85,9 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory()
         os.environ["RECIPE_TEST_KEY"] = "test-credential-only-123456789"
         self.seen = []
+        self.paths = []
         self.truncate = False
+        self.final_events = None
         async def upstream(request):
             if request.url.path == "/health":
                 return httpx.Response(200, json={"ok": True, "warming": False})
@@ -97,6 +99,14 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             self.seen.append(raw)
             if request.url.path == "/v1/messages":
                 self.paths.append(request.url.path)
+                if self.final_events is not None and not raw.get("stream"):
+                    return httpx.Response(200, json={"type": "message", "role": "assistant", "stop_reason": self.final_events,
+                                                     "content": [{"type": "thinking", "thinking": "private"}]})
+                if self.final_events is not None:
+                    events = [{"type": "message_start"}, {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "private"}},
+                              {"type": "message_delta", "delta": {"stop_reason": self.final_events}}, {"type": "message_stop"}]
+                    data = b"".join(("event: " + e["type"] + "\ndata: " + json.dumps(e) + "\n\n").encode() for e in events)
+                    return httpx.Response(200, content=data, headers={"content-type": "text/event-stream"})
                 if raw.get("stream"):
                     events = [{"type": "message_start"}, {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "hello"}}, {"type": "message_stop"}]
                     data = b"".join(("event: " + e["type"] + "\ndata: " + json.dumps(e) + "\n\n").encode() for e in events[: 2 if self.truncate else 3])
@@ -186,6 +196,25 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(count.json(), {"input_tokens": 10})
         bad = await self.client.post("/v1/messages/count_tokens", json={}, headers={"Authorization": "Bearer incorrect"})
         self.assertEqual(bad.status_code, 401)
+
+    async def test_messages_thinking_only_is_an_error_unless_cut_by_max_tokens(self):
+        body = {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 64}
+        self.final_events = "end_turn"
+        answer = await self.client.post("/v1/messages", json=body)
+        self.assertEqual(answer.status_code, 502)
+        stream = await self.client.post("/v1/messages", json={**body, "stream": True})
+        self.assertIn("event: error", stream.text)
+        self.assertNotIn("message_stop", stream.text)
+        self.assertNotIn("message_delta", stream.text)
+        self.final_events = "max_tokens"
+        self.assertEqual((await self.client.post("/v1/messages", json=body)).status_code, 200)
+        stream = await self.client.post("/v1/messages", json={**body, "stream": True})
+        self.assertIn("message_stop", stream.text)
+        self.assertNotIn("event: error", stream.text)
+
+    async def test_messages_lowers_an_oversized_max_tokens(self):
+        await self.client.post("/v1/messages", json={"messages": [{"role": "user", "content": "hi"}], "max_tokens": 10 ** 9})
+        self.assertEqual(self.seen[-1]["max_tokens"], self.cfg.max_output_tokens)
 
     async def test_auth_sampler_and_admission_release(self):
         bad = await self.client.post("/v1/chat/completions", json={}, headers={"Authorization": "Bearer incorrect"})

@@ -173,6 +173,9 @@ def normalize_messages(raw, cfg, client="default", profile=None):
     config = config or {}
     sampled = ("temperature", "top_p", "top_k", "min_p", "presence_penalty", "frequency_penalty", "seed")
     view = {k: raw[k] for k in ("model", "messages", "max_tokens", "thinking", *sampled) if k in raw}
+    # DeepSeek's Messages lowers an oversized max_tokens to the bound; Chat and Responses reject it (deepseek-recipe options.rs).
+    if isinstance(view.get("max_tokens"), int) and not isinstance(view["max_tokens"], bool):
+        view["max_tokens"] = min(view["max_tokens"], cfg.max_output_tokens)
     if config.get("effort") is not None:
         view["reasoning_effort"] = config["effort"]
     chat = normalize(view, cfg, client, "chat", profile)

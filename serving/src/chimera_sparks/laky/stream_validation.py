@@ -144,3 +144,42 @@ class MessagesStreamValidator:
     def finish(self) -> None:
         if not self.stopped:
             raise ValueError("upstream Messages ended without message_stop")
+
+
+class MessagesFinalGuard:
+    """Replace the closing events of a Messages stream that ended with thinking only, as Chat answers empty_final.
+
+    A max_tokens stop is a normal finish. Nothing is held once final text or a tool call has appeared.
+    """
+
+    ERROR = json.dumps({"type": "error", "error": {"type": "api_error", "message": "native returned no final text or tool call"}})
+
+    def __init__(self) -> None:
+        self.pending = b""
+        self.answered = False
+
+    def feed(self, chunk: bytes) -> bytes:
+        if self.answered:
+            return chunk
+        self.pending = (self.pending + chunk).replace(b"\r\n", b"\n")
+        out = []
+        while b"\n\n" in self.pending and not self.answered:
+            frame, self.pending = self.pending.split(b"\n\n", 1)
+            data = b"\n".join(line[5:].lstrip() for line in frame.splitlines() if line.startswith(b"data:"))
+            try:
+                event = json.loads(data) if data else {}
+            except ValueError:
+                event = {}
+            event = event if isinstance(event, dict) else {}
+            block, delta = event.get("content_block") or {}, event.get("delta") or {}
+            self.answered = (block.get("type") == "tool_use" or delta.get("stop_reason") == "max_tokens"
+                             or bool(str(block.get("text") or "").strip() if block.get("type") == "text" else "")
+                             or bool(str(delta.get("text") or "").strip() if delta.get("type") == "text_delta" else ""))
+            if self.answered or event.get("type") not in ("message_delta", "message_stop"):
+                out.append(frame + b"\n\n")
+            elif event.get("type") == "message_stop":
+                out.append(b"event: error\ndata: " + self.ERROR.encode() + b"\n\n")
+        if self.answered:
+            out.append(self.pending)
+            self.pending = b""
+        return b"".join(out)

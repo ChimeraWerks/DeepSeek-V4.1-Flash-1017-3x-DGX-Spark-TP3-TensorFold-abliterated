@@ -11,6 +11,7 @@ v1.1 uses engine base `14803a3` with exactly two non-runtime edits in `zig/src/s
 - Serving: a reply cut by `max_tokens` while thinking is a normal length finish, not an empty-reply error. Incomplete streams now log why they stopped.
 - Serving: Responses admission always uses the native tokenizer, the same as Chat Completions.
 - Serving: `thinking: {type}` now decides thinking mode, and `ultra` effort maps to `max`, matching DeepSeek's `deepseek-recipe`.
+- Serving: a Messages reply with thinking but no final text or tool call is now an error, as on Chat Completions, and an oversized Messages `max_tokens` is lowered to the configured bound, as DeepSeek does.
 
 ## 2026-11-02 v1.1
 

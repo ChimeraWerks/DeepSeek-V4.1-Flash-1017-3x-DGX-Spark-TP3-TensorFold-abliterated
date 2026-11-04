@@ -20,6 +20,7 @@ from .config import Config
 from .engine import Engine, GatewayError
 from .laky.body_limit import read_limited_body, BodyTooLarge
 from .laky.queue import QueueFullError, AdmissionWeightError
+from .laky.stream_validation import MessagesFinalGuard
 from .laky.vision_control import NativeControl
 from .laky.vision_jobs import Jobs, AdmissionError, standalone, contaminated, job_headers, stream_result
 from .policy import ENGINE_EFFORTS, normalize, normalize_messages, PolicyError
@@ -335,9 +336,14 @@ def create_app(cfg: Config, *, transport=None):
                     return
                 pending = b""
                 stage = "stream"
+                final = MessagesFinalGuard() if api == "messages" else None
                 async for chunk in engine.iter_stream(handle):
                     relayed += len(chunk)
-                    if cfg.reasoning_output == "preserve" or api == "messages":
+                    if final:
+                        if held := final.feed(chunk):
+                            yield held
+                        continue
+                    if cfg.reasoning_output == "preserve":
                         yield chunk
                         continue
                     pending = (pending + chunk).replace(b"\r\n", b"\n")
@@ -409,6 +415,10 @@ def create_app(cfg: Config, *, transport=None):
                             truncated = bool(choices) and choices[0].get("finish_reason") == "length"
                             if not message.get("content") and not message.get("tool_calls") and not truncated:
                                 return error(502, "native returned no final text or tool call", "empty_final")
+                        if api == "messages" and payload.get("stop_reason") != "max_tokens" and not any(
+                                part.get("type") == "tool_use" or (part.get("type") == "text" and str(part.get("text") or "").strip())
+                                for part in payload.get("content") or []):
+                            return error(502, "native returned no final text or tool call", "empty_final")
                         if api != "messages":
                             payload = project_reasoning(payload, cfg.reasoning_output)
                     return JSONResponse(payload, status_code=handle.response.status_code,
