@@ -350,6 +350,12 @@ The API does not shorten prompts. A prompt plus its output reserve must fit `con
 
 Poll `status_url` with the same client's credential. Missing or inaccessible jobs return `404` with `not_found`; admission conflicts return `409` with `vision_not_accepted`. The job implementation defines status details, idempotency and recovery. Disconnecting a Chat waiter after acceptance leaves the job running without cancellation or replay.
 
+Completed image bodies expire one hour after the later of the job deadline and last update. Results, job identities and dispatch receipts remain available for seven days after that same baseline, including for reconnects and idempotency checks. After seven days the old job ID returns `404` and its idempotency key may identify new work. Queued, running and unknown jobs, and any job with an unresolved physical attempt, are never removed by storage maintenance.
+
+A bounded sweep runs at startup and every 60 seconds on a worker thread. Under capacity pressure, completed payloads outside the 15-minute deduplication window are transactionally compressed before expiry. SQLite reuses freed pages; maintenance does not run `VACUUM` or replace the database. The migration only adds a payload-archive table and preserves existing rows and columns.
+
+`/health` reports `vision_jobs.storage` with hot, reserved and compressed byte counts, retention windows and free-disk headroom. Vision capacity exhaustion sets `vision_jobs.ready=false` and `blocked=true` without marking a healthy text API unavailable. Admission reserves UTF-8 payload, result and metadata capacity, and dispatch checks capacity again before contacting the engine.
+
 | Configuration key | Package default | Constraint |
 |---|---|---|
 | `media_concurrency` | `2` | `1` or `2`; supplied to the job implementation. |

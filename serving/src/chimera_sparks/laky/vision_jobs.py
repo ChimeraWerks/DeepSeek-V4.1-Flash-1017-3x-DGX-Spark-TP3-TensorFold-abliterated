@@ -65,6 +65,8 @@ class AdmissionError(ValueError):
 
 
 class Ledger:
+    attempt_limit = 0
+
     def __init__(self, path, clock=time.time, controlled=False):
         self.path, self.clock = Path(path), clock
         self.controlled = controlled
@@ -83,6 +85,8 @@ class Ledger:
             db.execute('CREATE INDEX IF NOT EXISTS jobs_lookup ON jobs(owner,fingerprint,created)')
             db.execute('''CREATE TABLE IF NOT EXISTS vision_dispatch (
                 job_id TEXT PRIMARY KEY, body TEXT NOT NULL, receipt TEXT)''')
+        from .vision_storage import VisionStorage
+        self.storage = VisionStorage(self)
 
     @contextmanager
     def connect(self):
@@ -92,6 +96,8 @@ class Ledger:
             with db:
                 yield db
         finally:
+            if db.total_changes and hasattr(self, 'storage'):
+                self.storage.cached = None
             db.close()
 
     def accept(self, owner, body, key=None, *, generation_body=None):
@@ -118,19 +124,23 @@ class Ledger:
                 raise AdmissionError('Backend termination awaits confirmation; do not resubmit accepted jobs')
             if db.execute("SELECT count(*) FROM jobs WHERE state IN ('queued','running')").fetchone()[0] >= 64:
                 raise AdmissionError('Vision queue is full; no new job accepted')
-            count, size = db.execute('SELECT count(*), coalesce(sum(length(cast(body as blob))+coalesce(length(cast(result as blob)),0)),0) FROM jobs').fetchone()
-            if count >= 4096 or size + len(raw.encode()) > 512*1024*1024:
-                raise AdmissionError('Retained vision ledger reached its storage limit; operator review required')
+            if not self.storage.make_room(db, self.storage.charge(len(raw.encode())), new_job=True):
+                raise AdmissionError('Vision active storage has no reserved capacity; no job accepted. '
+                                     'Check vision_jobs.storage in /health; active work remains protected.')
             db.execute('INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,NULL,NULL)',
                        (identity,owner,fingerprint,'queued',now,now,now+self.queue_timeout,raw))
         return identity, True
 
-    def read(self, identity, owner=None):
+    def read(self, identity, owner=None, *, include_body=True):
         with self.connect() as db:
             row = db.execute('SELECT * FROM jobs WHERE id=?', (identity,)).fetchone()
         if row is None or (owner is not None and row['owner'] != owner):
             return None
-        return dict(row)
+        row = dict(row)
+        if include_body and not row['body']:
+            with self.connect() as db:
+                row['body'] = self.storage.hydrate(db, identity)['job']
+        return row
 
     def recover(self):
         with self.connect() as db:
@@ -184,6 +194,8 @@ class Ledger:
                 ON CONFLICT(job_id) DO UPDATE SET body=excluded.body''',(identity,json.dumps(dispatch)))
             db.execute('UPDATE jobs SET backend_id=?,updated=? WHERE id=?',
                        (dispatch['request_id'],self.clock(),identity))
+            if not self.storage.make_room(db):
+                raise ValueError('Vision dispatch exceeds reserved storage capacity')
 
     def dispatch_for(self, identity):
         with self.connect() as db:
@@ -242,7 +254,7 @@ class Ledger:
                        (self.clock(),json.dumps(result),identity))
 
     def status(self, identity, owner):
-        row = self.read(identity,owner)
+        row = self.read(identity,owner,include_body=False)
         if row is None:
             return None
         if row['state']=='queued' and row['deadline']<=self.clock():
@@ -252,7 +264,7 @@ class Ledger:
                 db.execute("UPDATE jobs SET state='failed',updated=?,result=? WHERE id=? AND state='queued' AND deadline<=?",
                            (self.clock(),json.dumps(error('queue_deadline','Job expired before dispatch')),
                             identity,self.clock()))
-            row=self.read(identity,owner)
+            row=self.read(identity,owner,include_body=False)
         return {'job_id':identity,'status':row['state'],'accepted':True,'retryable':False,
                 'elapsed_seconds':round(max(0,self.clock()-row['created']),3),
                 'deadline':row['deadline'],'backend_request_id':row['backend_id'],
@@ -262,6 +274,10 @@ class Ledger:
     def counts(self):
         with self.connect() as db:
             return dict(db.execute('SELECT state,count(*) FROM jobs GROUP BY state').fetchall())
+
+    def capacity(self):
+        with self.connect() as db:
+            return self.storage.status(db)
 
 
 class Jobs:
@@ -292,6 +308,8 @@ class Jobs:
             import fcntl
             fcntl.flock(self.lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
         self.ledger.recover()
+        # Sweep only terminal history, off the event loop, before accepting work.
+        await asyncio.to_thread(self.ledger.storage.maintenance)
         self.runner = asyncio.create_task(self.run())
 
     async def close(self):
@@ -331,6 +349,7 @@ class Jobs:
 
     async def run(self):
         workers = [asyncio.create_task(self.work()) for _ in range(self.ledger.max_running)]
+        workers.append(asyncio.create_task(self.maintain_storage()))
         if self.control is not None:
             workers.append(asyncio.create_task(self.reconcile_unknown()))
         try:
@@ -339,6 +358,12 @@ class Jobs:
             for worker in workers:
                 worker.cancel()
             await asyncio.gather(*workers, return_exceptions=True)
+
+    async def maintain_storage(self):
+        from .vision_storage import MAINTENANCE_INTERVAL
+        while True:
+            await asyncio.sleep(MAINTENANCE_INTERVAL)
+            await asyncio.to_thread(self.ledger.storage.maintenance)
 
     async def work(self):
         while True:

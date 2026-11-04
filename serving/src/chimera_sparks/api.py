@@ -180,8 +180,13 @@ def create_app(cfg: Config, *, transport=None):
         jobs = request.app.state.jobs
         if jobs:
             states = jobs.ledger.counts()
+            storage = await asyncio.to_thread(jobs.ledger.capacity)
+            blocked = jobs.ledger.blocked() or not storage["available"]
             payload["vision_jobs"] = {"states": states, "automatic_replay": False,
-                                     "worker_alive": not jobs.runner.done(), "output_budget": jobs.output_budget()}
+                                     "worker_alive": not jobs.runner.done(), "output_budget": jobs.output_budget(),
+                                     "storage": storage, "blocked": blocked,
+                                     "ready": not jobs.runner.done() and not blocked,
+                                     "degraded": blocked}
             ready = ready and not jobs.runner.done()
             payload["ok"] = ready
         return JSONResponse(payload, status_code=200 if ready else 503)
@@ -310,7 +315,7 @@ def create_app(cfg: Config, *, transport=None):
         client = principal(request)
         if client is None:
             return error(401, "invalid API credential", "invalid_api_key")
-        if not request.app.state.jobs.ledger.read(identity, client):
+        if not request.app.state.jobs.ledger.read(identity, client, include_body=False):
             return error(404, "unknown job", "not_found")
         return JSONResponse(request.app.state.jobs.ledger.status(identity, client), headers=job_headers(identity))
 

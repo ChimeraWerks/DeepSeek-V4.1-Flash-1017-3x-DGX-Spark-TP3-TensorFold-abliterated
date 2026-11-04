@@ -36,7 +36,7 @@ def main():
     ledger = Ledger(args.db)
     if args.verified_termination_receipt:
         reconcile(ledger,args.job_id,json.loads(args.verified_termination_receipt.read_text(encoding='utf-8')))
-    row = ledger.read(args.job_id)
+    row = ledger.read(args.job_id, include_body=False)
     if not row:
         parser.error('Unknown job ID')
     print(json.dumps(ledger.status(args.job_id,row['owner']),indent=2))
