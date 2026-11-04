@@ -151,7 +151,7 @@ def test_cluster_release_assertions_cannot_silently_fork_defaults(d, monkeypatch
 
 
 def test_matching_cluster_release_assertions_preserve_production(d, monkeypatch):
-    for key, value in {"ENGINE_COMMIT": "14803a3", "STREAMS": "16", "POOL_TOKENS": "8000000",
+    for key, value in {"ENGINE_COMMIT": "591d9dc", "STREAMS": "16", "POOL_TOKENS": "8000000",
                        "CONTEXT_TOKENS": "1048576", "GRAPH_CAP": "128", "SPILL_GIB": "256",
                        "MEMORY_RESERVE_GIB": "4", "TOP_K": "20"}.items():
         monkeypatch.setenv(key, value)
@@ -376,7 +376,7 @@ def test_old_units_only_matches_the_selected_recipe(d, monkeypatch):
 
 def test_manifest_and_example_contract(d):
     manifest = json.loads((ROOT / "release/manifest.json").read_text())
-    assert manifest["engine"]["commit"] == "14803a3" and manifest["engine"]["tensorfold_base"] == "cebcf1e"
+    assert manifest["engine"]["commit"] == "591d9dc" and manifest["engine"]["tensorfold_base"] == "cebcf1e"
     assert manifest["serving"]["version"] == "0.1.5"
     assert manifest["weights"]["model_revision"] == "1bae0e1088993b9b82de08f59de5be5a34e42170"
     # The published Hugging Face weights commit, verified on the hub after upload; never a placeholder.
@@ -395,7 +395,7 @@ def recipe(d, monkeypatch):
     return mod
 
 
-@pytest.mark.parametrize("manifest_name", ["manifest.json", "history/v1.json"])
+@pytest.mark.parametrize("manifest_name", ["manifest.json", "history/v1.1.json", "history/v1.json"])
 def test_prepare_downloads_and_verifies_each_rank_before_staging_engine(recipe, monkeypatch, manifest_name):
     recipe.deploy.SETTINGS.update(HF_REPO="example/export", HF_REVISION="a" * 40)
     manifest = json.loads((ROOT / "release" / manifest_name).read_text())
@@ -502,16 +502,17 @@ def test_stop_stops_api_before_only_rank_addresses(recipe, monkeypatch):
     assert [cmd for host, cmd in calls[1:]] == ["systemctl --user stop " + unit for unit in units.values()]
 
 
-def test_v11_default_labels_and_configuration_are_rank_consistent_and_v1_is_explicit(d):
+def test_v12_default_labels_and_configuration_are_rank_consistent_and_history_is_explicit(d):
     historical = json.loads((ROOT / "release/history/v1.json").read_text())
     current = json.loads(d.DEFAULT_MANIFEST.read_text())
     assert current["weights"]["arm"] == "chimera-dsv41-flash-1017-abliterated-exl3"
     assert current["weights"]["artifact_arm"] == historical["weights"]["arm"]
     current_envs = [json.loads(d.get_env_json(rank)) for rank in range(3)]
-    assert all(env["TF_DS_ENGINE_ID"] == "chimera-tensorfold-tp3-14803a3" for env in current_envs)
-    assert all(env["TF_DS_RECIPE_PATCHES"] == "chimera-tensorfold-patches-20261102" for env in current_envs)
+    assert all(env["TF_DS_ENGINE_ID"] == "chimera-tensorfold-tp3-591d9dc" for env in current_envs)
+    assert all(env["TF_DS_RECIPE_PATCHES"] == "chimera-tensorfold-patches-20261103" for env in current_envs)
     assert all(env["TF_DS_POOL_TOKENS"] == "8000000" for env in current_envs)
     assert all(env["TF_DS_PREFILL_COMPUTE_ROWS"] == "8192" for env in current_envs)
+    assert all(env["TF_DS_PREFILL_SLICE"] == "5" for env in current_envs)
     assert d.SETTINGS["ENGINE_LABEL"] == d.SETTINGS["API_INSTALLATION"] == "ds1017"
     d.parse_args(["--manifest", str(ROOT / "release/history/v1.json")])
     for rank in range(3):
@@ -520,3 +521,10 @@ def test_v11_default_labels_and_configuration_are_rank_consistent_and_v1_is_expl
         assert old["TF_DS_RECIPE_PATCHES"] == historical["labels"]["TF_DS_RECIPE_PATCHES"]
         assert old["TF_DS_POOL_TOKENS"] == "10000000"
         assert "TF_DS_PREFILL_COMPUTE_ROWS" not in old
+    d.parse_args(["--manifest", str(ROOT / "release/history/v1.1.json")])
+    for rank in range(3):
+        previous = json.loads(d.get_env_json(rank))
+        assert previous["TF_DS_ENGINE_ID"] == "chimera-tensorfold-tp3-14803a3"
+        assert previous["TF_DS_RECIPE_PATCHES"] == "chimera-tensorfold-patches-20261102"
+        assert previous["TF_DS_PREFILL_COMPUTE_ROWS"] == "8192"
+        assert "TF_DS_PREFILL_SLICE" not in previous

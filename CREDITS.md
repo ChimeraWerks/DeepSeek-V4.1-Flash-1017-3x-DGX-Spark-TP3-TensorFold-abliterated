@@ -21,11 +21,12 @@ Repository code is Apache-2.0 ([LICENSE](LICENSE)); third-party code keeps its o
 
 | Contributor and project | Revision or version | Contribution |
 |---|---|---|
-| ChimeraWerks, [this repository](https://github.com/ChimeraWerks/DeepSeek-V4.1-Flash-1017-3x-DGX-Spark-TP3-TensorFold-abliterated) | Engine `14803a3`; API 0.1.5 | Weight composition and evaluation, owned-row prefill, direct gathers, shared-expert split, prompt aliasing, 8K prefill windows, graph vote and capture fallback, TP3 ports of the TP2/TP4 patches below, lifecycle scripts and release. |
+| ChimeraWerks, [this repository](https://github.com/ChimeraWerks/DeepSeek-V4.1-Flash-1017-3x-DGX-Spark-TP3-TensorFold-abliterated) | Engine `591d9dc`; API 0.1.5 | Weight composition and evaluation, owned-row prefill, direct gathers, shared-expert split, prompt aliasing, 8K prefill windows, yielded prefill layer slices, graph vote and capture fallback, TP3 ports of the TP2/TP4 patches below, lifecycle scripts and release. |
 | Ash Hart and TensorFold contributors, [TensorFold attribution][BA] | TensorFold 1.0.2 license reference | Native engine, serving lanes, CUDA integration, EXL3 module and speculative generation (Apache-2.0, earlier MIT code identified by component notices). |
 | BertholomusAI / Albert Lee, [TensorFold `dsv41`][BA] | Attribution `6a1af414e561a5a01ca53e2c4a05fed177dbb7ca` | DeepSeek-V4.1 prompt and decode paths, DSpark, Engram, RDMA and vision. |
-| LakyFx, [TP3 recipe][TP], [MIT license][LL] | Source `b4e476d60f01fda564d760c5906ac1358390c728`; API imports `21f9a280803b7e34f5b7abad3c479d9c6077ec0d`; 1.2.8 prefill port in `14803a3` | TP3 layout and export, K2/K2a caches, adaptive speculation, 1.2.8 prefill work and the imported serving files in `serving/UPSTREAM.json`. |
+| LakyFx, [TP3 recipe][TP], [MIT license][LL] | Source `b4e476d60f01fda564d760c5906ac1358390c728`; API imports `21f9a280803b7e34f5b7abad3c479d9c6077ec0d`; 1.2.8 prefill port in `14803a3`; 4.0.2 ports in `591d9dc` | TP3 layout and export, K2/K2a caches, adaptive speculation, 1.2.8 prefill work, the imported serving files in `serving/UPSTREAM.json`, and the 4.0.2 dead-checkpoint release, first-continuation hint and rank-local head reduction (opt-in, off in production). |
 | Mia's AI Lab, [TP2 recipe credits][MC], [TP4 recipe](https://github.com/MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold) | Credits `370daf0cc38f348516a98ebab38f6053858eab1f` | Apache-2.0 TP2/TP4 patches, image prompt caching and the required/named tool-call gate. |
+| DeepSeek, [`deepseek-recipe`](https://github.com/deepseek-ai/deepseek-recipe/tree/935817c66f5d6e64838f419692545f06787e485f), [MIT license](https://github.com/deepseek-ai/deepseek-recipe/blob/935817c66f5d6e64838f419692545f06787e485f/LICENSE) | 0.2.0 at `935817c66f5d6e64838f419692545f06787e485f` | Reference for the v1.2 prompt rendering, Responses, tool validation and output parsing behavior. Behavior was matched. |
 | xgrammar authors, [engine attribution][BA] | v0.2.8 | Structured-output library. |
 
 ## Patch authors
@@ -39,6 +40,11 @@ Their TP2/TP4 patches ship in this engine, ported to TP3.
 | Coinupbtc, [Mia credits][MC] | PR 5; patches 0027/0028 | Prefill/decode interleave, tool-call prose preservation, plain encoding of caller token spellings. |
 | Maciej Kowalik (koniaik), [Mia credits][MC] | Patch 0029 | Anthropic thinking-budget handling. |
 | hecisaza, [Mia TP4 recipe](https://github.com/MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold) | Patch 0035 | Engram read-failure exit. |
+| nuk3s, [Mia PR 100](https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks/pull/100), [PR 101](https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks/pull/101) | Patches 0040, 0047, 0048 | Restore-room wait, replayed reasoning, streamed tool calls. The wait and streaming are opt-in and off in production. |
+| Christopher A. Williamson (cawilliamson), [Mia credits][MC] | Patch 0046 | GET and DELETE body discard. |
+| lukaszraczylo, [Mia PR 104](https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks/pull/104), [PR 105](https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks/pull/105), [PR 107](https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks/pull/107), [PR 109](https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks/pull/109) | Patches 0049, 0050, 0052, 0054 | First-draft depth, draft calibration and keyed drafts (opt-in, off in production); the design our layer slices follow. |
+| hecisaza, [Mia PR 94](https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks/pull/94) | PR 94 review | Found the finished-job race fixed in `7d95481`. |
+| laudney, [TensorFold](https://github.com/ashhart/TensorFold) | `ed39acc5` (#1945) | Release of a first-token finish when its trace fails. |
 | William J Riley (willjriley), [TensorFold PR 27](https://github.com/bertholomus/TensorFold/pull/27) | PR 27 | RDMA idle backoff. |
 | Mykhailo Tamarin, [Mia PR 26](https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks/pull/26) | PR 26 | Zig-ring port of the idle backoff. |
 | sayyidfareed, Manrique (hashd1ve), Nathan McBride, Jay Leaton, [Mia credits][MC] | Credits `370daf0` | GID/MTU handling, retained prefixes, direct-output templates, append buffers, UTF-8 handling. |

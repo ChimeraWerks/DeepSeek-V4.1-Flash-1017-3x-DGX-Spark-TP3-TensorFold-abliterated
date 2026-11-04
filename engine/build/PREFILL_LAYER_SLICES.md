@@ -1,7 +1,7 @@
 # Yielded prefill layer slices
 
 TF_DS_PREFILL_SLICE is default 0 (the existing whole-chunk frame and arithmetic).
-Values 1 through 40 cap the number of layers per slice. This path requires
+Release v1.2 sets it to 5. Values 1 through 40 cap the number of layers per slice. This path requires
 TF_DS_PREFILL_YIELD=1 and a yielded host callback. KV-sharded fills deliberately
 retain whole chunks because their planner/twin lifecycle has not been qualified
 for mid-chunk decode. Images are supported through the existing per-slot retained
@@ -69,6 +69,5 @@ Seeded sampled traffic is a separate state-safety check, not claimed bit parity
 across arbitrary scheduling. Budget 30–60 minutes plus a sustained mixed run.
 
 CPU tests and byte preservation do not establish GPU arithmetic parity or a
-latency improvement. Do not deploy or enable until the owner completes Spark
-qualification. The baseline undefined-model fixture crashes and the separate
-production ahead/fill_seq initialization audit belong to the owner coordinator.
+latency improvement. Release v1.2 runs with slices on; the benchmark suite has
+not been rerun with them, so the published prefill numbers predate this path.

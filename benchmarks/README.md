@@ -2,6 +2,20 @@
 
 Results are grouped by runtime and date. Compare runs with matched settings.
 
+## v1.2 — not yet benchmarked
+
+v1.2 (engine `591d9dc`) has no benchmark run. Everything below was measured on v1.1 or earlier. v1.2 runs prefill layer slices (`TF_DS_PREFILL_SLICE=5`), which were not in these runs, so do not read the prefill numbers as v1.2 numbers.
+
+Spot checks on the production engine on 2026-11-04, against the previous production engine `8f4faf6`, an unreleased build between v1.1 and v1.2:
+
+| Check | Result |
+|---|---|
+| Terminal-Bench prompts | 13 of 13 token-identical |
+| Decode | 60.9 tok/s single stream and 158.4 tok/s at 8 streams, unchanged within noise |
+| Output parsing against `deepseek-recipe` | Matched in 9 of 9 thinking plus tool call cases |
+
+These are not benchmark runs and are not comparable with the tables below.
+
 ## v1.1 — 2026-11-02
 
 Production results from **03:59:41–04:19:02 UTC**. The [sanitized numeric summary](v1.1/summary.json) contains all 48 decode points, 6 prefill points, per-stream timing and token counts, request settings and validation notes.
@@ -105,7 +119,7 @@ Numeric summaries: [decode.csv](v1/decode.csv), [prefill.csv](v1/prefill.csv) an
 
 Each section used a 55 C SoC cooldown gate. Engine identity, settings and core masks stayed unchanged, with no rank errors. Six decode sections covered greedy and think modes on prose, code and structured prompts.
 
-The October 31 runtime used engine `7d5b4d8` and API 0.1.5. Its numeric-effort update passed response-parity checks; the full speed suite was not rerun. The [historical manifest](../release/history/v1.json) records v1 separately from active v1.1.
+The October 31 runtime used engine `7d5b4d8` and API 0.1.5. Its numeric-effort update passed response-parity checks; the full speed suite was not rerun. The [historical manifest](../release/history/v1.json) records v1 separately; [v1.1](../release/history/v1.1.json) is archived the same way.
 
 ## Historical decode throughput
 
@@ -182,7 +196,7 @@ screen. Every arm: [refusal.csv](v1/refusal.csv).
 
 ## Run a comparison
 
-Use the historical sparkDash revision and version for v1 comparisons. Record the collector revision for new runs. Start with the [lifecycle scripts](../docs/reproduction.md), then match modes, prompt categories, stream counts and output budgets. Match engine `cebcf1e` for v1; runs on `7d5b4d8` or `14803a3` are separate measurements.
+Use the historical sparkDash revision and version for v1 comparisons. Record the collector revision for new runs. Start with the [lifecycle scripts](../docs/reproduction.md), then match modes, prompt categories, stream counts and output budgets. Match engine `cebcf1e` for v1; runs on `7d5b4d8`, `14803a3` or `591d9dc` are separate measurements.
 
 Record weight identity, engine/API/collector versions, settings, topology, clocks and affinity. Stop unrelated traffic, warm the engine and apply the cooldown gate before each section. Keep prompts, actual token counts, cache state, timing boundaries and errors in private run records. Publish numeric summaries without credentials or host details.
 

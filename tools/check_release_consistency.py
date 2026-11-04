@@ -20,6 +20,11 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = Path("serving/src/chimera_sparks")
+ACTIVE_RELEASE = "v1.2"
+ACTIVE_ENGINE = "591d9dc"
+ACTIVE_RECIPE_PATCHES = "chimera-tensorfold-patches-20261103"
+# Frozen releases: each keeps a manifest in release/history and a bundled native profile.
+HISTORY = {"v1": "7d5b4d8", "v1.1": "14803a3"}
 RUNTIME_FIELDS = {"streams": "STREAMS", "pool": "POOL_TOKENS", "context": "CONTEXT_TOKENS",
                   "graph_cap": "GRAPH_CAP", "spill_gib": "SPILL_GIB",
                   "memory_reserve_gib": "MEMORY_RESERVE_GIB", "top_k": "TOP_K", "commit": "ENGINE_COMMIT"}
@@ -91,8 +96,9 @@ def release_defaults(root):
     profile_name = default_native_profile(root)
     same("default native profile", profile_name, serving["native_profile"])
     same("release name", manifest["release"], serving["native_profile"])
+    same("active release", manifest["release"], ACTIVE_RELEASE)
     profiles = root / PACKAGE / "assets/profiles"
-    same("bundled native profiles", {p.stem for p in profiles.glob("*.json")}, {"v1", "v1.1"})
+    same("bundled native profiles", {p.stem for p in profiles.glob("*.json")}, {ACTIVE_RELEASE, *HISTORY})
     profile = json.loads((profiles / (profile_name + ".json")).read_text())
     for field, key in {"streams": "parallel", "pool": "pool_tokens", "context": "context_tokens",
                        "graph_cap": "graph_cap", "spill_gib": "spill_gib",
@@ -104,12 +110,12 @@ def release_defaults(root):
     same("native profile version", profile["version"], serving["native_profile"])
     same("manifest engine identity", manifest["labels"]["TF_DS_ENGINE_ID"],
          "chimera-tensorfold-tp3-" + engine["commit"])
-    same("recipe patches identity", manifest["labels"]["TF_DS_RECIPE_PATCHES"], "chimera-tensorfold-patches-20261102")
+    same("recipe patches identity", manifest["labels"]["TF_DS_RECIPE_PATCHES"], ACTIVE_RECIPE_PATCHES)
     same("model label", manifest["labels"]["TF_DS_MODEL_REVISION"], weights["model_revision"] + "-chimera-dsv41-flash-1017-abliterated-exl3")
     same("artifact arm", profile.get("artifact_arm"), weights.get("artifact_arm"))
     same("artifact arm production identity", weights.get("artifact_arm"), "V4-MRF-1017")
     same("rank cache layout", profile.get("rank_cache_subdir"), "ranks")
-    same("source engine", engine["commit"], "14803a3")
+    same("source engine", engine["commit"], ACTIVE_ENGINE)
     same("production pool", engine["pool"], 8000000)
     config = module_at(root / PACKAGE / "config.py", "config").Config()
     for field, expected in {"context_tokens": engine["context"], "engine_streams": engine["streams"],
@@ -129,14 +135,33 @@ def release_defaults(root):
     same("cluster.env.example HF_REPO", example.get("HF_REPO"), weights["repo"])
     same("cluster.env.example HF_REVISION", example.get("HF_REVISION"), weights["revision"] or "REPLACE_WITH_WEIGHTS_EXPORT_COMMIT")
     scope = json.loads((root / "serving/engine-scope.json").read_text())
-    same("engine-scope profile", scope["required_native_profile"], "v1.1")
+    same("engine-scope profile", scope["required_native_profile"], ACTIVE_RELEASE)
     same("engine-scope engine", scope["engine_commit"], engine["commit"])
     same("engine-scope serving", scope["serving_version"], serving["version"])
     for field in RUNTIME_FIELDS.keys() - {"commit"}:
         same("engine-scope " + field, scope["production_defaults"][field], engine[field])
 
-    # Exercise the actual launcher, not just the JSON. All topology is synthetic;
-    # the complete manifest env and argv must agree on all three ranks.
+    delta = engine["source_delta"]
+    same("source delta base", delta["base_commit"], engine["commit"])
+    same("source delta file", sha256(root / delta["path"]), delta["sha256"])
+    build = json.loads((root / "release/build-verification.json").read_text())
+    same("build verification release", build["release"], manifest["release"])
+    same("build verification engine", build["engine_commit"], engine["commit"])
+    same("build verification source delta", build["source_delta"], delta)
+    errors.extend(launcher_errors(root, manifest, profile_name, manifest_path))
+    return errors
+
+
+def launcher_errors(root, manifest, profile_name, manifest_path):
+    """Exercise the actual launcher, not just the JSON. All topology is synthetic;
+    the complete manifest env and argv must agree on all three ranks."""
+    errors = []
+    engine, serving = manifest["engine"], manifest["serving"]
+
+    def same(label, actual, expected):
+        if actual != expected:
+            errors.append(label + " disagrees with " + manifest_path)
+
     launcher = module_at(root / PACKAGE / "assets/native_launch.py", "launcher")
     devices = ["rdma0", "rdma1", "rdma2", "rdma3"]
     masks = [[0, 12, 3], [3, 0, 12], [12, 3, 0]]
@@ -178,6 +203,18 @@ def release_defaults(root):
     finally:
         if nap is not None:
             os.environ["CHIMERA_RDMA_NAP"] = nap
+    return errors
+
+
+def release_history(root):
+    """Frozen releases keep their manifest, their commit and a launcher that still reproduces them."""
+    errors = []
+    for name, commit in HISTORY.items():
+        path = "release/history/" + name + ".json"
+        manifest = json.loads((root / path).read_text())
+        if (manifest["release"], manifest["serving"]["native_profile"], manifest["engine"]["commit"]) != (name, name, commit):
+            errors.append(path + " does not describe " + name + " at " + commit)
+        errors.extend(launcher_errors(root, manifest, name, path))
     return errors
 
 
@@ -278,6 +315,10 @@ def check(root=ROOT):
     except (OSError, ValueError, KeyError, StopIteration, SyntaxError, TypeError, AttributeError) as error:
         errors.append("release defaults could not be checked: " + str(error))
     try:
+        errors.extend(release_history(root))
+    except (OSError, ValueError, KeyError, SyntaxError, TypeError, AttributeError) as error:
+        errors.append("release history could not be checked: " + str(error))
+    try:
         errors.extend(prefill_and_assets(root))
     except (OSError, ValueError, KeyError, TypeError) as error:
         errors.append("prefill and runtime-asset hashes could not be checked: " + str(error))
@@ -297,7 +338,7 @@ def main(argv=None):
         for error in errors:
             print("FAIL: " + error, file=sys.stderr)
         return 1
-    print("Release consistency passed: active v1.1 and historical v1, serving defaults, cluster example, manifest, "
+    print("Release consistency passed: active v1.2 and historical v1 and v1.1, serving defaults, cluster example, manifest, "
           "prefill and runtime-asset hashes, and tracked text")
     return 0
 

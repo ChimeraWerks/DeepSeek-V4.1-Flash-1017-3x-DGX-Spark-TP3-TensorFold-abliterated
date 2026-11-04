@@ -28,7 +28,7 @@ class PackageTests(unittest.TestCase):
         nodes = [{"rank": i, "host": "node-" + str(i), "native": {
             "rank": i, "root": "/srv/sparks/runtime", "rdma_devices": ["rdma0", "rdma1", "rdma2", "rdma3"],
             "peer_masks": [0 if j == i else 3 for j in range(3)], "gid_index": 3}} for i in range(3)]
-        cluster = {"nodes": nodes, "profile": "v1.1", "topology": {
+        cluster = {"nodes": nodes, "profile": "v1.2", "topology": {
             "master_address": "node-0", "master_port": 29500, "nccl_interface": "fabric0",
             "nccl_hcas": ["rdma0", "rdma1"], "nccl_address_range": "192.0.2.0/24",
             "api_host": "127.0.0.1", "api_port": 8003}}
@@ -49,8 +49,8 @@ class PackageTests(unittest.TestCase):
         self.assertIn("kv_sharding", scope["opt_in_later_default_off"])
         self.assertNotIn("validated_checkpoints", scope["opt_in_later_default_off"])
         self.assertFalse(scope["live_qualified"])
-        self.assertEqual(scope["required_native_profile"], "v1.1")
-        self.assertEqual(scope["engine_commit"], "14803a3")
+        self.assertEqual(scope["required_native_profile"], "v1.2")
+        self.assertEqual(scope["engine_commit"], "591d9dc")
 
 
 if __name__ == "__main__":

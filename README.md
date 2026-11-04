@@ -24,6 +24,26 @@ Uncensored **[DeepSeek-V4.1-Flash-1017](https://huggingface.co/deepseek-ai/DeepS
 three DGX Sparks. Here: the TensorFold engine with our TP3 work, deploy scripts, the API and every benchmark below.
 Weights: **[Hugging Face](https://huggingface.co/ChimeraWerks/DeepSeek-V4.1-Flash-1017-EXL3-3.84bpw-abliterated)**.
 
+## Current release: v1.2
+
+v1.2 is the setup running in production: engine `591d9dc`, native profile `v1.2`, the same weights as v1.1. What changed is in the
+[changelog](CHANGELOG.md).
+
+**v1.2 has not been benchmarked yet.** Every speed, fidelity, quality and refusal result on this page comes from v1.1 or
+earlier. Read them as the last measured results, not as v1.2 results. v1.2 also turns on prefill layer slices, which
+were not in the v1.1 prefill runs.
+
+Spot checks on the production engine, 4 November 2026:
+
+| Check | Result |
+| --- | --- |
+| Prompt rendering | 13 of 13 Terminal-Bench prompts token-identical to the previous production engine |
+| Decode | 60.9 tok/s single stream, 158.4 tok/s at 8 streams, unchanged from the previous production engine within noise |
+| Output parsing | Matched [`deepseek-recipe`](https://github.com/deepseek-ai/deepseek-recipe) in 9 of 9 thinking plus tool call cases |
+
+The previous production engine is `8f4faf6`, an unreleased build between v1.1 and v1.2. These are not benchmark runs:
+do not compare the decode figures with the [decode tables](#decode).
+
 ## At a glance
 
 | | v1.1, measured 2–3 November 2026 |
@@ -36,7 +56,7 @@ Weights: **[Hugging Face](https://huggingface.co/ChimeraWerks/DeepSeek-V4.1-Flas
 | Capacity | 1,048,576-token context configured (largest measured prompt 131,090); 8M-token KV pool, 16 streams, 256 GiB NVMe spill |
 | Model | MoE, 384 routed experts, top-6, 1 shared, 40 layers, MLA, DSpark MTP drafter, Engram; `1bae0e1` |
 | Weights | 3.84 bpw EXL3 composition plus [mrfakename](https://huggingface.co/mrfakename/DeepSeek-V4.1-Flash-1017-abliterated)'s rank-2 refusal-removal edit, re-encoded at 6 bits |
-| Engine | TensorFold `dsv41`, release `14803a3`, with the LakyFx 1.2.8 prefill port and our TP3 work |
+| Engine | TensorFold `dsv41`, `14803a3` for these numbers, with the LakyFx 1.2.8 prefill port and our TP3 work; v1.2 runs `591d9dc` |
 
 ## Prefill
 
@@ -57,7 +77,7 @@ prompt row split across the three GB10s.
 Measured 2 November 2026 on engine `14803a3` with [sparkDash](https://github.com/MiaAI-Lab/sparkDash): cold prompts,
 zero cached tokens, one request at a time, three samples through 32K and two at 64K and 128K. tok/s comes from time to
 first token with the collector's 165.82 ms request overhead subtracted. All CPU cores, performance cores at 3,700 MHz,
-stock GPU clocks.
+stock GPU clocks. This engine predates layer slices; v1.2 runs them and has not been measured here.
 
 ### How prefill got here
 
@@ -106,6 +126,7 @@ An engineering progression, not isolated A/B tests: KV pool sizes changed betwee
 | Ragged expert kernel | `TF_DS_PREFILL_W` | LakyFx 1.2.8 | Expert GEMMs over ragged token groups |
 | Engram read-ahead | `TF_DS_PREFILL_AE` | LakyFx 1.2.8 | Reads the next chunk's Engram rows while the current chunk computes |
 | Bounded scratch | `TF_DS_PREFILL_AF` | LakyFx 1.2.8 | Bounds prompt scratch memory |
+| Layer slices (v1.2, not in the numbers above) | `TF_DS_PREFILL_SLICE=5` | ChimeraWerks, after Mia's patch 0052 | A prompt chunk runs five layers at a time, with a decode round between slices |
 
 </details>
 
@@ -123,7 +144,7 @@ Data: [development.csv](benchmarks/dev/development.csv).
 
 <p align="center"><img src="docs/assets/chart-decode.svg" width="100%" alt="Two line charts of combined decode tok/s against requests at once. Greedy, prose and code: C1 84 and 126, C2 112 and 169, C4 166 and 192, C8 234 and 219, C12 249 and 250, C16 263 and 254. Thinking, prose and code: C1 69 and 86, C2 95 and 122, C4 135 and 147, C8 174 and 176, C12 197 and 193, C16 217 and 211" /></p>
 
-Same run, 400 output tokens per request, one run per point, timed at the engine on short cached prompts; API overhead is not included. Greedy is temperature 0 with thinking off; thinking is temperature 0.7 with
+Same v1.1 run, 400 output tokens per request, one run per point, timed at the engine on short cached prompts; API overhead is not included. Greedy is temperature 0 with thinking off; thinking is temperature 0.7 with
 thinking on. All 354 decode streams completed with no failures.
 
 <details>
@@ -300,7 +321,7 @@ curl -s http://127.0.0.1:18002/v1/chat/completions \
   -d '{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
-The API serves `/v1/chat/completions` and `/v1/responses` with streaming, tool calls and per-request thinking and
+The API serves `/v1/chat/completions`, `/v1/responses` and `/v1/messages` with streaming, tool calls and per-request thinking and
 effort. Defaults: temperature 1, top_p 1, top_k 20, thinking `high`; request values win. See the
 [serving API](serving/README.md).
 
@@ -360,9 +381,10 @@ release manifest to get past one.
 
 ## What this build adds
 
-Everything here is on in v1.1, on top of the TensorFold `dsv41` baseline, and every change passed the same greedy parity check. Most
-public DeepSeek-V4.1-Flash Spark recipes target two or four nodes; the patches in the second table were written for
-those and ported to three ranks here.
+Everything here is on in v1.2, on top of the TensorFold `dsv41` baseline. The changes in the first two tables each passed the same
+greedy parity check when they were added, and their measured effects come from v1.1 or earlier. Most public
+DeepSeek-V4.1-Flash Spark recipes target two or four nodes; the patches in the second table were written for those and
+ported to three ranks here.
 
 **Built for this release** ([development.csv](benchmarks/dev/development.csv))
 
@@ -389,6 +411,17 @@ those and ported to three ranks here.
 | Peer watch | `TF_DS_PEER_STALL_SECONDS=120` | wojo's failure exit | A follower exits cleanly when the lead rank's link drops; a killed or rebooted follower recovered in 7.3–7.5 min |
 | Adaptive speculation and prompt caches | `TF_DS_ADAPTIVE_LEARNING=1`, `TF_CACHE_*`, `TF_KV_*` | LakyFx | 3 GiB prompt cache with prefix retention; replies 12/12 identical |
 
+**New in v1.2** (not benchmarked; details in the [changelog](CHANGELOG.md))
+
+| Change | Flag | From |
+| --- | --- | --- |
+| Prefill layer slices: running streams decode between slices of a long prompt chunk | `TF_DS_PREFILL_SLICE=5` | ChimeraWerks, after Mia's patch 0052 (lukaszraczylo) |
+| Prompt rendering, Responses reasoning and tools, tool history checks and strict schemas | on | Behavior matched to [`deepseek-recipe`](https://github.com/deepseek-ai/deepseek-recipe) 0.2.0 |
+| Think and DSML markers matched by token, not spelling | on | Behavior matched to `deepseek-recipe` |
+| Replayed `reasoning` field, GET and DELETE body handling, and two lane fixes | on | Mia's patches 0047 and 0046, TensorFold `ed39acc5`, Mia PR 94 review |
+
+The engine also carries several ported features that stay off in production. [engine/README.md](engine/README.md) lists them.
+
 <details>
 <summary><b>Tried and dropped</b></summary>
 
@@ -413,7 +446,7 @@ Measured on the Sparks and left out because they lost speed or headroom ([develo
 
 ```
 scripts/          prep-sparks, preflight, prepare, start, smoke-test, status, stop
-engine/           TensorFold dsv41 source at 14803a3, build script and kernel inputs
+engine/           TensorFold dsv41 source at 591d9dc, build script and kernel inputs
 serving/          OpenAI-compatible serving API
 tools/            Spark host prep, cluster deployer, rank preparation and release checks
 release/          manifest, native profiles, weight provenance, build hashes

@@ -95,7 +95,7 @@ class RecipeReviewTests(unittest.TestCase):
             self.assertEqual(launch[launch.index("--")+1:],item["argv"])
             self.assertEqual(item["environment"]["TF_DS_STEP_AHEAD"], "0")
         profiles=Path(N.__file__).parent/"profiles"
-        self.assertEqual(sorted(p.name for p in profiles.glob("*.json")), ["v1.1.json", "v1.json"])
+        self.assertEqual(sorted(p.name for p in profiles.glob("*.json")), ["v1.1.json", "v1.2.json", "v1.json"])
 
 
 if __name__ == "__main__":

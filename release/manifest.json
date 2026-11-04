@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "release": "v1.1",
+  "release": "v1.2",
   "engine": {
-    "commit": "14803a3",
+    "commit": "591d9dc",
     "tensorfold_base": "cebcf1e",
     "streams": 16,
     "graph_cap": 128,
@@ -90,7 +90,18 @@
       "TF_DS_PREFILL_COMPUTE_ROWS": "8192",
       "TF_DS_PREFILL_SHARED_SPLIT": "1",
       "TF_DS_PROMPT_ALIAS": "1",
-      "TF_DS_PREFILL_RAGGED_CUBIN": "${KIT_DIR}/auxiliary/experts_ragged.cubin"
+      "TF_DS_PREFILL_RAGGED_CUBIN": "${KIT_DIR}/auxiliary/experts_ragged.cubin",
+      "TF_DS_REDUCED_HEAD_FATBIN": "${KIT_DIR}/optional-kernels/dsv41_reduced_head.final.fatbin",
+      "TF_DS_KEYED_DRAFT": "0",
+      "TF_DS_DECODE_GREEDY_HEAD": "0",
+      "TF_DS_DECODE_SAMPLE_HEAD": "0",
+      "TF_SPILL_ROOM_WAIT_MS": "0",
+      "TF_DS_GRAPH_TELEMETRY": "0",
+      "TF_DS_FIRST_DRAFT_DEPTH": "0",
+      "TF_DS_DRAFT_CAL": "0",
+      "TF_CACHE_BATCH_DEAD": "0",
+      "TF_CACHE_FIRST_CONTINUATION": "0",
+      "TF_DS_PREFILL_SLICE": "5"
     },
     "head_environment": {
       "TENSORFOLD_PREPARE_FLOOR_GIB": "3",
@@ -114,18 +125,18 @@
       "--top-k=${TOP_K}"
     ],
     "source_delta": {
-      "base_commit": "14803a3",
+      "base_commit": "591d9dc",
       "path": "engine/tensorfold/zig/src/server/metrics.zig",
       "changes": [
         "One documentation comment describes an external metrics sampler generically.",
         "One test title describes external samplers generically."
       ],
       "runtime_logic_changed": false,
-      "sha256": "4fc2f2db1cfdfb28e8461ceb0ab51bd7b901d72ac1dcb5e93ea3c42c2b17c66c"
+      "sha256": "eb1ffa4ac3a83b2d0ce68cca3cb178caf125f278261d93f5d744eedde620c898"
     }
   },
   "serving": {
-    "native_profile": "v1.1",
+    "native_profile": "v1.2",
     "package": "chimera-dgx-sparks",
     "version": "0.1.5",
     "model": "deepseek-v4.1-flash",
@@ -149,8 +160,8 @@
     "redistribution_status": "published"
   },
   "labels": {
-    "TF_DS_ENGINE_ID": "chimera-tensorfold-tp3-14803a3",
-    "TF_DS_RECIPE_PATCHES": "chimera-tensorfold-patches-20261102",
+    "TF_DS_ENGINE_ID": "chimera-tensorfold-tp3-591d9dc",
+    "TF_DS_RECIPE_PATCHES": "chimera-tensorfold-patches-20261103",
     "TF_DS_MODEL_REVISION": "1bae0e1088993b9b82de08f59de5be5a34e42170-chimera-dsv41-flash-1017-abliterated-exl3"
   },
   "sampler": {

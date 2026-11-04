@@ -96,7 +96,7 @@ def rank_plan(cluster):
     if len(nodes) != 3 or [n["rank"] for n in nodes] != [0, 1, 2]:
         raise ValueError("exactly three ordered TP3 nodes are required")
     topology = {**cluster["topology"], "ranks": [n["native"] for n in nodes]}
-    profile = cluster.get("profile", "v1.1")
+    profile = cluster.get("profile", "v1.2")
     profiles = Path(native_launch.__file__).parent / "profiles"
     if profile not in {p.stem for p in profiles.glob("*.json")}:
         raise ValueError("unknown native profile")

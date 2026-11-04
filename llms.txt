@@ -2,7 +2,7 @@
 
 > Run abliterated DeepSeek V4.1 Flash 1017 in EXL3 format at 3.84 bits per weight with TensorFold tensor parallelism 3 (TP3) on three NVIDIA DGX Spark GB10 systems.
 
-v1.1 (2026-11-02) is the first public release. Engine 14803a3 runs 8M KV, C16, graph cap 128, R48, top_k 20 and spill 256 GiB with serving API 0.1.5. Historical v1 uses 7d5b4d8/10M; its October 30 speed suite used cebcf1e.
+v1.2 (2026-11-04) is the active release. Engine 591d9dc runs 8M KV, C16, graph cap 128, R48, top_k 20, spill 256 GiB and prefill layer slices with serving API 0.1.5. v1.2 has not been benchmarked: the speed, fidelity, quality and refusal results below were measured on v1.1 or earlier. Historical v1.1 (2026-11-02, the first public release) uses 14803a3. Historical v1 uses 7d5b4d8/10M; its October 30 speed suite used cebcf1e.
 
 Prefill (v1.1, 2026-11-02, cold, one request): 3,560 tok/s at 4K, 3,833 at 32K, 3,721 at 128K; a 131,090-token prompt reads in 35.4 s.
 

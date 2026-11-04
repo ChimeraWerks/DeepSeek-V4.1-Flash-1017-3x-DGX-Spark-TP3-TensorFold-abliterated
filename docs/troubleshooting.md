@@ -26,7 +26,7 @@ Weights come from [Hugging Face](https://huggingface.co/ChimeraWerks/DeepSeek-V4
 
 A rank-hash mismatch means the rank file differs from the selected composition. Keep the source record and rank file for diagnosis. Resolve the mismatch without disabling verification or substituting a base-model pack. See [local preparation limits](reproduction.md#prepare-local-weight-inputs).
 
-Build the engine, AOT kernels and auxiliary prefill kernels with the same [build contract](../engine/README.md). Active v1.1 uses 8M/C16/top_k 20, graph cap 128, R48 and spill 256 GiB. Historical v1 uses a different engine and 10M pool.
+Build the engine, AOT kernels and auxiliary prefill kernels with the same [build contract](../engine/README.md). Active v1.2 uses 8M/C16/top_k 20, graph cap 128, R48, spill 256 GiB and prefill layer slices. Historical v1.1 uses engine `14803a3`; historical v1 uses a different engine and 10M pool.
 
 `OPTIONAL_CONTROLLER_URL` defaults to empty. Preparation and serving need no separate controller.
 
@@ -37,7 +37,7 @@ Build the engine, AOT kernels and auxiliary prefill kernels with the same [build
 | HTTP 401 `invalid_api_key` | Use the correct serving credential in the bearer header. Keep keys out of logs and public reports. |
 | HTTP 403 `forbidden` on operator routes | Use the separate operator credential. The recipe does not grant serving clients administrator access. |
 | HTTP 400 `invalid_settings` | Correct the live-settings values and cross-field constraints. |
-| HTTP 409 `engine_capability` on effort remapping | Use the selected v1.1 engine `14803a3` with API 0.1.5 and check native `/health` for `numeric_effort`. A non-native effort map requires that capability. |
+| HTTP 409 `engine_capability` on effort remapping | Use the selected v1.2 engine `591d9dc` with API 0.1.5 and check native `/health` for `numeric_effort`. A non-native effort map requires that capability. |
 | Sampled decode is slow | Check request top_k, the selected preset and live defaults. top_k 0 uses whole-vocabulary CPU sampling; the recipe default is 20. |
 | HTTP 429 `queue_full` | Wait for capacity or reduce concurrent work. Keep API concurrency at or below the engine's 16 streams. |
 | HTTP 400 `admission_oversized` or a context rejection | Reduce prompt or output size. Include output and safety reservations when sizing requests. |

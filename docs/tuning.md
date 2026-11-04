@@ -1,12 +1,12 @@
 # Production tuning and measured effects
 
-The [release manifest](../release/manifest.json) defines the v1.1 configuration selected on 2026-11-02. The historical comparisons below explain the settings. Speedups are not additive.
+The [release manifest](../release/manifest.json) defines the v1.2 configuration selected on 2026-11-04. The historical comparisons below explain the settings. Speedups are not additive.
 
 ## Production configuration
 
 | Setting | Value |
 |---|---|
-| Engine and API | TensorFold `14803a3`, serving API 0.1.5 |
+| Engine and API | TensorFold `591d9dc`, serving API 0.1.5 |
 | Decode streams | 16 |
 | CUDA graph cap / round rows | 128 / R48 |
 | KV pool | 8,000,000 tokens |
@@ -15,7 +15,7 @@ The [release manifest](../release/manifest.json) defines the v1.1 configuration 
 | Startup memory reserve | 4 GiB |
 | Sampling | temperature 1, top_p 1, top_k 20, no min_p, thinking `high` |
 
-See the [v1.1 benchmark record](../benchmarks/README.md#v11--2026-11-02) for current results. The comparisons below predate v1.1.
+v1.2 has not been benchmarked. The [v1.1 benchmark record](../benchmarks/README.md#v11--2026-11-02) holds the latest measured results; the engine there is `14803a3`, without layer slices. The comparisons below predate v1.1.
 
 The manifest lists the full engine environment and rank-0 options. Set these variables in the engine environment, not as `cluster.env` keys.
 
@@ -37,6 +37,7 @@ TF_DS_PREFILL_F=1
 TF_DS_PREFILL_COMPUTE_ROWS=8192
 TF_DS_PREFILL_SHARED_SPLIT=1
 TF_DS_PROMPT_ALIAS=1
+TF_DS_PREFILL_SLICE=5
 TF_DS_STEP_AHEAD=0
 NCCL_BUFFSIZE=1048576
 NCCL_MAX_CTAS=8
@@ -52,6 +53,24 @@ TF_KV_SHORT_REUSE=1
 TF_CACHE_X1_TRACE=1
 TF_DS_SPILL_GIB=256
 ```
+
+`TF_DS_PREFILL_SLICE=5` runs each yielded prompt chunk five layers at a time, with a decode round between slices. It needs `TF_DS_PREFILL_YIELD=1`. See [layer slices](../engine/build/PREFILL_LAYER_SLICES.md).
+
+v1.2 also sets the engine's newer opt-in features to off, so a launch does not pick them up by accident:
+
+```text
+TF_DS_KEYED_DRAFT=0
+TF_DS_DECODE_GREEDY_HEAD=0
+TF_DS_DECODE_SAMPLE_HEAD=0
+TF_SPILL_ROOM_WAIT_MS=0
+TF_DS_GRAPH_TELEMETRY=0
+TF_DS_FIRST_DRAFT_DEPTH=0
+TF_DS_DRAFT_CAL=0
+TF_CACHE_BATCH_DEAD=0
+TF_CACHE_FIRST_CONTINUATION=0
+```
+
+The manifest also sets `TF_DS_REDUCED_HEAD_FATBIN`, as production does. The engine reads that file only when `TF_DS_DECODE_GREEDY_HEAD` or `TF_DS_DECODE_SAMPLE_HEAD` is on, and `prepare.sh` does not stage it. To try those heads, compile `engine/tensorfold/zig/kernels/cuda/dsv41_reduced_head.cu` yourself and put the result at that path.
 
 The LakyFx 1.2.8 prefill port needs matching AOT and auxiliary kernels from the pinned [build contract](../engine/README.md). `TENSORFOLD_CUDA_KERNELS` selects the kit's `aot` directory; `TF_DS_PREFILL_RAGGED_CUBIN` selects `auxiliary/experts_ragged.cubin`.
 
@@ -123,6 +142,6 @@ The engine has no presence or frequency penalty. The API requires the neutral de
 
 Use the operator credential at `/admin/settings` to update `sampling`, `profiles`, `client_profiles`, `default_profile`, `reasoning_default`, `max_concurrency`, `max_queue` and `effort_map`. Changes persist in `live-settings.json`. Other settings require an API restart. See the [serving guide](../serving/README.md).
 
-Keep `max_concurrency` at or below the configured 16 engine streams. Lowering API concurrency leaves native decode-stream capacity unchanged. API `context_tokens` defaults to 1,048,576, matching the bundled `v1.1` native profile and release manifest.
+Keep `max_concurrency` at or below the configured 16 engine streams. Lowering API concurrency leaves native decode-stream capacity unchanged. API `context_tokens` defaults to 1,048,576, matching the bundled `v1.2` native profile and release manifest.
 
 Spill and optional KV sharding are separate features. TP3 KV sharding requires fetch decode, space in each owner part for the full window plus round reserve, and a pool divisible by 6,144. The production 8,000,000-token pool needs resizing for KV sharding. Spill is incompatible with `cache_salt`.

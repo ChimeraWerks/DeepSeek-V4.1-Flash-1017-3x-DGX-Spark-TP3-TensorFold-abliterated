@@ -3,8 +3,8 @@ message: "If you use this recipe, please cite it and credit the upstream compone
 type: software
 license: Apache-2.0
 title: "DeepSeek V4.1 Flash 1017 abliterated EXL3 3.84 bpw on three DGX Spark systems with TensorFold TP3"
-version: v1.1
-date-released: 2026-11-02
+version: v1.2
+date-released: 2026-11-04
 authors:
   - name: ChimeraWerks
 repository-code: "https://github.com/ChimeraWerks/DeepSeek-V4.1-Flash-1017-3x-DGX-Spark-TP3-TensorFold-abliterated"
@@ -14,7 +14,7 @@ abstract: >-
   EXL3 3.84 bits per weight excluding the output head, on three NVIDIA
   DGX Spark GB10 systems using TensorFold tensor parallelism 3.
   Includes operating instructions, component provenance and
-  dated serving measurements. The v1.1 engine is 14803a3 with serving API
+  dated serving measurements. The v1.2 engine is 591d9dc with serving API
   0.1.5, 8M KV, C16 and top_k 20. No model checkpoint is distributed.
 keywords:
   - DeepSeek V4.1 Flash 1017

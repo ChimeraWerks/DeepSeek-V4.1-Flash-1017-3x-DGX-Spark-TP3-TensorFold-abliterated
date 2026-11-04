@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "release": "v1.1",
-  "engine_commit": "14803a3",
-  "source_manifest_sha256": "1c5ef7762a623959061acc589e08e107fe5cb7cd00feb5e1c77db8504136b413",
+  "release": "v1.2",
+  "engine_commit": "591d9dc",
+  "source_manifest_sha256": "b9025d4cffdcbb88d436a8a7e6b078d1b0c06748c8f228336e1bf50382c9f0e4",
   "compiler": {
     "version": "0.17.0",
     "executable_sha256": "7c61539af19fa4082c94848f1c2b57b89e76dc6cfd5bd4c57764c3caf8f82272"
@@ -14,9 +14,11 @@
     ],
     "target": "aarch64-linux-gnu",
     "sample_cand": true,
-    "jobs": 4
+    "keyed_draft": false,
+    "jobs": 8
   },
   "fatbins_sha256": {
+    "dsv41_keyed.fatbin": "920e9853bd6551ddc9d5dfc38d544c2ef82d1489d41113e585052123db6c2ba4",
     "dsv41_ops.fatbin": "fb727ad1beafc262ba73e5123aec8b4730b0cba517bc5df2526ba2f32da37dc8",
     "dsv41_rdma.fatbin": "95511a331135816cfb4e91b78ac04125db53e24083502cca1845b73a33de91af",
     "dsv41_sample_cand.fatbin": "b921bbb76c38c9f502817d05ee85410f0558eadb38113696826cfccd25acb6a2",
@@ -41,82 +43,101 @@
     "torch_pointwise.fatbin": "d93593ea6f2cde140c7cbcb8d9b88e9e1c2bd08bf68939743924b620e2f95340",
     "torch_topk.fatbin": "e2b0fac2d7d913267e035a672a2a071e72410f135d2678c58899e9df9711e35d"
   },
-  "first_rebuild_sha256": {
-    "native/bin/tensorfold-native": "c95d873169233c499fbdeb3aac75082d11d64a9e34d1f23f27850dbe6b40d55e",
-    "bin/tf-dsv41-lanes": "22f36e0abe5693fcf072cfdd7dcede233d1dc84f96b741bff6466dd989c666f9",
-    "bin/tf-dsv41-check": "b66d8c54947d2bbafd33e0469c4c39b73fcd9d0e1a00daba8086cc2d91c3ee1b"
+  "embedded_fatbins": {
+    "tensorfold-native": 21,
+    "tf-dsv41-lanes": 7,
+    "tf-dsv41-check": 0,
+    "byte_identical_to_supplied": true,
+    "checked_with": "engine/build/verify_embedded_fatbins.py"
   },
   "production_stage_sha256": {
-    "tensorfold-native": "6f4e9cbf4d50e4dbf51d4095f5fbe572f35b0d2f34cf99cb407a3f6aa441bfb3",
-    "tf-dsv41-lanes": "b8bc78d102258efda07468ae99fb6ab4666cecf875aa409c013386346dbd6fb5",
-    "tf-dsv41-check": "d6080b023f3bb75faa213fdeaa57f9b2bc6400448a910434f6734cdb00c02584"
+    "tensorfold-native": "90355ab8148663b4e075d6c199123e068f344ec1b6f478b835ad10393316da2c",
+    "tf-dsv41-lanes": "a5c1edaaaaf9b3eeab25209438920e71a2e2ba30bb84e4ddb0a4c4b6e37b4278",
+    "tf-dsv41-check": "07e0376a2cc451517a88856dd24aeb5473343fd80a987dd76dc26b462556c61d"
   },
-  "whole_file_match": false,
-  "allocated_elf_sections_match": true,
-  "allocated_sections_per_binary": 22,
-  "differences": "Non-allocated DWARF/source-path and symbol/string-table differences. Same-path fresh-cache repeat isolates anonymous-symbol-name nondeterminism for native and lanes; checker repeats byte-identically. No binary normalization or modification performed.",
+  "optional_kernels_sha256": {
+    "dsv41_reduced_head.final.fatbin": "8705da7238d386587cbef1d351a491805df7e5854520df5f6b6e9522a1013c87"
+  },
+  "optional_kernels_note": "Staged in production and named by TF_DS_REDUCED_HEAD_FATBIN. The engine reads it only when TF_DS_DECODE_GREEDY_HEAD or TF_DS_DECODE_SAMPLE_HEAD is on; both are 0 in this release. Not part of the kernel kit.",
   "tests": {
-    "focused_host": 422,
-    "focused_steps": 35,
-    "crossbuilds_passed": 3
+    "host_tests_passed": 1096,
+    "host_tests_skipped": 4,
+    "host_tests_total": 1100,
+    "build_steps_passed": 25,
+    "build_steps_total": 25,
+    "command": "zig build test -j8 --summary all",
+    "source": "public engine tree",
+    "crossbuilds_passed": 2
   },
-  "qualification": "CPU/source/build comparison only; not GPU or end-to-end serving acceptance. Live Spark byte comparison is recorded separately.",
+  "qualification": "CPU/source/build comparison only; not GPU or end-to-end serving acceptance. The production stage hashes are the hashes checked on each Spark when the binaries were staged.",
   "source_delta": {
-    "base_commit": "14803a3",
+    "base_commit": "591d9dc",
     "path": "engine/tensorfold/zig/src/server/metrics.zig",
     "changes": [
       "One documentation comment describes an external metrics sampler generically.",
       "One test title describes external samplers generically."
     ],
     "runtime_logic_changed": false,
-    "sha256": "4fc2f2db1cfdfb28e8461ceb0ab51bd7b901d72ac1dcb5e93ea3c42c2b17c66c"
+    "sha256": "eb1ffa4ac3a83b2d0ce68cca3cb178caf125f278261d93f5d744eedde620c898"
   },
-  "post_delta_rebuild_status": "succeeded",
-  "post_delta_controlled_comparison": {
-    "comparison": "same-path fresh-cache rebuild after comment and test-title edits",
-    "source_commit": "150386bc3dc60ef25e760090b8ce159208514a8d",
-    "metrics_source_sha256": "4fc2f2db1cfdfb28e8461ceb0ab51bd7b901d72ac1dcb5e93ea3c42c2b17c66c",
-    "source_manifest_sha256": "6a62197578751aed5104f8ef3676674bc40097bca484562b7af916b675e937b4",
+  "public_tree_rebuild": {
+    "comparison": "fresh-cache rebuild of this public tree, from a different source path, against the production binaries",
+    "status": "succeeded",
+    "source_manifest_sha256": "8b4215501b331eb8e6c2be7dab4c8bf51145bd2640875b01dd2213afb37aa252",
     "build_steps_passed": 11,
     "build_steps_total": 11,
-    "focused_telemetry_tests_passed": 3,
     "changed_source_files": [
       "zig/src/server/metrics.zig"
     ],
-    "other_input_receipt_differences": [],
     "binaries": {
       "tensorfold-native": {
-        "baseline_sha256": "d79128ea3152db110a8395cf10813e642f0a13fc9f99f55cb7bd353f67e55112",
-        "rebuilt_sha256": "02935114e7ef3ebed7f41809be8aecc4055a0a8505dd06c14fffc4512c2be842",
+        "production_sha256": "90355ab8148663b4e075d6c199123e068f344ec1b6f478b835ad10393316da2c",
+        "rebuilt_sha256": "dfe58d59a26fd46382084d008ecdf1a3aeff123cc9f7c6c4a42daa4e29638844",
         "whole_file_identical": false,
         "allocated_sections_compared": 22,
         "allocated_sections_identical": true,
-        "strtab_equal_after_anonymous_name_normalization": true,
         "different_sections": [
-          ".strtab"
+          ".debug_info",
+          ".debug_line",
+          ".debug_pubnames",
+          ".debug_pubtypes",
+          ".debug_str",
+          ".strtab",
+          ".symtab"
         ]
       },
       "tf-dsv41-lanes": {
-        "baseline_sha256": "effd0c9d8fa8243cf1ab464bfff80b5ba94634b5a7b0a9923466b6ed84abdf57",
-        "rebuilt_sha256": "512e30c67b2bffc38346da1fecd28296a4618608658ede8ac42c11365953016c",
+        "production_sha256": "a5c1edaaaaf9b3eeab25209438920e71a2e2ba30bb84e4ddb0a4c4b6e37b4278",
+        "rebuilt_sha256": "2952b6d67229a949216caf5a3e879ed01e670ebfe7336699a126d277a0390d99",
         "whole_file_identical": false,
         "allocated_sections_compared": 22,
         "allocated_sections_identical": true,
-        "strtab_equal_after_anonymous_name_normalization": true,
         "different_sections": [
-          ".strtab"
+          ".debug_info",
+          ".debug_line",
+          ".debug_pubnames",
+          ".debug_pubtypes",
+          ".debug_str",
+          ".strtab",
+          ".symtab"
         ]
       },
       "tf-dsv41-check": {
-        "baseline_sha256": "b66d8c54947d2bbafd33e0469c4c39b73fcd9d0e1a00daba8086cc2d91c3ee1b",
-        "rebuilt_sha256": "b66d8c54947d2bbafd33e0469c4c39b73fcd9d0e1a00daba8086cc2d91c3ee1b",
-        "whole_file_identical": true,
+        "production_sha256": "07e0376a2cc451517a88856dd24aeb5473343fd80a987dd76dc26b462556c61d",
+        "rebuilt_sha256": "d7ba1945e933b1fc54341a2c0026387f3c3e82cf79b789101ba4dcf768fe230a",
+        "whole_file_identical": false,
         "allocated_sections_compared": 22,
         "allocated_sections_identical": true,
-        "strtab_equal_after_anonymous_name_normalization": true,
-        "different_sections": []
+        "different_sections": [
+          ".debug_info",
+          ".debug_line",
+          ".debug_pubnames",
+          ".debug_pubtypes",
+          ".debug_str",
+          ".symtab"
+        ]
       }
     },
-    "conclusion": "All allocated sections are unchanged. The checker is whole-file identical. Native and lanes differ only in non-allocated anonymous symbol names, consistent with the same-path fresh-build nondeterminism established before the text edits. Whole-file identity of all three binaries is not claimed."
+    "conclusion": "All 22 allocated sections of all three binaries are identical to production. Only non-allocated debug, symbol and string tables differ. The source path and the two metrics.zig text edits both changed, so the cause of those differences is not isolated further. Whole-file identity is not claimed. No binary normalization or modification performed."
   }
 }

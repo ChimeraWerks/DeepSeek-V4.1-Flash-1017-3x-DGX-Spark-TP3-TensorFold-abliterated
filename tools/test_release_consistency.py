@@ -16,7 +16,9 @@ SPEC.loader.exec_module(checker)
 
 @pytest.fixture
 def release_copy(tmp_path):
-    files = ["serving/src/chimera_sparks/assets/profiles/v1.1.json", "release/manifest.json", "cluster.env.example", "serving/engine-scope.json", "serving/pyproject.toml",
+    files = ["serving/src/chimera_sparks/assets/profiles/v1.2.json", "serving/src/chimera_sparks/assets/profiles/v1.1.json",
+             "release/manifest.json", "release/build-verification.json", "release/history/v1.json", "release/history/v1.1.json",
+             "engine/tensorfold/zig/src/server/metrics.zig", "cluster.env.example", "serving/engine-scope.json", "serving/pyproject.toml",
              "serving/src/chimera_sparks/config.py", "serving/src/chimera_sparks/lifecycle.py",
              "serving/src/chimera_sparks/assets/native_launch.py", "serving/src/chimera_sparks/assets/profiles/v1.json",
              "release/runtime-assets.json", "release/prefill-source-delta.json",
@@ -58,7 +60,7 @@ def test_current_release_is_consistent():
                                          ("hub_repo", "example/not-the-served-pack"), ("arm", "wrong-pack"),
                                          ("bits_per_weight", 4.0)])
 def test_default_profile_disagreement_fails(release_copy, field, value):
-    change_json(release_copy, "serving/src/chimera_sparks/assets/profiles/v1.1.json", [field], value)
+    change_json(release_copy, "serving/src/chimera_sparks/assets/profiles/v1.2.json", [field], value)
     assert any("native profile " + field in error for error in checker.check(release_copy))
 
 
@@ -90,11 +92,29 @@ def test_manifest_disagreement_fails(release_copy, field, value):
 
 def test_implicit_profile_and_scope_cannot_drift(release_copy):
     path = release_copy / "serving/src/chimera_sparks/lifecycle.py"
-    path.write_text(path.read_text().replace('cluster.get("profile", "v1.1")', 'cluster.get("profile", "unbundled")'))
+    path.write_text(path.read_text().replace('cluster.get("profile", "v1.2")', 'cluster.get("profile", "unbundled")'))
     assert any("could not be checked" in error for error in checker.check(release_copy))
     path.write_bytes((ROOT / "serving/src/chimera_sparks/lifecycle.py").read_bytes())
     change_json(release_copy, "serving/engine-scope.json", ["required_native_profile"], "unbundled")
     assert any("engine-scope profile" in error for error in checker.check(release_copy))
+
+
+def test_history_is_frozen_and_still_launches(release_copy):
+    change_json(release_copy, "release/history/v1.1.json", ["engine", "commit"], "badc0de")
+    assert any("release/history/v1.1.json does not describe" in error for error in checker.check(release_copy))
+    (release_copy / "release/history/v1.1.json").write_bytes((ROOT / "release/history/v1.1.json").read_bytes())
+    change_json(release_copy, "serving/src/chimera_sparks/assets/profiles/v1.1.json", ["pool_tokens"], 6000000)
+    assert any("disagrees with release/history/v1.1.json" in error for error in checker.check(release_copy))
+    (release_copy / "serving/src/chimera_sparks/assets/profiles/v1.1.json").unlink()
+    assert any("bundled native profiles" in error for error in checker.check(release_copy))
+
+
+def test_build_record_and_source_delta_follow_the_manifest(release_copy):
+    change_json(release_copy, "release/build-verification.json", ["engine_commit"], "badc0de")
+    assert any("build verification engine" in error for error in checker.check(release_copy))
+    path = release_copy / "engine/tensorfold/zig/src/server/metrics.zig"
+    path.write_text(path.read_text() + "// drift\n")
+    assert any("source delta file" in error for error in checker.check(release_copy))
 
 
 def test_correct_json_is_not_enough_when_launcher_drops_a_flag(release_copy):
@@ -142,8 +162,8 @@ def test_cli_is_read_only_and_reports_failure(release_copy):
 @pytest.mark.parametrize("name,field,value", [
     ("release/manifest.json", ["weights", "artifact_arm"], "wrong-pack"),
     ("release/manifest.json", ["labels", "TF_DS_RECIPE_PATCHES"], "old-patches"),
-    ("serving/src/chimera_sparks/assets/profiles/v1.1.json", ["artifact_arm"], "wrong-pack"),
-    ("serving/src/chimera_sparks/assets/profiles/v1.1.json", ["rank_cache_subdir"], "renamed"),
+    ("serving/src/chimera_sparks/assets/profiles/v1.2.json", ["artifact_arm"], "wrong-pack"),
+    ("serving/src/chimera_sparks/assets/profiles/v1.2.json", ["rank_cache_subdir"], "renamed"),
 ])
 def test_current_artifact_identity_cannot_drift(release_copy, name, field, value):
     change_json(release_copy, name, field, value)

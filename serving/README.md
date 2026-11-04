@@ -296,7 +296,7 @@ API errors contain an `error` object with `message`, `type: "recipe_error"` and 
 
 ## Capacity, spill and context
 
-The bundled native profile `v1.1` and API defaults match the release manifest: `V4-MRF-1017` (EXL3 3.84 bpw), engine base `14803a3` plus the documented comment/test-name-only release delta, 16 streams and 1,048,576-token context. Each configured root contains portable `bin/`, `weights/`, `ranks/`, `kit/` and `spill/` paths. Weights: [Hugging Face](https://huggingface.co/ChimeraWerks/DeepSeek-V4.1-Flash-1017-EXL3-3.84bpw-abliterated). See the [model card](../docs/model-card.md). The earlier `v1` / `7d5b4d8` / 10M configuration is historical.
+The bundled native profile `v1.2` and API defaults match the release manifest: `V4-MRF-1017` (EXL3 3.84 bpw), engine base `591d9dc` plus the documented comment/test-name-only release delta, 16 streams and 1,048,576-token context. Each configured root contains portable `bin/`, `weights/`, `ranks/`, `kit/` and `spill/` paths. Weights: [Hugging Face](https://huggingface.co/ChimeraWerks/DeepSeek-V4.1-Flash-1017-EXL3-3.84bpw-abliterated). See the [model card](../docs/model-card.md). The earlier `v1.1` / `14803a3` and `v1` / `7d5b4d8` / 10M configurations are historical.
 
 | Deployment setting | Value |
 |---|---|
@@ -312,7 +312,7 @@ The engine uses `TF_DS_SPILL_DIR` and `TF_DS_SPILL_GIB=256`, with rank 0 options
 
 | API configuration key | Package default | Constraint or purpose |
 |---|---|---|
-| `context_tokens` | `1048576` | Positive integer context setting, matching the v1.1 native profile and release manifest. |
+| `context_tokens` | `1048576` | Positive integer context setting, matching the v1.2 native profile and release manifest. |
 | `output_tokens` | `32768` | Default request output cap; positive integer, at most `max_output_tokens`. |
 | `max_output_tokens` | `131072` | Positive integer maximum request output cap. |
 | `safety_tokens` | `1024` | Positive integer context reserve. `max_output_tokens + safety_tokens` must be strictly less than `context_tokens`. |
@@ -326,9 +326,9 @@ Fit input, output and safety reservations within native context. The engine adap
 
 Spill and optional KV sharding are separate features. The production spill setting enables neither optional sharding, disk chat continuation nor automatic shortening.
 
-The managed lifecycle preflights v1.1 spill on every node using a matching `capacity_build_receipt`, executable checksum and `rank_cache_sha256`. Prepare these artifacts for preflight. For a new installation, run the managed supervisor with `--qualification-window` for acceptance testing and keep its results. Direct native `--run` stays blocked until v1.1 passes acceptance; the direct launcher has no qualification-window option.
+The managed lifecycle preflights v1.2 spill on every node using a matching `capacity_build_receipt`, executable checksum and `rank_cache_sha256`. Prepare these artifacts for preflight. For a new installation, run the managed supervisor with `--qualification-window` for acceptance testing and keep its results. Direct native `--run` stays blocked until v1.2 passes acceptance; the direct launcher has no qualification-window option.
 
-Artifact validation requires `checksums` for `bin/BUILD.json`, both binaries and `weights/chat_template.jinja`. The `ds41f.native-build.v1` file records engine base `14803a3`, `adaptive_learning: true` and actual binary hashes. Record the documented source delta alongside it; the launcher checks artifacts, not source equivalence. Rebuilt files can differ byte for byte; see [build verification](../release/build-verification.json). An explicit `cluster.capacity` block replaces profile spill controls without duplicate flags. Set `spill_gib: 0` to disable spill. Free-form spill environment overrides are rejected.
+Artifact validation requires `checksums` for `bin/BUILD.json`, both binaries and `weights/chat_template.jinja`. The `ds41f.native-build.v1` file records engine base `591d9dc`, `adaptive_learning: true` and actual binary hashes. Record the documented source delta alongside it; the launcher checks artifacts, not source equivalence. Rebuilt files can differ byte for byte; see [build verification](../release/build-verification.json). An explicit `cluster.capacity` block replaces profile spill controls without duplicate flags. Set `spill_gib: 0` to disable spill. Free-form spill environment overrides are rejected.
 
 Optional capacity features need a matching capacity build receipt and preflight on all three systems. Spill needs private local-disk paths, sufficient free-space reserves and matching model, engine, Engram and rank-cache identities. Optional TP3 KV sharding supports fetch decode only. Each owner part must fit the full window plus round reserve, and the total pool must be divisible by `6144`. The production `8000000` pool fails that divisibility requirement. Spill with `cache_salt` is unsupported. Check these prerequisites against the selected engine; the API does not enforce them.
 

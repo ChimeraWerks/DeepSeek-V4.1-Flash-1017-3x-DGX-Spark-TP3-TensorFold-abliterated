@@ -1,6 +1,6 @@
 {
-  "required_native_profile": "v1.1",
-  "engine_commit": "14803a3",
+  "required_native_profile": "v1.2",
+  "engine_commit": "591d9dc",
   "serving_version": "0.1.5",
   "production_defaults": {
     "streams": 16,
@@ -21,11 +21,22 @@
     "writable_overlay_index",
     "tensorfold_disconnect_cancellation",
     "numeric_aware_repetition",
-    "nvme_spill_256gib"
+    "nvme_spill_256gib",
+    "prefill_layer_slices"
   ],
   "opt_in_later_default_off": [
     "kv_sharding",
-    "disk_chat_continuation"
+    "disk_chat_continuation",
+    "keyed_draft",
+    "decode_greedy_head",
+    "decode_sample_head",
+    "restore_room_wait",
+    "graph_telemetry",
+    "first_draft_depth",
+    "draft_calibration",
+    "cache_batch_dead",
+    "cache_first_continuation",
+    "stream_tool_calls"
   ],
   "excluded": [
     "eaq_v1_1",
@@ -33,7 +44,7 @@
     "upstream_test_tooling"
   ],
   "live_qualified": false,
-  "qualification_scope": "Production launch configuration recorded 2026-11-02; not full-context or fault-injection acceptance of a new installation.",
+  "qualification_scope": "Production launch configuration recorded 2026-11-04; not full-context or fault-injection acceptance of a new installation.",
   "optional_feature_scope": "KV sharding and continuation remain separate opt-in features; production NVMe spill is enabled.",
   "small_fix_scope": [
     "mia_0020_style_tp3_exit",

@@ -1,10 +1,10 @@
 # Engine
 
 `tensorfold/` contains the TensorFold native Zig engine with BertholomusAI's
-`dsv41` family for DeepSeek V4.1 Flash. Release v1.1 uses engine source
-`14803a3`: the Laky 1.2.8 prefill port and our patches, plus one metrics
-documentation-comment edit and one test-name wording edit. Serving logic is
-unchanged. `7d5b4d8` is the historical v1 engine.
+`dsv41` family for DeepSeek V4.1 Flash. Release v1.2 uses engine source
+`591d9dc`, plus one metrics documentation-comment edit and one test-name wording
+edit. Serving logic is unchanged by those edits. `14803a3` is the historical
+v1.1 engine and `7d5b4d8` the historical v1 engine.
 
 ## Lineage
 
@@ -30,6 +30,35 @@ Ported from other recipes and credited in [CREDITS.md](../CREDITS.md): structure
 output and required tool calls, image cache identity, idle RDMA parking, prefill
 yield and admission, prefix retention, and LakyFx 1.2.8's prefill work.
 
+### Since v1.1 (`14803a3` to `591d9dc`)
+
+v1.2 has not been benchmarked. [CHANGELOG.md](../CHANGELOG.md) lists the checks that were run.
+
+On in production:
+
+| Area | What changed |
+|---|---|
+| Prompt prefill | yielded prefill runs in layer slices with decode rounds between them (`TF_DS_PREFILL_SLICE=5`); slice time counts as decode occupancy. Our version of Mia's patch 0052 |
+| Prompt rendering | `response_format` schema is passed to the template, an empty system block is added when tools or a schema need one, a `thinking` object decides the mode before any effort, Messages tool JSON keeps chat key order, a prefix continuation leaves off the end token. Behavior matched to `deepseek-recipe` |
+| Responses | every reasoning item is kept, the custom `apply_patch` tool is accepted and its input streamed, tool namespaces are flattened and restored, `response_format` regex uses the guided path. Behavior matched to `deepseek-recipe` |
+| Output parsing and validation | think and DSML markers count only as real tokens, with a spelling fallback for copied reply text; broken tool history and duplicate tool names are refused before inference; strict tool and response schemas are enforced. Behavior matched to `deepseek-recipe` |
+| Server fixes | an assistant `reasoning` field is read as `reasoning_content` (Mia's patch 0047, nuk3s); GET and DELETE bodies are drained (Mia's patch 0046, Christopher A. Williamson) |
+| Lifetime fixes | a finished job leaves `admitted` before it is freed (found in Mia PR 94 review, hecisaza); a first-token finish releases its lane when the trace fails (TensorFold `ed39acc5`, laudney); the read-ahead thread and sequence start empty |
+
+These match the behaviors listed, not all of `deepseek-recipe`; [CHANGELOG.md](../CHANGELOG.md) names what still differs.
+
+In the source, off in production:
+
+| Flag | What it does | From |
+|---|---|---|
+| `TF_CACHE_BATCH_DEAD`, `TF_CACHE_FIRST_CONTINUATION` | batched dead-checkpoint release and a first-continuation hint ([port notes](PORT-laky-4.0.2-cache-batch.md)) | LakyFx 4.0.2 |
+| `TF_DS_DRAFT_CAL`, `TF_DS_FIRST_DRAFT_DEPTH` | per-stream draft calibration and full first head depth | Mia's patches 0050 and 0049 (lukaszraczylo) |
+| `TF_DS_KEYED_DRAFT` | sampled drafts keyed to target draws; needs a `KEYED_DRAFT=true` build | Mia's patch 0054 (lukaszraczylo) |
+| `TF_DS_DECODE_GREEDY_HEAD`, `TF_DS_DECODE_SAMPLE_HEAD` | exact reduced output heads; need `TF_DS_REDUCED_HEAD_FATBIN` | LakyFx 4.0.2, adapted to TP3 |
+| `TF_SPILL_ROOM_WAIT_MS` | bounded wait for room before a restore starts | Mia's patch 0040 (nuk3s) |
+| `TF_DS_GRAPH_TELEMETRY` | CUDA graph hit, capture and pressure counters | ChimeraWerks |
+| `TF_STREAM_TOOL_CALLS` | streams DSML tool calls as they decode; rank 0 only | Mia's patch 0048 (nuk3s) |
+
 ## CPU-only cross-build
 
 Run from the repository root on Linux. Install Bash, Python 3, GNU coreutils,
@@ -41,7 +70,8 @@ cannot identify the distribution.
 
 Supply every non-opt-in kernel listed in
 [`tensorfold/zig/build/cuda.zig`](tensorfold/zig/build/cuda.zig), plus
-`dsv41_sample_cand.fatbin`. The script neither ships nor fetches fatbins.
+`dsv41_sample_cand.fatbin`. `dsv41_keyed.fatbin` is needed only for
+`KEYED_DRAFT=true`. The script neither ships nor fetches fatbins.
 Generate them separately with a compatible CUDA toolchain and headers using
 the vendored `fatbins` build target and `-Dnvcc` option. This cross-build
 embeds existing fatbins without CUDA compilation or GPU use.

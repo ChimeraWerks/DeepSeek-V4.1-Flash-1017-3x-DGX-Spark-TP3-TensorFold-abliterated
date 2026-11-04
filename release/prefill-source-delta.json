@@ -27,5 +27,5 @@
     "sha256": "401d66291bc838575090f568184ec76533a3aec0bbd2f50ac9ba03a84d06b033",
     "note": "The LakyFx 1.2.8 build, shipped unchanged. SOURCE.json lists it as measured_cubin_sha256 and the release manifest loads it through TF_DS_PREFILL_RAGGED_CUBIN. A local nvcc 13.4.92 build of either source differs from it."
   },
-  "why_source_json_keeps_the_declared_hash": "SOURCE.json is part of the vendored engine tree whose file hashes release/build-verification.json records (source_manifest_sha256 6a62197578751aed5104f8ef3676674bc40097bca484562b7af916b675e937b4)."
+  "why_source_json_keeps_the_declared_hash": "SOURCE.json is part of the vendored engine tree whose file hashes release/build-verification.json records (public_tree_rebuild.source_manifest_sha256 8b4215501b331eb8e6c2be7dab4c8bf51145bd2640875b01dd2213afb37aa252)."
 }
