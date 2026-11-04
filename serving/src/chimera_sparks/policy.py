@@ -171,12 +171,13 @@ def normalize_messages(raw, cfg, client="default", profile=None):
     if config is not None and not isinstance(config, dict):
         raise PolicyError("output_config must be an object")
     config = config or {}
-    view = {k: raw[k] for k in ("model", "messages", "max_tokens", "temperature", "top_p", "top_k", "thinking") if k in raw}
+    sampled = ("temperature", "top_p", "top_k", "min_p", "presence_penalty", "frequency_penalty", "seed")
+    view = {k: raw[k] for k in ("model", "messages", "max_tokens", "thinking", *sampled) if k in raw}
     if config.get("effort") is not None:
         view["reasoning_effort"] = config["effort"]
     chat = normalize(view, cfg, client, "chat", profile)
     body = dict(raw)
-    body.update({k: chat[k] for k in ("model", "max_tokens", "temperature", "top_p", "top_k") if k in chat})
+    body.update({k: chat[k] for k in ("model", "max_tokens", *sampled) if k in chat})
     effort = chat["reasoning_effort"]
     if "thinking" not in raw and config.get("effort") is None:
         body["thinking"] = {"type": "disabled" if effort == "none" else "enabled"}

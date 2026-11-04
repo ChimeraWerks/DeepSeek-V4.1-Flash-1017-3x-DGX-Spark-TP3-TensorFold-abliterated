@@ -165,6 +165,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         wanted = "disabled" if self.cfg.reasoning_default == "none" else "enabled"
         self.assertEqual((sent["top_k"], sent["thinking"]), (20, {"type": wanted}))
         self.assertEqual(sent["messages"], base["messages"])
+        self.assertGreater(sent["seed"], 0)
         await self.client.post("/v1/messages", json={**base, "temperature": .3, "top_k": 5,
                                "thinking": {"type": "enabled", "budget_tokens": 32}, "output_config": {"effort": "low"}})
         sent = self.seen[-1]
