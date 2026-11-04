@@ -46,12 +46,14 @@ The sections below cover sampling, reasoning, admission, capacity and vision set
 
 ## Endpoints
 
-All `/v1/*`, `/tokenize` and `/admin/*` routes listed here require `Authorization: Bearer $SPARK_API_KEY`. Operator routes also require the client ID in `admin_clients`. `/health`, `/ready` and `/metrics` are unauthenticated.
+All `/v1/*`, `/tokenize` and `/admin/*` routes listed here require `Authorization: Bearer $SPARK_API_KEY` or `x-api-key: $SPARK_API_KEY`. Operator routes also require the client ID in `admin_clients`. `/health`, `/ready` and `/metrics` are unauthenticated.
 
 | Method and path | Purpose |
 |---|---|
 | `POST /v1/chat/completions` | Native Chat Completions, JSON or server-sent events (SSE). |
 | `POST /v1/responses` | Native Responses, JSON or SSE. |
+| `POST /v1/messages` | Native Anthropic Messages, JSON or SSE. The request goes to the engine unconverted; the API fills only the sampling, thinking and output fields the client left out. |
+| `POST /v1/messages/count_tokens` | Forward to the engine's native token count. |
 | `GET /v1/models` | Base model and one `model@preset` entry per configured preset. |
 | `GET /v1/profiles` | Current sampling defaults, reasoning default and labelled presets. |
 | `GET /health`, `GET /ready` | Readiness and current API/engine state. |

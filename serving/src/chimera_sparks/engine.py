@@ -11,7 +11,7 @@ import httpx
 from . import __version__
 from .laky.media_admission import has_images
 from .laky.queue import FairPriorityGate
-from .laky.stream_validation import ChatStreamValidator, ResponsesStreamValidator
+from .laky.stream_validation import ChatStreamValidator, MessagesStreamValidator, ResponsesStreamValidator
 from .policy import normalize
 
 
@@ -77,14 +77,15 @@ class Engine:
         if api == "chat":
             token_body = {k: v for k, v in token_body.items() if k in {"model", "messages", "tools", "tool_choice", "chat_template_kwargs", "reasoning_effort", "thinking_budget"}}
             token_body.update(add_generation_prompt=True, return_token_strs=False)
-        else:
+        elif api == "responses":
             token_body = {**token_body, "api": "responses", "stream": False, "store": False}
-        response = await self.control_client.post("/tokenize", json=token_body, timeout=30)
+        path = "/v1/messages/count_tokens" if api == "messages" else "/tokenize"
+        response = await self.control_client.post(path, json=token_body, timeout=30)
         if not response.is_success:
             raise GatewayError(503, "native tokenizer is unavailable; no generation dispatched")
         data = response.json()
         self.native_window = data.get("max_model_len")
-        count = data.get("count", data.get("num_tokens"))
+        count = data.get("count", data.get("num_tokens", data.get("input_tokens")))
         if count is None and isinstance(data.get("tokens"), list):
             count = len(data["tokens"])
         if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
@@ -116,7 +117,7 @@ class Engine:
             body = {**prepared["body"], "request_id": request_id}
             if vision_dispatch:
                 body["dgx_vision_control"] = vision_dispatch
-            path = "/v1/responses" if api == "responses" else "/v1/chat/completions"
+            path = {"responses": "/v1/responses", "messages": "/v1/messages"}.get(api, "/v1/chat/completions")
             request = self.client.build_request("POST", path, json=body)
             response = await self.client.send(request, stream=True)
             self.requests += 1
@@ -141,9 +142,10 @@ class Engine:
                 self.media_gate.release()
 
     async def iter_stream(self, handle):
-        validator = ChatStreamValidator(self.cfg.max_response_bytes) if handle.api == "chat" else ResponsesStreamValidator(self.cfg.max_response_bytes)
+        kinds = {"chat": ChatStreamValidator, "messages": MessagesStreamValidator}
+        validator = kinds.get(handle.api, ResponsesStreamValidator)(self.cfg.max_response_bytes)
         pending = b""
-        meaningful = False
+        meaningful = truncated = False
         try:
             async for chunk in handle.response.aiter_bytes():
                 validator.feed(chunk)
@@ -152,10 +154,12 @@ class Engine:
                     while b"\n\n" in pending:
                         frame, pending = pending.split(b"\n\n", 1)
                         data = b"\n".join(line[5:].strip() for line in frame.splitlines() if line.startswith(b"data:"))
-                        if data == b"[DONE]" and not meaningful:
+                        # A reply cut by max_tokens while thinking is a normal length finish, not a failure.
+                        if data == b"[DONE]" and not meaningful and not truncated:
                             raise GatewayError(502, "native returned no final text or tool call", "empty_final")
                         if data and data != b"[DONE]":
                             for choice in json.loads(data).get("choices", []):
+                                truncated = truncated or choice.get("finish_reason") == "length"
                                 delta = choice.get("delta") or {}
                                 content = delta.get("content")
                                 meaningful = meaningful or bool(delta.get("tool_calls")) or (isinstance(content, str) and bool(content.strip()))
@@ -168,5 +172,5 @@ class Engine:
         body = prepared["body"]
         return {"X-Recipe-Version": __version__, "X-Recipe-Token-Method": prepared["token_method"],
                 "X-Recipe-Queue-Seconds": f"{queue_wait_seconds:.6f}",
-                "X-Recipe-Sampling": json.dumps({k: body[k] for k in self.cfg.sampling}, separators=(",", ":")),
+                "X-Recipe-Sampling": json.dumps({k: body[k] for k in self.cfg.sampling if k in body}, separators=(",", ":")),
                 "Cache-Control": "no-store"}

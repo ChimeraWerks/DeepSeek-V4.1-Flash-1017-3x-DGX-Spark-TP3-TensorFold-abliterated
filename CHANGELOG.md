@@ -7,6 +7,8 @@ v1.1 uses engine base `14803a3` with exactly two non-runtime edits in `zig/src/s
 ## Unreleased
 
 - Serving: removed automatic context shortening. Prompts that do not fit `context_tokens` are refused, and clients manage their own context. Delete `auto_compact`, `compact_*` and `checkpoint_*` from existing configurations; the API no longer accepts them.
+- Serving: added `/v1/messages` and `/v1/messages/count_tokens`, forwarded to the engine's native Messages routes, and `x-api-key` authentication.
+- Serving: a reply cut by `max_tokens` while thinking is a normal length finish, not an empty-reply error. Incomplete streams now log why they stopped.
 - Serving: Responses admission always uses the native tokenizer, the same as Chat Completions.
 - Serving: `thinking: {type}` now decides thinking mode, and `ultra` effort maps to `max`, matching DeepSeek's `deepseek-recipe`.
 

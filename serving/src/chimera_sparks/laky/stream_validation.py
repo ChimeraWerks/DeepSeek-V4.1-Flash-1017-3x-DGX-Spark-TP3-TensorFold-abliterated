@@ -110,3 +110,37 @@ class ResponsesStreamValidator:
     def finish(self) -> None:
         if self.terminal is None or self.pending.strip():
             raise ValueError("upstream Responses stream closed without terminal state")
+
+
+class MessagesStreamValidator:
+    """A Messages stream must end in message_stop, with no data after it and no error event."""
+
+    def __init__(self, max_event_bytes: int = 8 * 1024 * 1024) -> None:
+        self.pending = b""
+        self.stopped = False
+        self.max_event_bytes = max_event_bytes
+
+    def feed(self, chunk: bytes) -> None:
+        self.pending = (self.pending + chunk).replace(b"\r\n", b"\n")
+        while b"\n\n" in self.pending:
+            block, self.pending = self.pending.split(b"\n\n", 1)
+            if len(block) > self.max_event_bytes:
+                raise ValueError("upstream Messages event exceeds the size limit")
+            data = b"\n".join(line[5:].lstrip() for line in block.splitlines() if line.startswith(b"data:"))
+            if not data:
+                continue
+            if self.stopped:
+                raise ValueError("upstream Messages sent data after message_stop")
+            try:
+                payload = json.loads(data)
+            except (ValueError, UnicodeError) as exc:
+                raise ValueError("upstream Messages returned malformed SSE JSON") from exc
+            if not isinstance(payload, dict) or payload.get("type") == "error":
+                raise ValueError("upstream Messages returned a streaming error")
+            self.stopped = payload.get("type") == "message_stop"
+        if len(self.pending) > self.max_event_bytes:
+            raise ValueError("upstream Messages event exceeds the size limit")
+
+    def finish(self) -> None:
+        if not self.stopped:
+            raise ValueError("upstream Messages ended without message_stop")

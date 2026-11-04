@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import copy
 import hmac
 import json
+import logging
 import os
 from pathlib import Path
 import time
@@ -21,7 +22,7 @@ from .laky.body_limit import read_limited_body, BodyTooLarge
 from .laky.queue import QueueFullError, AdmissionWeightError
 from .laky.vision_control import NativeControl
 from .laky.vision_jobs import Jobs, AdmissionError, standalone, contaminated, job_headers, stream_result
-from .policy import ENGINE_EFFORTS, normalize, PolicyError
+from .policy import ENGINE_EFFORTS, normalize, normalize_messages, PolicyError
 
 
 def error(status, message, code="invalid_request", **extra):
@@ -53,6 +54,8 @@ async def until_disconnect(request, operation):
             task.cancel()
         await asyncio.gather(task, watcher, return_exceptions=True)
 
+
+log = logging.getLogger(__name__)
 
 REASONING_ITEMS = {"reasoning", "reasoning_text"}
 
@@ -114,9 +117,10 @@ def create_app(cfg: Config, *, transport=None):
 
     def principal(request):
         auth = request.headers.get("authorization", "")
-        if not auth.startswith("Bearer "):
+        key = auth[7:] if auth.startswith("Bearer ") else request.headers.get("x-api-key", "")
+        if not key:
             return None
-        supplied = auth[7:].encode()
+        supplied = key.encode()
         for name, key in secrets.items():
             if hmac.compare_digest(supplied, key.encode()):
                 return name
@@ -311,6 +315,7 @@ def create_app(cfg: Config, *, transport=None):
 
     async def relay(engine, normalized, api):
         handle = None
+        started, relayed, stage = time.monotonic(), 0, "admission"
         task = asyncio.create_task(engine.begin_stream(normalized, api=api))
         try:
             async with asyncio.timeout(cfg.request_timeout):
@@ -329,8 +334,10 @@ def create_app(cfg: Config, *, transport=None):
                     yield ("data: " + json.dumps(payload) + "\n\n").encode()
                     return
                 pending = b""
+                stage = "stream"
                 async for chunk in engine.iter_stream(handle):
-                    if cfg.reasoning_output == "preserve":
+                    relayed += len(chunk)
+                    if cfg.reasoning_output == "preserve" or api == "messages":
                         yield chunk
                         continue
                     pending = (pending + chunk).replace(b"\r\n", b"\n")
@@ -349,6 +356,11 @@ def create_app(cfg: Config, *, transport=None):
             if isinstance(exc, asyncio.CancelledError):
                 raise
             engine.errors += 1
+            # The client only sees stream_incomplete; record why, without request text or credentials.
+            log.warning("stream_incomplete stage=%s api=%s elapsed=%.1fs relayed=%d request=%s error=%s: %s",
+                        stage, api, time.monotonic() - started, relayed,
+                        getattr(handle, "upstream_request_id", None) if handle else None,
+                        type(exc).__name__, str(exc)[:300])
             yield b'data: {"error":{"type":"recipe_error","code":"stream_incomplete","message":"Native stream did not complete; it was not replayed"}}\n\n'
         finally:
             task.cancel()
@@ -377,7 +389,8 @@ def create_app(cfg: Config, *, transport=None):
             result = await request.app.state.jobs.wait(identity, client)
             return JSONResponse(result["data"], status_code=result["status_code"],
                                 headers={**result.get("headers", {}), **job_headers(identity)})
-        normalized = normalize(raw, cfg, client, api, request.headers.get("X-Recipe-Profile"))
+        profile = request.headers.get("X-Recipe-Profile")
+        normalized = normalize_messages(raw, cfg, client, profile) if api == "messages" else normalize(raw, cfg, client, api, profile)
         engine = request.app.state.engine
         if raw.get("stream") is True:
             return StreamingResponse(relay(engine, normalized, api), media_type="text/event-stream",
@@ -393,9 +406,11 @@ def create_app(cfg: Config, *, transport=None):
                         if api == "chat":
                             choices = payload.get("choices") or []
                             message = choices[0].get("message", {}) if choices else {}
-                            if not message.get("content") and not message.get("tool_calls"):
+                            truncated = bool(choices) and choices[0].get("finish_reason") == "length"
+                            if not message.get("content") and not message.get("tool_calls") and not truncated:
                                 return error(502, "native returned no final text or tool call", "empty_final")
-                        payload = project_reasoning(payload, cfg.reasoning_output)
+                        if api != "messages":
+                            payload = project_reasoning(payload, cfg.reasoning_output)
                     return JSONResponse(payload, status_code=handle.response.status_code,
                                         headers=engine._response_headers(handle.prepared, queue_wait_seconds=handle.queue_wait_seconds))
             finally:
@@ -411,6 +426,18 @@ def create_app(cfg: Config, *, transport=None):
     @app.post("/v1/responses")
     async def responses(request: Request):
         return await complete(request, "responses")
+
+    @app.post("/v1/messages")
+    async def messages(request: Request):
+        return await complete(request, "messages")
+
+    @app.post("/v1/messages/count_tokens")
+    async def count_tokens(request: Request):
+        if principal(request) is None:
+            return error(401, "invalid API credential", "invalid_api_key")
+        raw = await body(request)
+        response = await request.app.state.engine.control_client.post("/v1/messages/count_tokens", json=raw, timeout=30)
+        return Response(response.content, status_code=response.status_code, media_type="application/json")
 
     # Explicit hooks used by the durable job extension without exposing secrets.
     app.state.principal = principal

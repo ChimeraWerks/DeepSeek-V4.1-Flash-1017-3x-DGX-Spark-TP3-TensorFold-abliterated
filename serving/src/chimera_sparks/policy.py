@@ -161,3 +161,27 @@ def normalize(raw, cfg, client="default", api="chat", profile=None):
     for name in ("dgx_vision_control", "request_id", "rid", "priority"):
         body.pop(name, None)
     return body
+
+
+def normalize_messages(raw, cfg, client="default", profile=None):
+    """A Messages request for the engine's native route: what the client set passes through, the gateway fills the rest."""
+    if not isinstance(raw, dict):
+        raise PolicyError("request must be an object")
+    config = raw.get("output_config")
+    if config is not None and not isinstance(config, dict):
+        raise PolicyError("output_config must be an object")
+    config = config or {}
+    view = {k: raw[k] for k in ("model", "messages", "max_tokens", "temperature", "top_p", "top_k", "thinking") if k in raw}
+    if config.get("effort") is not None:
+        view["reasoning_effort"] = config["effort"]
+    chat = normalize(view, cfg, client, "chat", profile)
+    body = dict(raw)
+    body.update({k: chat[k] for k in ("model", "max_tokens", "temperature", "top_p", "top_k") if k in chat})
+    effort = chat["reasoning_effort"]
+    if "thinking" not in raw and config.get("effort") is None:
+        body["thinking"] = {"type": "disabled" if effort == "none" else "enabled"}
+    if effort != "none" and config.get("effort") is None and isinstance(effort, str) and not effort.isdigit():
+        body["output_config"] = {**config, "effort": effort}
+    for name in ("dgx_vision_control", "request_id", "rid", "priority"):
+        body.pop(name, None)
+    return body

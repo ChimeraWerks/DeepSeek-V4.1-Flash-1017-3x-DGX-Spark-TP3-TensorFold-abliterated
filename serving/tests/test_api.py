@@ -92,7 +92,16 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             raw = json.loads(request.content)
             if request.url.path == "/tokenize":
                 return httpx.Response(200, json={"count": 10})
+            if request.url.path == "/v1/messages/count_tokens":
+                return httpx.Response(200, json={"input_tokens": 10})
             self.seen.append(raw)
+            if request.url.path == "/v1/messages":
+                self.paths.append(request.url.path)
+                if raw.get("stream"):
+                    events = [{"type": "message_start"}, {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "hello"}}, {"type": "message_stop"}]
+                    data = b"".join(("event: " + e["type"] + "\ndata: " + json.dumps(e) + "\n\n").encode() for e in events[: 2 if self.truncate else 3])
+                    return httpx.Response(200, content=data, headers={"content-type": "text/event-stream"})
+                return httpx.Response(200, json={"type": "message", "role": "assistant", "content": [{"type": "text", "text": "hello"}]})
             if raw.get("stream"):
                 events = [{"choices": [{"delta": {"reasoning_content": "private thought"}, "finish_reason": None}]},
                           {"choices": [{"delta": {"content": "hello"}, "finish_reason": None}]},
@@ -113,6 +122,69 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         await self.client.aclose()
         await self.life.__aexit__(None, None, None)
         self.temp.cleanup()
+
+    async def test_length_cut_while_thinking_is_a_normal_finish(self):
+        def native(request):
+            if request.url.path == "/tokenize":
+                return httpx.Response(200, json={"count": 10})
+            if json.loads(request.content).get("stream"):
+                events = [{"choices": [{"delta": {"reasoning_content": "thinking"}, "finish_reason": None}]},
+                          {"choices": [{"delta": {}, "finish_reason": "length"}]}]
+                data = b"".join(("data: " + json.dumps(e) + "\n\n").encode() for e in events) + b"data: [DONE]\n\n"
+                return httpx.Response(200, content=data, headers={"content-type": "text/event-stream"})
+            return httpx.Response(200, json={"choices": [{"message": {"reasoning_content": "thinking"}, "finish_reason": "length"}]})
+        state = tempfile.TemporaryDirectory()
+        self.addCleanup(state.cleanup)
+        app = create_app(replace(self.cfg, state_dir=state.name), transport=httpx.MockTransport(native))
+        async with app.router.lifespan_context(app):
+            client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test",
+                                       headers={"Authorization": "Bearer " + os.environ["RECIPE_TEST_KEY"]})
+            base = {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 8, "reasoning_effort": "high"}
+            try:
+                plain = await client.post("/v1/chat/completions", json=base)
+                stream = await client.post("/v1/chat/completions", json={**base, "stream": True})
+            finally:
+                await client.aclose()
+        self.assertEqual(plain.status_code, 200, plain.text)
+        self.assertIn("[DONE]", stream.text)
+        self.assertNotIn("stream_incomplete", stream.text)
+
+    async def test_messages_forwards_natively_and_client_settings_win(self):
+        self.paths = []
+        base = {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 64}
+        keyed = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url="http://test",
+                                  headers={"x-api-key": os.environ["RECIPE_TEST_KEY"]})
+        try:
+            answer = await keyed.post("/v1/messages", json=base)
+        finally:
+            await keyed.aclose()
+        self.assertEqual(answer.status_code, 200, answer.text)
+        self.assertEqual(answer.json()["content"][0]["text"], "hello")
+        self.assertEqual(self.paths, ["/v1/messages"])
+        sent = self.seen[-1]
+        wanted = "disabled" if self.cfg.reasoning_default == "none" else "enabled"
+        self.assertEqual((sent["top_k"], sent["thinking"]), (20, {"type": wanted}))
+        self.assertEqual(sent["messages"], base["messages"])
+        await self.client.post("/v1/messages", json={**base, "temperature": .3, "top_k": 5,
+                               "thinking": {"type": "enabled", "budget_tokens": 32}, "output_config": {"effort": "low"}})
+        sent = self.seen[-1]
+        self.assertEqual((sent["temperature"], sent["top_k"], sent["output_config"]), (.3, 5, {"effort": "low"}))
+        self.assertEqual(sent["thinking"], {"type": "enabled", "budget_tokens": 32})
+        self.assertEqual(self.app.state.engine.gate.active_weight, 0)
+
+    async def test_messages_stream_and_count_tokens(self):
+        self.paths = []
+        body = {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 64, "stream": True}
+        ok = await self.client.post("/v1/messages", json=body)
+        self.assertIn("message_stop", ok.text)
+        self.truncate = True
+        failed = await self.client.post("/v1/messages", json=body)
+        self.assertNotIn("message_stop", failed.text)
+        self.assertEqual(self.app.state.engine.gate.active, 0)
+        count = await self.client.post("/v1/messages/count_tokens", json={"model": "x", "messages": []})
+        self.assertEqual(count.json(), {"input_tokens": 10})
+        bad = await self.client.post("/v1/messages/count_tokens", json={}, headers={"Authorization": "Bearer incorrect"})
+        self.assertEqual(bad.status_code, 401)
 
     async def test_auth_sampler_and_admission_release(self):
         bad = await self.client.post("/v1/chat/completions", json={}, headers={"Authorization": "Bearer incorrect"})
