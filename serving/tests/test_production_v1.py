@@ -114,10 +114,6 @@ class ProductionV1Tests(unittest.TestCase):
         replace(cfg, max_output_tokens=cfg.context_tokens - cfg.safety_tokens - 1).validate()
         with self.assertRaisesRegex(ValueError, "output limits must fit"):
             replace(cfg, max_output_tokens=cfg.context_tokens - cfg.safety_tokens).validate()
-        replace(cfg, auto_compact=True, compact_trigger_tokens=900000,
-                compact_target_tokens=800000).validate()
-        with self.assertRaisesRegex(ValueError, "recent < target < trigger < context"):
-            replace(cfg, auto_compact=True, compact_trigger_tokens=cfg.context_tokens).validate()
 
 
 if __name__ == "__main__":

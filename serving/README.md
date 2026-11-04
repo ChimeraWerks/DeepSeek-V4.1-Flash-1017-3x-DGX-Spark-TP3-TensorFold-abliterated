@@ -322,7 +322,7 @@ Fit input, output and safety reservations within native context. The engine adap
 
 ### Optional capacity controls
 
-Spill, optional KV sharding and automatic context shortening are separate features. The production spill setting enables neither optional sharding, disk chat continuation nor automatic shortening.
+Spill and optional KV sharding are separate features. The production spill setting enables neither optional sharding, disk chat continuation nor automatic shortening.
 
 The managed lifecycle preflights v1.1 spill on every node using a matching `capacity_build_receipt`, executable checksum and `rank_cache_sha256`. Prepare these artifacts for preflight. For a new installation, run the managed supervisor with `--qualification-window` for acceptance testing and keep its results. Direct native `--run` stays blocked until v1.1 passes acceptance; the direct launcher has no qualification-window option.
 
@@ -330,18 +330,7 @@ Artifact validation requires `checksums` for `bin/BUILD.json`, both binaries and
 
 Optional capacity features need a matching capacity build receipt and preflight on all three systems. Spill needs private local-disk paths, sufficient free-space reserves and matching model, engine, Engram and rank-cache identities. Optional TP3 KV sharding supports fetch decode only. Each owner part must fit the full window plus round reserve, and the total pool must be divisible by `6144`. The production `8000000` pool fails that divisibility requirement. Spill with `cache_salt` is unsupported. Check these prerequisites against the selected engine; the API does not enforce them.
 
-Leave `auto_compact` disabled until the shortening/checkpoint implementation is tested with the selected engine, including automatic shortening and retry behavior.
-
-| Configuration key | Package default | Validation when `auto_compact` is enabled |
-|---|---|---|
-| `auto_compact` | `false` | Must be a boolean. |
-| `compact_trigger_tokens` | `300000` | Positive integer, less than `context_tokens`. |
-| `compact_target_tokens` | `240000` | Positive integer, less than the trigger. |
-| `compact_recent_tokens` | `16000` | Positive integer, less than the target. |
-| `compact_chunk_chars` | `24000` | Positive integer. |
-| `checkpoint_output_tokens` | `4096` | Positive integer, at most `max_output_tokens`. |
-| `checkpoint_max_chunks` | `16` | Positive integer, at most `64`. |
-| `checkpoint_timeout` | `180` seconds | Finite number greater than zero and at most `request_timeout`. |
+The API does not shorten prompts. A prompt plus its output reserve must fit `context_tokens`, or the request is refused; clients manage their own context.
 
 ## Vision jobs
 

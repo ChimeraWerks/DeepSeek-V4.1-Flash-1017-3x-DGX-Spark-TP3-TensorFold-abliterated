@@ -78,8 +78,6 @@ class Engine:
             token_body = {k: v for k, v in token_body.items() if k in {"model", "messages", "tools", "tool_choice", "chat_template_kwargs", "reasoning_effort", "thinking_budget"}}
             token_body.update(add_generation_prompt=True, return_token_strs=False)
         else:
-            if not self.cfg.auto_compact:
-                return len(json.dumps(token_body, ensure_ascii=False).encode()) + images * self.cfg.image_token_reserve, "conservative-bytes"
             token_body = {**token_body, "api": "responses", "stream": False, "store": False}
         response = await self.control_client.post("/tokenize", json=token_body, timeout=30)
         if not response.is_success:
@@ -93,70 +91,9 @@ class Engine:
             raise GatewayError(503, "native tokenizer did not return a valid count")
         return count + images * self.cfg.image_token_reserve, "native-text+media-reserve"
 
-    async def validate_features(self):
-        if self.cfg.auto_compact:
-            # A requested feature must have its tokenizer before accepting traffic.
-            await self.count_input({"model": self.cfg.model, "messages": [
-                {"role": "user", "content": "tokenizer readiness"}]})
-            if isinstance(self.native_window, bool) or not isinstance(self.native_window, int) or self.native_window < self.cfg.context_tokens:
-                raise GatewayError(503, "native tokenizer context is unavailable or smaller than configured shortening context")
-            await self.count_input({"model": self.cfg.model, "input": "tokenizer readiness"}, "responses")
-            if isinstance(self.native_window, bool) or not isinstance(self.native_window, int) or self.native_window < self.cfg.context_tokens:
-                raise GatewayError(503, "native Responses tokenizer context does not match shortening configuration")
-
-    async def prepare(self, body, api="chat", *, force_compact=False):
+    async def prepare(self, body, api="chat"):
         count, method = await self.count_input(body, api)
-        compacted = False
-        if self.cfg.auto_compact:
-            from .shortening import Shortener, CompactionError
-            try:
-                body, compacted = await Shortener(self.cfg, self.count_input,
-                    self.checkpoint_completion).compact(body, count, api, force=force_compact)
-            except (CompactionError, ValueError, TimeoutError) as exc:
-                raise GatewayError(400, "validated context shortening could not preserve the protected history",
-                    "checkpoint_validation_failed") from exc
-            if compacted:
-                count, method = await self.count_input(body, api)
-        prepared = self.check_count(body, count, api, method)
-        prepared["compacted"] = compacted
-        return prepared
-
-    async def checkpoint_completion(self, system, prompt, material):
-        from .laky.responses_checkpoint import checkpoint_response_format, parse_checkpoint_json
-        body = normalize({"model": self.cfg.model, "messages": [
-            {"role": "system", "content": system}, {"role": "user", "content": prompt}],
-            "max_tokens": self.cfg.checkpoint_output_tokens, "temperature": 0,
-            "top_p": 1.0, "top_k": 0, "reasoning_effort": "none", "stream": False,
-            "response_format": checkpoint_response_format(material)}, self.cfg)
-        count, method = await self.count_input(body)
-        prepared = self.check_count(body, count, "chat", method)
-        weight = prepared["weight"]
-        acquired = False
-        try:
-            async with asyncio.timeout(self.cfg.queue_timeout):
-                await self.gate.acquire(weight=weight)
-            acquired = True
-            # One dispatch. Never retry an internal generation after a transport error.
-            request = self.client.build_request("POST", "/v1/chat/completions", json=body)
-            response = await self.client.send(request, stream=True)
-            try:
-                data = bytearray()
-                async for chunk in response.aiter_bytes():
-                    data.extend(chunk)
-                    if len(data) > self.cfg.max_response_bytes:
-                        raise GatewayError(502, "checkpoint response exceeded the byte limit")
-                if not response.is_success:
-                    raise GatewayError(503, "native checkpoint generation was rejected")
-                value = json.loads(data)
-                choice = value["choices"][0]
-                if choice.get("finish_reason") != "stop":
-                    raise GatewayError(503, "checkpoint generation did not finish")
-                return parse_checkpoint_json(choice["message"]["content"])
-            finally:
-                await response.aclose()
-        finally:
-            if acquired:
-                await self.gate.release(weight=weight)
+        return self.check_count(body, count, api, method)
 
     def check_count(self, body, count, api, method):
         cap = body["max_output_tokens" if api == "responses" else "max_tokens"]
@@ -164,8 +101,8 @@ class Engine:
             raise GatewayError(400, "input and output reserve exceed recipe context; compact the conversation explicitly", "context_length_exceeded")
         return {"body": body, "count": count, "weight": count + cap, "token_method": method}
 
-    async def begin_stream(self, request_body, *, vision_dispatch=None, api="chat", _context_retry=False):
-        prepared = await self.prepare(request_body, api, force_compact=_context_retry)
+    async def begin_stream(self, request_body, *, vision_dispatch=None, api="chat"):
+        prepared = await self.prepare(request_body, api)
         media = has_images(request_body)
         acquired_media = acquired_gate = False
         try:
@@ -183,29 +120,6 @@ class Engine:
             request = self.client.build_request("POST", path, json=body)
             response = await self.client.send(request, stream=True)
             self.requests += 1
-            if self.cfg.auto_compact and response.status_code == 400 and not _context_retry and not vision_dispatch:
-                data = bytearray()
-                try:
-                    async for chunk in response.aiter_bytes():
-                        data.extend(chunk)
-                        if len(data) > self.cfg.max_response_bytes:
-                            raise GatewayError(502, "native rejection exceeded byte limit")
-                finally:
-                    await response.aclose()
-                try:
-                    rejected = json.loads(data).get("error", {}).get("code")
-                except (ValueError, AttributeError):
-                    rejected = None
-                if rejected in {"context_length", "context_length_exceeded", "context_window_exceeded"}:
-                    # A typed rejection precedes generation. Release admission before
-                    # checkpoint work, so a C1 installation cannot deadlock itself.
-                    await self.gate.release(weight=prepared["weight"])
-                    acquired_gate = False
-                    if acquired_media:
-                        self.media_gate.release()
-                        acquired_media = False
-                    return await self.begin_stream(request_body, api=api, _context_retry=True)
-                response = httpx.Response(response.status_code, headers=response.headers, content=bytes(data))
             return Handle(response, prepared, request_id, prepared["weight"], wait, media, api)
         except BaseException:
             if acquired_gate:
@@ -255,5 +169,4 @@ class Engine:
         return {"X-Recipe-Version": __version__, "X-Recipe-Token-Method": prepared["token_method"],
                 "X-Recipe-Queue-Seconds": f"{queue_wait_seconds:.6f}",
                 "X-Recipe-Sampling": json.dumps({k: body[k] for k in self.cfg.sampling}, separators=(",", ":")),
-                "X-Recipe-Compacted": str(bool(prepared.get("compacted"))).lower(),
                 "Cache-Control": "no-store"}

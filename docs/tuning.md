@@ -125,4 +125,4 @@ Use the operator credential at `/admin/settings` to update `sampling`, `profiles
 
 Keep `max_concurrency` at or below the configured 16 engine streams. Lowering API concurrency leaves native decode-stream capacity unchanged. API `context_tokens` defaults to 1,048,576, matching the bundled `v1.1` native profile and release manifest.
 
-Spill, optional KV sharding and automatic context shortening are separate features. Keep `auto_compact` disabled until tested with the selected engine. TP3 KV sharding requires fetch decode, space in each owner part for the full window plus round reserve, and a pool divisible by 6,144. The production 8,000,000-token pool needs resizing for KV sharding. Spill is incompatible with `cache_salt`.
+Spill and optional KV sharding are separate features. TP3 KV sharding requires fetch decode, space in each owner part for the full window plus round reserve, and a pool divisible by 6,144. The production 8,000,000-token pool needs resizing for KV sharding. Spill is incompatible with `cache_salt`.

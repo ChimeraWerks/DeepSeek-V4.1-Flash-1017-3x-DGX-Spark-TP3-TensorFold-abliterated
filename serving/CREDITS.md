@@ -105,13 +105,11 @@ These native changes and the package were staged offline before the current
 production release.
 
 The v1 production manifest enables 256 GiB spill, graph cap 128 and 16 streams.
-Optional KV sharding, disk chat continuation, compaction and checkpoints are
-off by default.
+Optional KV sharding and disk chat continuation are off by default.
 
 Thanks to **Robert Wojciechowski** (GitHub `wojo`, X `rwojo`) for porting GLM
 spill, continuation, KV owner sharding and ring exchange into DeepSeek 1017,
 and **BadAd84** for designing the spill v2 block tier. **Mia / MiaAI-Lab**
-published and validated the TP2 recipe at `2fd7809`. **LakyFx** authored the
-MIT-licensed task-aware compaction and checkpoint modules imported from `21f9a28`.
+published and validated the TP2 recipe at `2fd7809`.
 Our TP3 adaptations and testing status are in
 `docs/deploy/ds1017-context-storage-design.md`.

@@ -35,6 +35,37 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaises(PolicyError):
             normalize(body, Config(clients={"a": "A_KEY", "b": "B_KEY"}), "a", "responses")
 
+    def test_thinking_object_decides_mode_like_deepseek_recipe(self):
+        base = {"messages": [{"role": "user", "content": "hello"}]}
+        cfg = replace(Config(), reasoning_default="none")
+        cases = [({"thinking": {"type": "enabled"}}, "high"), ({"thinking": {"type": "adaptive"}}, "high"),
+                 ({"thinking": {"type": "enabled"}, "reasoning_effort": "low"}, "low"),
+                 ({"thinking": {"type": "enabled"}, "reasoning_effort": "none"}, "high"),
+                 ({"thinking": {"type": "disabled"}, "reasoning_effort": "max"}, "none"),
+                 ({"reasoning_effort": "ultra"}, "max")]
+        for extra, effort in cases:
+            result = normalize({**base, **extra}, cfg)
+            self.assertEqual(result["reasoning_effort"], effort, extra)
+            self.assertEqual(result["chat_template_kwargs"]["thinking"], effort != "none", extra)
+            self.assertNotIn("thinking", result)
+        with self.assertRaises(PolicyError):
+            normalize({**base, "thinking": {"type": "sometimes"}}, cfg)
+
+    def test_responses_admission_uses_the_native_tokenizer_like_chat(self):
+        seen = []
+        def native(request):
+            seen.append(json.loads(request.content))
+            return httpx.Response(200, json={"count": 7, "max_model_len": 1048576})
+        async def run():
+            from chimera_sparks.engine import Engine
+            engine = Engine(Config(), httpx.MockTransport(native))
+            try:
+                return await engine.count_input({"model": "deepseek-v4.1-flash", "input": "x" * 5000}, "responses")
+            finally:
+                await engine.close()
+        self.assertEqual(asyncio.run(run())[0], 7)
+        self.assertEqual(seen[0]["api"], "responses")
+
     def test_bad_settings_and_internal_ownership(self):
         base = {"messages": [{"role": "user", "content": "hello"}]}
         for bad in [{"temperature": float("nan")}, {"top_k": True}, {"top_p": 0}, {"max_tokens": -1}]:

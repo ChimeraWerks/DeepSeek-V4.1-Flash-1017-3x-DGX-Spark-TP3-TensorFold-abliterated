@@ -61,14 +61,6 @@ class Config:
     vision_thinking_tokens: int = 3072
     vision_final_tokens: int = 32768
 
-    auto_compact: bool = False
-    compact_trigger_tokens: int = 300000
-    compact_target_tokens: int = 240000
-    compact_recent_tokens: int = 16000
-    compact_chunk_chars: int = 24000
-    checkpoint_output_tokens: int = 4096
-    checkpoint_max_chunks: int = 16
-    checkpoint_timeout: float = 180.0
 
     def validate(self):
         parsed = urlsplit(self.upstream)
@@ -100,20 +92,6 @@ class Config:
         for value in (self.request_timeout, self.queue_timeout, self.heartbeat):
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 < value <= 3600:
                 raise ValueError("timeouts must be finite and between 0 and 3600 seconds")
-        if not isinstance(self.auto_compact, bool):
-            raise ValueError("auto_compact must be a boolean")
-        if self.auto_compact:
-            for name in ("compact_trigger_tokens", "compact_target_tokens", "compact_recent_tokens",
-                         "compact_chunk_chars", "checkpoint_output_tokens", "checkpoint_max_chunks"):
-                value = getattr(self, name)
-                if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                    raise ValueError(f"{name} must be a positive integer")
-            if not self.compact_recent_tokens < self.compact_target_tokens < self.compact_trigger_tokens < self.context_tokens:
-                raise ValueError("shortening requires recent < target < trigger < context")
-            if self.checkpoint_output_tokens > self.max_output_tokens or self.checkpoint_max_chunks > 64:
-                raise ValueError("checkpoint work exceeds recipe limits")
-            if not isinstance(self.checkpoint_timeout, (int, float)) or isinstance(self.checkpoint_timeout, bool) or not math.isfinite(self.checkpoint_timeout) or not 0 < self.checkpoint_timeout <= self.request_timeout:
-                raise ValueError("checkpoint timeout must fit the request deadline")
         from .policy import effort_map_values, profile_values, sampling_values
         effort_map_values(self.effort_map)
         if not {"temperature", "top_p", "top_k", "presence_penalty"} <= self.sampling.keys():

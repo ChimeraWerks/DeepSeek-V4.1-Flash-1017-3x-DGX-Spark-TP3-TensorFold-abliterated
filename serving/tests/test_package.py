@@ -47,7 +47,7 @@ class PackageTests(unittest.TestCase):
         scope = json.loads((Path(__file__).resolve().parents[1] / "engine-scope.json").read_text())
         self.assertNotIn("benchmark_commit", scope)
         self.assertIn("kv_sharding", scope["opt_in_later_default_off"])
-        self.assertIn("validated_checkpoints", scope["opt_in_later_default_off"])
+        self.assertNotIn("validated_checkpoints", scope["opt_in_later_default_off"])
         self.assertFalse(scope["live_qualified"])
         self.assertEqual(scope["required_native_profile"], "v1.1")
         self.assertEqual(scope["engine_commit"], "14803a3")

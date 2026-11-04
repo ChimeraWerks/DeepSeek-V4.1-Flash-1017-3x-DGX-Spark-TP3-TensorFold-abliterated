@@ -92,11 +92,6 @@ def create_app(cfg: Config, *, transport=None):
         if state.is_symlink() or (state.stat().st_mode & 0o077):
             raise ValueError("state directory must be private (0700) and not a symlink")
         app.state.engine = Engine(cfg, transport)
-        try:
-            await app.state.engine.validate_features()
-        except BaseException:
-            await app.state.engine.close()
-            raise
         # One configured app/worker per process. These retained Laky settings
         # are derived from our typed config, not hidden operator overrides.
         os.environ.update(DGX_MEDIA_MAX_CONCURRENCY=str(cfg.media_concurrency),

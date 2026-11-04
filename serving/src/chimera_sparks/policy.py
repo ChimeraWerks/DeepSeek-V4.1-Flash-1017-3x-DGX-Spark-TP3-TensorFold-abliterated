@@ -120,18 +120,25 @@ def normalize(raw, cfg, client="default", api="chat", profile=None):
     kw = dict(kw)
     effort = raw.get("reasoning_effort", (raw.get("reasoning") or {}).get("effort") if isinstance(raw.get("reasoning"), dict) else None)
     explicit_effort = effort if effort is not None else kw.get("reasoning_effort")
-    enabled = kw.get("thinking") is True or kw.get("enable_thinking") is True or raw.get("thinking") is True
+    # DeepSeek's request shape: a thinking object decides the mode before any effort does (deepseek-recipe reasoning.rs).
+    thinking = raw.get("thinking")
+    kind = thinking.get("type") if isinstance(thinking, dict) else None
+    if isinstance(thinking, dict) and kind not in {"enabled", "adaptive", "disabled"}:
+        raise PolicyError("thinking.type must be enabled, adaptive or disabled")
+    enabled = kw.get("thinking") is True or kw.get("enable_thinking") is True or thinking is True or kind in {"enabled", "adaptive"}
     default = profile_effort or cfg.reasoning_default
     effort = explicit_effort if explicit_effort is not None else ("low" if enabled and default == "none" else default)
+    if kind in {"enabled", "adaptive"} and (explicit_effort is None or explicit_effort == "none"):
+        effort = "high"
     if isinstance(effort, bool) or not isinstance(effort, (str, int)):
         raise PolicyError("unsupported reasoning effort; use a named level or a whole number from 1 to 100")
-    aliases = {"off": "none", "disabled": "none", "false": "none", "standard": "medium"}
+    aliases = {"off": "none", "disabled": "none", "false": "none", "standard": "medium", "ultra": "max"}
     number = effort_number(effort)
     effort = str(number) if number is not None else aliases.get(str(effort).lower(), effort)
     if number is None and effort not in EFFORTS:
         raise PolicyError("unsupported reasoning effort; use a named level or a whole number from 1 to 100")
-    disabled = kw.get("thinking") is False or kw.get("enable_thinking") is False or raw.get("thinking") is False
-    if explicit_effort and ((disabled and effort != "none") or (enabled and effort == "none")):
+    disabled = kw.get("thinking") is False or kw.get("enable_thinking") is False or thinking is False or kind == "disabled"
+    if kind is None and explicit_effort and ((disabled and effort != "none") or (enabled and effort == "none")):
         raise PolicyError("conflicting thinking controls")
     if disabled:
         effort = "none"

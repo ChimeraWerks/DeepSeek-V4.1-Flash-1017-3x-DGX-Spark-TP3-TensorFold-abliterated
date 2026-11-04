@@ -25,9 +25,7 @@
   ],
   "opt_in_later_default_off": [
     "kv_sharding",
-    "disk_chat_continuation",
-    "context_compaction",
-    "validated_checkpoints"
+    "disk_chat_continuation"
   ],
   "excluded": [
     "eaq_v1_1",
@@ -36,7 +34,7 @@
   ],
   "live_qualified": false,
   "qualification_scope": "Production launch configuration recorded 2026-11-02; not full-context or fault-injection acceptance of a new installation.",
-  "optional_feature_scope": "KV sharding, continuation and shortening remain separate opt-in features; production NVMe spill is enabled.",
+  "optional_feature_scope": "KV sharding and continuation remain separate opt-in features; production NVMe spill is enabled.",
   "small_fix_scope": [
     "mia_0020_style_tp3_exit",
     "mia_0023",

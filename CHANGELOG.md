@@ -4,6 +4,12 @@ DeepSeek V4.1 Flash 1017 abliterated EXL3 3.84 bpw runs across three NVIDIA DGX 
 
 v1.1 uses engine base `14803a3` with exactly two non-runtime edits in `zig/src/server/metrics.zig`. A documentation comment and a test name now describe external metrics samplers generically. Serving logic is unchanged. Rebuild comparison results: `release/build-verification.json`.
 
+## Unreleased
+
+- Serving: removed automatic context shortening. Prompts that do not fit `context_tokens` are refused, and clients manage their own context. Delete `auto_compact`, `compact_*` and `checkpoint_*` from existing configurations; the API no longer accepts them.
+- Serving: Responses admission always uses the native tokenizer, the same as Chat Completions.
+- Serving: `thinking: {type}` now decides thinking mode, and `ultra` effort maps to `max`, matching DeepSeek's `deepseek-recipe`.
+
 ## 2026-11-02 v1.1
 
 - Selected engine baseline `14803a3`, including the LakyFx 1.2.8 prefill port, with matching kernel inputs.

@@ -18,8 +18,6 @@ import urllib.request
 
 from chimera_sparks import lifecycle
 from chimera_sparks.policy import normalize
-from chimera_sparks.shortening import Shortener, CompactionError
-import test_shortening as shortening_tests
 from test_mia_context_tools import module
 
 
@@ -102,37 +100,6 @@ class ActiveRankTests(unittest.TestCase):
         item["environment"] = {}
         with self.assertRaisesRegex(ValueError, "another executable"):
             self.check_active({}, data=b"old executable", item=item)
-
-
-class ResponseInstructionTests(unittest.IsolatedAsyncioTestCase):
-    cfg = shortening_tests.ShorteningTests.cfg
-    history = shortening_tests.ShorteningTests.history
-    count = shortening_tests.ShorteningTests.count
-    completion = shortening_tests.ShorteningTests.completion
-
-    def body(self):
-        items = [{"type": "message", **m} for m in self.history()[:4]]
-        items.insert(2, {"type": "message", "role": "developer", "content": "Return JSON only."})
-        items.extend([{"type": "message", "role": "user", "content": "Current task"},
-            {"type": "function_call", "call_id": "c1", "name": "inspect", "arguments": "{}"},
-            {"type": "function_call_output", "call_id": "c1", "output": "receipt"}])
-        return normalize({"input": items, "instructions": "Top-level contract"}, self.cfg(), api="responses")
-
-    async def test_normalized_input_instructions_keep_roles_content_and_order(self):
-        body = self.body()
-        protected = [m for m in body["input"] if m.get("role") in {"system", "developer"}]
-        result, compacted = await Shortener(self.cfg(), self.count, self.completion).compact(body, 20000, "responses")
-        self.assertTrue(compacted)
-        self.assertEqual(result["input"][:2], protected)
-        self.assertIn("critical_evidence_jsonl", json.dumps(result["input"][2]))
-        self.assertEqual(result["instructions"], body["instructions"])
-        self.assertEqual(result["input"][-3:], body["input"][-3:])
-
-    async def test_oversized_protected_contract_is_refused(self):
-        body = self.body()
-        body["input"][0]["content"] *= 2000
-        with self.assertRaises(CompactionError):
-            await Shortener(self.cfg(), self.count, self.completion).compact(body, 20000, "responses")
 
 
 class SpillObservationTests(unittest.TestCase):
