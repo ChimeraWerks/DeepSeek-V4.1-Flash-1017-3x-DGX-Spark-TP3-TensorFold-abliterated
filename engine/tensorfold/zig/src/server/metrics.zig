@@ -645,3 +645,12 @@ test "kv shard families: present only with a sharded backend's stats, its counte
         "tensorfold:kv_shard_rank_copy_bytes{rank=\"1\"} 4096\n",
     }) |line| try std.testing.expect(std.mem.indexOf(u8, out2.written(), line) != null);
 }
+
+test "restore room cache metrics are counters with exact names" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try cacheFamilies(&out.writer, .{ .restore_room_waits = 3, .restore_room_expiries = 2 });
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "# TYPE tensorfold:prompt_cache_restore_room_waits counter") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "prompt_cache_restore_room_waits 3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "prompt_cache_restore_room_expiries 2") != null);
+}

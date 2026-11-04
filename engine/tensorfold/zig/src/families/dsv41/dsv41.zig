@@ -101,6 +101,7 @@ test {
     refAll(text);
     refAll(round);
     refAll(@import("graph_cache.zig"));
+    refAll(@import("graph_telemetry.zig"));
     refAll(graph_vote);
     refAll(round2d);
     refAll(draft2d);

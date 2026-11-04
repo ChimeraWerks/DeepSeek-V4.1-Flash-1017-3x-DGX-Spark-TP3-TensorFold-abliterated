@@ -21,6 +21,8 @@ pub const FakeTier = struct {
     next_job: u64 = 1,
     /// Polls a restore takes before it is ready (1: the first).
     polls: u32 = 1,
+    /// Deterministic host tests: reject start before reserving anything.
+    begin_error: ?anyerror = null,
     /// The next restore fails with this error (on its first poll).
     fail_next: ?anyerror = null,
     /// Shorter states are not written.
@@ -127,6 +129,7 @@ pub const FakeTier = struct {
         const t = of(ptr);
         t.lock();
         defer t.unlock();
+        if (t.begin_error) |err| return err;
         if (t.find(p.id) == null) {
             t.c.presence_refused += 1;
             return error.PointMissing;

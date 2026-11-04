@@ -55,6 +55,7 @@ pub const Rule = struct {
     mtp_step_ms: f64,
     plain_guard: bool,
     node_probabilities: bool,
+    first_draft_depth: bool = false,
     batch_rows: u32,
     round_ms: Table = .{}, // a round's wall time by drafts, shared by every stream
     overhead: std.ArrayList(Overhead) = .empty, // a shared round's ms past its forward, by streams (insertion order)
@@ -165,6 +166,15 @@ pub const Rule = struct {
         return best;
     }
 
+    /// A stream's first drafts after its prompt: with node probabilities the head's full depth, as `headDepth` asks
+    /// every later round (no round of the stream is measured yet, and the learned tables are empty after boot: the
+    /// first request after boot would otherwise draft shallower than the same request warm).
+    pub fn openDepth(r: *Rule, who: Who) !i64 {
+        if (r.first_draft_depth and r.node_probabilities) return @min(@as(i64, r.most_drafts), @max(1, who.draft_room - 1));
+        return r.depth(who);
+    }
+
+
     /// One draft after `wait` plain rounds in a row; each probe doubles the wait until drafting wins again.
     fn probePlain(r: *Rule, st: *State) bool {
         st.plain = (st.plain orelse 0) + 1;
@@ -268,4 +278,47 @@ test "depth picks the most tokens a ms and probes deeper" {
     defer if (st) |*s| s.deinit(gpa);
     const who: Who = .{ .state = &st, .draft_room = 100, .finished = false, .forced = false };
     try std.testing.expectEqual(@as(i64, 3), try rule.depth(who));
+}
+
+test "the first drafts after a prompt take the head's depth with node probabilities, measured rounds or not" {
+    const gpa = std.testing.allocator;
+    var fc: Table = .{};
+    defer fc.deinit(gpa);
+    const served = [_]f64{ 25.72, 28.72, 31.72, 33.38, 34.29, 35.17 };
+    for (served, 1..) |ms, w| try fc.put(gpa, @intCast(w), ms);
+    const shared: Table = .{};
+    const prior = [_]f64{ 0.85, 0.75, 0.7, 0.65, 0.6 };
+    for ([_]bool{ true, false }) |node| {
+        var rule: Rule = .{ .gpa = gpa, .prior = &prior, .most_drafts = 5, .family_costs = &fc, .shared_costs = &shared, .mtp_step_ms = 3.5, .plain_guard = false, .node_probabilities = node, .first_draft_depth = true, .batch_rows = 16 };
+        defer rule.deinit();
+        var st: ?State = null;
+        defer if (st) |*s| s.deinit(gpa);
+        const who: Who = .{ .state = &st, .draft_room = 160, .finished = false, .forced = false };
+        const cold = try rule.openDepth(who); // nothing measured: the table plus a step a draft
+        for (1..6) |d| try rule.observeCost(@intCast(d), served[d], false, who); // warm: measured rounds by drafts
+        const warm = try rule.openDepth(who);
+        if (node) {
+            try std.testing.expectEqual(@as(i64, 5), cold);
+            try std.testing.expectEqual(@as(i64, 5), warm);
+        } else {
+            try std.testing.expectEqual(@as(i64, 5), warm);
+        }
+    }
+}
+
+test "first depth disabled preserves cold rule and enabled respects room and draft cap" {
+    const a = std.testing.allocator;
+    const fc: Table = .{};
+    var st: ?State = null;
+    defer if (st) |*v| v.deinit(a);
+    var rule: Rule = .{ .gpa = a, .prior = &.{0.85}, .most_drafts = 5, .family_costs = &fc, .shared_costs = &fc, .mtp_step_ms = 0, .plain_guard = false, .node_probabilities = true, .batch_rows = 16 };
+    defer rule.deinit();
+    var who: Who = .{ .state = &st, .draft_room = 100, .finished = false, .forced = false };
+    try std.testing.expectEqual(try rule.depth(who), try rule.openDepth(who));
+    rule.first_draft_depth = true;
+    try std.testing.expectEqual(@as(i64, 5), try rule.openDepth(who));
+    who.draft_room = 3;
+    try std.testing.expectEqual(@as(i64, 2), try rule.openDepth(who));
+    rule.most_drafts = 0;
+    try std.testing.expectEqual(@as(i64, 0), try rule.openDepth(who));
 }

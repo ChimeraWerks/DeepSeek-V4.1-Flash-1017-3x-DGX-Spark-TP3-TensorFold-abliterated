@@ -28,16 +28,23 @@ const Lane = struct {
 };
 
 pub const Fake = struct {
+    pub const CaptureTiming = enum { none, verify, draft };
     gpa: Allocator,
     lanes: std.AutoHashMapUnmanaged(*Stream, Lane) = .empty,
     drawn: std.ArrayList(u32) = .empty, // handle -> token
     release_calls: usize = 0, // count invocations, including erroneous duplicate releases
     rounds: u64 = 0,
+    capture_timing: CaptureTiming = .none,
+    timing_dirty: bool = false,
+    timing_begins: usize = 0,
     cycle_after: ?usize = null,
     probe_prompt: usize = 0,
     pattern: []const u32 = &.{ 11, 12, 13 },
     answer_cycles: bool = false,
     prefill_chunks: usize = 0,
+    prefill_slices: usize = 0,
+    slice_hook: ?*const fn (*anyopaque, *Stream) void = null,
+    slice_ctx: ?*anyopaque = null,
     mark_grid: u32 = 0, // stepped backend may keep marks at their grid floor
     prefill_count: usize = 0,
     prefill_hook: ?*const fn (ctx: *anyopaque, s: *Stream, chunk: usize) void = null,
@@ -65,8 +72,15 @@ pub const Fake = struct {
         l.rows.deinit(gpa);
     }
 
+    fn beginTiming(ptr: *anyopaque) void {
+        const x = self(ptr);
+        x.timing_dirty = false;
+        x.timing_begins += 1;
+    }
+    fn timingClean(ptr: *anyopaque) bool { return !self(ptr).timing_dirty; }
+
     pub fn backend(x: *Fake) be.Backend {
-        return .{ .ptr = x, .vtable = &.{ .prefill = prefill, .first = first, .first_masked = firstMasked, .queue = queue, .read = read, .verify = verify, .keep = keep, .draft = draft, .held = heldDrafts, .release = release } };
+        return .{ .ptr = x, .vtable = &.{ .prefill = prefill, .first = first, .first_masked = firstMasked, .queue = queue, .read = read, .verify = verify, .keep = keep, .draft = draft, .held = heldDrafts, .release = release, .begin_timing = beginTiming, .timing_clean = timingClean } };
     }
 
     pub fn stepped(x: *Fake) be.Backend {
@@ -92,6 +106,11 @@ pub const Fake = struct {
     fn stepFill(ptr: *anyopaque, s: *Stream) anyerror!bool {
         const x = self(ptr);
         if (s.prefill_only) { x.warm_steps += 1; x.warm_budget = s.max_new; }
+        if (x.prefill_slices > 1) for (1..x.prefill_slices) |_| {
+            if (x.slice_hook) |hook| hook(x.slice_ctx.?, s);
+            if (s.between) |b| if (b.wanted(b.ptr)) try b.run(b.ptr);
+            if (s.isCancelled()) return error.Cancelled;
+        };
         const chunk = x.lane(s).fill_chunk;
         x.prefill_count += 1;
         if (x.prefill_hook) |hook| hook(x.prefill_hook_ctx.?, s, chunk);
@@ -235,6 +254,7 @@ pub const Fake = struct {
     }
 
     fn verify(ptr: *anyopaque, windows: []const be.Window, out: []be.Verified) anyerror!void {
+        if (self(ptr).capture_timing == .verify) self(ptr).timing_dirty = true;
         const x = self(ptr);
         x.rounds += 1;
         for (windows, out) |w, o| {
@@ -279,6 +299,7 @@ pub const Fake = struct {
     }
 
     fn draft(ptr: *anyopaque, requests: []const be.DraftRequest) anyerror!void {
+        if (self(ptr).capture_timing == .draft) self(ptr).timing_dirty = true;
         const x = self(ptr);
         for (requests) |r| {
             if (r.stream.prefill_only) x.warm_draft += 1;

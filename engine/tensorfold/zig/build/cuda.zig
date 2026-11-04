@@ -3,7 +3,7 @@
 const std = @import("std");
 
 /// Each .cu in zig/kernels/cuda (`src`, else `name`) with the flags its Python extension passes in `extra_cuda_cflags`.
-/// opt_in: built only with its dedicated -Dport_kernels or -Dsample_cand build option; absent from default fatbins.
+/// opt_in: built only with its dedicated -Dport_kernels, -Dsample_cand or -Dkeyed_draft build option; absent from default fatbins.
 const Kernel = struct { name: []const u8, flags: []const []const u8, src: ?[]const u8 = null, arch_specific: bool = false, opt_in: bool = false };
 
 /// The torch-op replacements' qualification flags (runs/006): no contraction, no flush to zero.
@@ -34,6 +34,7 @@ const kernels = [_]Kernel{
     .{ .name = "dsv41_rdma", .src = "dsv41/rdma_gather", .flags = &.{"-O3"} }, // ours: the decode gathers' RDMA kernel pair
     .{ .name = "dsv41_port", .flags = torch_ops, .opt_in = true }, // ours: the GLM port's spill block staging (port_kernels.zig; fetch/select/union are dsv41_shard)
     .{ .name = "dsv41_sample_cand", .flags = torch_ops, .opt_in = true }, // sampled rows' bounded top candidates
+    .{ .name = "dsv41_keyed", .flags = torch_ops, .opt_in = true }, // isolated keyed draft noise
 };
 
 /// torch.utils.cpp_extension's own nvcc flags (torch 2.13): C++20 and which half/bf16 operators the headers define.
@@ -90,6 +91,7 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     const sms = b.option([]const u8, "sm", "SASS targets, comma separated (121; later 120,89)") orelse "121";
     const port_kernels = b.option(bool, "port_kernels", "also build and embed the GLM port's opt-in kernels (dsv41_port.cu: tf-dsv41-port, spill v2's one-launch staging)") orelse false;
     const sample_cand = b.option(bool, "sample_cand", "embed the opt-in dsv41_sample_cand kernel") orelse false;
+    const keyed_draft = b.option(bool, "keyed_draft", "embed the opt-in dsv41_keyed proposal noise kernel") orelse false;
     // the compiler's version text is an input of every fatbin, so a new nvcc rebuilds them all
     const version: ?std.Build.LazyPath = if (prebuilt == null and nvcc != null) blk: {
         const run = b.addSystemCommand(&.{ nvcc.?, "--version" });
@@ -99,7 +101,7 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     var images: [kernels.len]?std.Build.LazyPath = @splat(null);
     const fatbin_step = b.step("fatbins", "Build and install the CUDA kernel fatbins alone");
     for (kernels, &images) |k, *image| {
-        if (k.opt_in and !(if (std.mem.eql(u8, k.name, "dsv41_sample_cand")) sample_cand else port_kernels)) continue;
+        if (k.opt_in and !(if (std.mem.eql(u8, k.name, "dsv41_sample_cand")) sample_cand else if (std.mem.eql(u8, k.name, "dsv41_keyed")) keyed_draft else port_kernels)) continue;
         if (prebuilt) |dir| {
             image.* = b.graph.cwdRelativePath(b.pathJoin(&.{ dir, b.fmt("{s}.fatbin", .{k.name}) }));
         } else if (nvcc) |tool| {
@@ -242,6 +244,10 @@ pub fn hostTests(b: *std.Build, draft_ids: *std.Build.Module, step: *std.Build.S
     const cuda = runtime(b, host, .debug, &.{});
     const mods = family(b, host, .debug, cuda, draft_ids);
     const eng = engines(b, host, .debug, cuda, mods.lanes, mods.nemotron, mods.core);
+    b.step("test-kv-loopback", "Loopback fixture connection and worker lifetimes").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{ "loopback fixture", "over a loopback link:" } })).step);
+    const draft_cal_tests = b.step("test-draft-calibration", "Draft survival, first depth, allocator and TP3 settings host regressions");
+    draft_cal_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = mods.lanes })).step);
+    draft_cal_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{"draft settings"} })).step);
     const audit = b.createModule(.{ .root_source_file = b.path("zig/src/families/dsv41/aot_check_main.zig"), .target = host, .optimize = .debug, .link_libc = true });
     audit.addImport("cuda", cuda);
     audit.addImport("dsv41", eng.dsv41);
@@ -341,12 +347,27 @@ pub fn hostTests(b: *std.Build, draft_ids: *std.Build.Module, step: *std.Build.S
     const template = b.createModule(.{ .root_source_file = b.path("zig/src/core/template/template.zig"), .target = host, .optimize = .debug, .link_libc = true });
     const server_tests = b.createModule(.{ .root_source_file = b.path("zig/src/server/root.zig"), .target = host, .optimize = .debug, .link_libc = true, .imports = &.{ .{ .name = "engine_api", .module = eng.api }, .{ .name = "tokenizer", .module = mods.tokenizer }, .{ .name = "template", .module = template } } });
     step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = server_tests })).step);
+    const room_tests = b.step("test-restore-room", "Bounded nonsharded restore-start wait, tier lifecycle, CLI and metrics");
+    for ([_]*std.Build.Module{ eng.api, eng.dsv41, server_tests }) |m| {
+        room_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m, .filters = &.{ "restore room", "parked", "restore", "aggregate tier", "spill flags", "spill CLI", "cache metrics" } })).step);
+    }
     const structured_tests = b.step("test-structured-output", "Focused grammar, DSML and masked-row host tests");
     for ([_]*std.Build.Module{ mods.lanes, eng.api, eng.dsv41, server_tests }) |m| {
         structured_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m, .filters = &.{ "structured output", "grammar", "DSML" } })).step);
     }
     context_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = server_tests, .filters = &.{ "cache families", "kv shard families", "Responses token counting", "image span" } })).step);
+    const graph_telemetry_tests = b.step("test-graph-telemetry", "Graph telemetry, TP3 cache/votes and capture-clean learning, CPU only");
+    graph_telemetry_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{ "graph telemetry", "graph", "vote", "three ranks" } })).step);
+    graph_telemetry_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = mods.lanes, .filters = &.{ "graph telemetry" } })).step);
+    b.step("test-keyed-draft", "Keyed draft sampler, TP3 frame, graph keys and launch regressions, CPU only").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{ "keyed", "Markov", "pre hook", "logits row", "prefix sampling", "candidate windows", "outer follower decoder", "rank zero drafter", "graph cache" } })).step);
     b.step("test-drafter-pairfault", "Rank-zero drafter pair-ending faults and follower-watch decisions, CPU only").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{ "rank zero drafter qualification faults", "follower watch" } })).step);
+    const cache_batch_tests = b.step("test-cache-batch", "Bounded dead release, first continuation, TP3 receipts and key compatibility, CPU only");
+    for ([_]*std.Build.Module{ mods.core, eng.api, eng.dsv41 }) |m| {
+        cache_batch_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m, .filters = &.{ "401a", "cache batch" } })).step);
+    }
+    b.step("test-decode-greedy-head", "Greedy head policy, wire, readiness and custody CPU tests").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{"decode greedy head"} })).step);
+    const slice_tests = b.step("test-prefill-slices", "Yielded layer slices, custody and TP3 frames, CPU only");
+    for ([_]*std.Build.Module{ eng.api, eng.dsv41 }) |mod| slice_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = mod, .filters = &.{"prefill slice"} })).step);
     b.step("test-prefill128", "Laky 1.2.8 affected prefill checks, CPU only").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{ "prefill128" } })).step);
     b.step("test-prefill-owned", "TF_DS_PREFILL_OWNED's row thirds on the host").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{ "owned thirds", "the features" } })).step);
     b.step("test-engram-fault", "Engram read faults that end the pair, on the host").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{ "rankFault", "direct all-gather" } })).step);

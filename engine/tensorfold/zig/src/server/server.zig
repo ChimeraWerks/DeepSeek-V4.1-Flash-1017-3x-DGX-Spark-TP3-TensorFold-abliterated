@@ -46,6 +46,8 @@ pub const Config = struct {
     /// Sampling when a request names none (generation_config.json and the serve flags), or null for greedy.
     default_sampling: ?Value = null,
     use_drafts: bool = true,
+    /// Rank-0 HTTP presentation only. TF_STREAM_TOOL_CALLS=1 opts into incremental DSML arguments.
+    stream_tool_calls: bool = false,
     seed_salt: i64 = 0,
     /// TENSORFOLD_REQUEST_LOG: where chat and completion bodies are appended; null: nowhere.
     request_log: ?[]const u8 = null,

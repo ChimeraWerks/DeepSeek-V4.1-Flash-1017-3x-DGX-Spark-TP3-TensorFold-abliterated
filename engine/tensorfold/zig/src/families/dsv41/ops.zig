@@ -12,6 +12,10 @@ fn blocks(count: usize, threads: usize) u32 {
     return @intCast(@min((count + threads - 1) / threads, 65535));
 }
 
+/// One stream's row of tf_ds_keyed_noise_kernel's table: the sampler's seed and temperature, and the absolute position
+/// of its step-0 draft.
+pub const KeyedRow = extern struct { seed: u64, temp: f64, pos: i64 };
+
 /// tf_ds_l2_prefetch_kernel's argument: up to 16 device ranges (their first byte and length).
 pub const Prefetch = extern struct { ptr: [16]u64 = @splat(0), bytes: [16]u64 = @splat(0), n: c_int = 0 };
 
@@ -20,6 +24,7 @@ pub const Ops = struct {
     movement: cuda.Module,
     family: cuda.Module,
     candidates: ?cuda.Module = null,
+    reduced_head: ?cuda.Module = null,
     top_cand_rows: ?cuda.Function = null,
     to_f32: cuda.Function,
     f16_to_f32: cuda.Function,
@@ -39,7 +44,13 @@ pub const Ops = struct {
     gather: cuda.Function,
     copy16: cuda.Function,
     argmax_rows: cuda.Function,
+    greedy_head_local: ?cuda.Function = null,
+    greedy_head_merge: ?cuda.Function = null,
+    sample_head_local: ?cuda.Function = null,
+    sample_head_merge: ?cuda.Function = null,
     gpu_clock: cuda.Function,
+    keyed: ?cuda.Module = null,
+    keyed_noise: ?cuda.Function = null,
 
     /// The three images (cuda.kernels.torch_pointwise, torch_movement and dsv41_ops, or the fatbins' bytes).
     pub fn load(d: *const cuda.Driver, pointwise: []const u8, movement: []const u8, family: []const u8) !Ops {
@@ -75,6 +86,75 @@ pub const Ops = struct {
         };
     }
 
+    /// Called only for the enabled feature, never through the production family module.
+    pub fn enableKeyed(o: *Ops, d: *const cuda.Driver, image: []const u8) !void {
+        if (image.len == 0) return error.NoKeyedDraftKernel;
+        var module = try cuda.Module.load(d, image);
+        errdefer module.unload();
+        const f = try module.function("tf_ds_keyed_noise_kernel");
+        o.keyed = module;
+        o.keyed_noise = f;
+    }
+
+    /// A separate image: existing production CUDA images remain byte-identical.
+    pub fn enableGreedyHead(o: *Ops, d: *const cuda.Driver, image: []const u8) !void {
+        if (image.len == 0) return error.NoGreedyHeadKernel;
+        var module = try cuda.Module.load(d, image);
+        errdefer module.unload();
+        const local = try module.function("tf_ds_greedy_head_local_kernel");
+        const merge = try module.function("tf_ds_greedy_head_merge_kernel");
+        const sample_local = try module.function("tf_ds_sample_head_local_kernel");
+        const sample_merge = try module.function("tf_ds_sample_head_merge_kernel");
+        o.sample_head_local = sample_local;
+        o.sample_head_merge = sample_merge;
+        o.reduced_head = module;
+        o.greedy_head_local = local;
+        o.greedy_head_merge = merge;
+    }
+
+    pub fn greedyHeadLocal(o: *const Ops, s: cuda.Stream, logits: u64, ld: usize, vocab: usize, offset: usize, rows: usize, out: u64) !void {
+        var a: cuda.Args = .{};
+        a.add(logits);
+        a.add(@as(u64, ld));
+        a.add(@as(u32, @intCast(vocab)));
+        a.add(@as(u32, @intCast(offset)));
+        a.add(out);
+        try go(o.greedy_head_local orelse return error.NoGreedyHeadKernel, s, rows, 1024, &a);
+    }
+
+    pub fn greedyHeadMerge(o: *const Ops, s: cuda.Stream, all: u64, rows: usize, world: usize, out: u64) !void {
+        var a: cuda.Args = .{};
+        a.add(all);
+        a.add(@as(u32, @intCast(rows)));
+        a.add(@as(u32, @intCast(world)));
+        a.add(out);
+        try go(o.greedy_head_merge orelse return error.NoGreedyHeadKernel, s, rows, 32, &a);
+    }
+
+
+    pub fn sampleHeadLocal(o: *const Ops, s: cuda.Stream, logits: u64, ld: usize, vocab: usize, offset: usize, rows: usize, count: usize, out: u64) !void {
+        var a: cuda.Args = .{};
+        a.add(logits);
+        a.add(@as(u64, ld));
+        a.add(@as(u32, @intCast(vocab)));
+        a.add(@as(u32, @intCast(offset)));
+        a.add(@as(u32, @intCast(count)));
+        a.add(out);
+        try go(o.sample_head_local orelse return error.NoGreedyHeadKernel, s, rows, 1024, &a);
+    }
+
+    pub fn sampleHeadMerge(o: *const Ops, s: cuda.Stream, all: u64, rows: usize, world: usize, count: usize, vals: u64, ids: u64, flags: u64) !void {
+        var a: cuda.Args = .{};
+        a.add(all);
+        a.add(@as(u32, @intCast(rows)));
+        a.add(@as(u32, @intCast(world)));
+        a.add(@as(u32, @intCast(count)));
+        a.add(vals);
+        a.add(ids);
+        a.add(flags);
+        try go(o.sample_head_merge orelse return error.NoGreedyHeadKernel, s, rows, 32, &a);
+    }
+
     pub fn enableCandidates(o: *Ops, d: *const cuda.Driver, image: []const u8) !void {
         var module = try cuda.Module.load(d, image);
         errdefer module.unload();
@@ -85,6 +165,14 @@ pub const Ops = struct {
 
     pub fn unload(o: *Ops) void {
         const cleanup = cuda.context_health.cleanupMark();
+        if (o.keyed) |*module| {
+            module.unload();
+            if (!cuda.context_health.cleanupReleased(cleanup)) return;
+        }
+        if (o.reduced_head) |*module| {
+            module.unload();
+            if (!cuda.context_health.cleanupReleased(cleanup)) return;
+        }
         if (o.candidates) |*module| {
             module.unload();
             if (!cuda.context_health.cleanupReleased(cleanup)) return;
@@ -339,6 +427,21 @@ pub const Ops = struct {
         try go(o.top_cand_rows orelse return error.NoSampleCandidateKernel, s, rows, 1024, &a);
     }
 
+    /// Adds T * gumbel(seed, pos + step, col0 + v) to column v of each of `rows` streams' logits row (fp32, rows `l_row`
+    /// floats apart, `width` columns; `table` the device KeyedRow of each stream), skipping streams with T <= 0.
+    pub fn keyedNoise(o: *const Ops, s: cuda.Stream, logits: u64, l_row: usize, width: usize, col0: usize, table: u64, step: usize, rows: usize) !void {
+        const f = o.keyed_noise orelse return error.KeyedDraftOff;
+        if (rows == 0 or width == 0) return;
+        var a: cuda.Args = .{};
+        a.add(logits);
+        a.add(@as(u64, l_row));
+        a.add(@as(u32, @intCast(width)));
+        a.add(@as(u64, col0));
+        a.add(table);
+        a.add(@as(u32, @intCast(step)));
+        try cuda.launch.launch(f, .{ .grid = .{ .x = blocks(width, 256), .y = @intCast(rows) }, .block = .{ .x = 256 } }, s, &a);
+    }
+
     /// The GPU clock (ns) into buf[i] when the stream reaches it (a profile).
     pub fn gpuClock(o: *const Ops, s: cuda.Stream, buf: u64, tag: u32, reset: bool, cap: u32) !void {
         var a: cuda.Args = .{};
@@ -369,4 +472,77 @@ test "launch geometry of the development launchers" {
     try std.testing.expectEqual(@as(u32, 1), blocks(1, 256));
     try std.testing.expectEqual(@as(u32, 2), blocks(257, 256));
     try std.testing.expectEqual(@as(u32, 65535), blocks(1 << 40, 256));
+}
+
+test "a keyed row is the kernel's TfDsKeyedRow: u64 seed, f64 temperature, i64 position" {
+    try std.testing.expectEqual(@as(usize, 24), @sizeOf(KeyedRow));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(KeyedRow, "temp"));
+    try std.testing.expectEqual(@as(usize, 16), @offsetOf(KeyedRow, "pos"));
+}
+
+
+test "decode greedy head actual Ops launcher ABI and grids without CUDA" {
+    const Fake = struct {
+        var calls: usize = 0;
+        var good: bool = true;
+        fn arg(comptime T: type, params: ?[*]?*anyopaque, i: usize) T {
+            return @as(*const T, @ptrCast(@alignCast(params.?[i].?))).*;
+        }
+        fn launch(f: cuda.abi.Function, gx: c_uint, gy: c_uint, gz: c_uint,
+            bx: c_uint, by: c_uint, bz: c_uint, shared: c_uint,
+            _: cuda.abi.Stream, params: ?[*]?*anyopaque, _: ?[*]?*anyopaque) callconv(.c) cuda.abi.Result {
+            calls += 1;
+            good = good and gx == 3 and gy == 1 and gz == 1 and by == 1 and bz == 1 and shared == 0;
+            if (@intFromPtr(f) == 101) {
+                good = good and bx == 1024 and arg(u64, params, 0) == 0x11000 and
+                    arg(u64, params, 1) == 43136 and arg(u32, params, 2) == 129280 and
+                    arg(u32, params, 3) == 86272 and arg(u64, params, 4) == 0x22000;
+            } else if (@intFromPtr(f) == 102) {
+                good = good and bx == 32 and arg(u64, params, 0) == 0x33000 and
+                    arg(u32, params, 1) == 3 and arg(u32, params, 2) == 3 and arg(u64, params, 3) == 0x44000;
+            } else if (@intFromPtr(f) == 103) {
+                good = good and bx == 1024 and arg(u64, params, 0) == 0x11000 and
+                    arg(u64, params, 1) == 43136 and arg(u32, params, 2) == 129280 and
+                    arg(u32, params, 3) == 86272 and arg(u32, params, 4) == 28 and arg(u64, params, 5) == 0x22000;
+            } else if (@intFromPtr(f) == 104) {
+                good = good and bx == 32 and arg(u64, params, 0) == 0x33000 and arg(u32, params, 1) == 3 and
+                    arg(u32, params, 2) == 3 and arg(u32, params, 3) == 28 and arg(u64, params, 4) == 0x44000 and
+                    arg(u64, params, 5) == 0x55000 and arg(u64, params, 6) == 0x66000;
+            } else good = false;
+            return cuda.abi.success;
+        }
+    };
+    Fake.calls = 0;
+    Fake.good = true;
+    var driver: cuda.Driver = undefined;
+    driver.api.cuLaunchKernel = Fake.launch;
+    // Pure host registry fixture; no Driver.open, cuInit or GPU context creation.
+    const health = cuda.context_health;
+    const fake_context: cuda.abi.Context = @ptrFromInt(0x7dd85001);
+    try health.retain(@intFromPtr(&driver), fake_context);
+    defer health.release(@intFromPtr(&driver), fake_context);
+    health.setCurrent(@intFromPtr(&driver), fake_context);
+    defer health.clearCurrent(@intFromPtr(&driver), fake_context);
+    var owner = health.Owner.capture();
+    defer owner.release();
+    const stream: cuda.Stream = .{ .d = &driver, .owner = owner, .handle = null };
+    var ops: Ops = undefined;
+    ops.greedy_head_local = .{ .d = &driver, .owner = owner, .handle = @ptrFromInt(101) };
+    ops.greedy_head_merge = .{ .d = &driver, .owner = owner, .handle = @ptrFromInt(102) };
+    try ops.greedyHeadLocal(stream, 0x11000, 43136, 129280, 86272, 3, 0x22000);
+    try ops.greedyHeadMerge(stream, 0x33000, 3, 3, 0x44000);
+    try std.testing.expectEqual(@as(usize, 2), Fake.calls);
+    try std.testing.expect(Fake.good);
+    ops.greedy_head_local = null;
+    try std.testing.expectError(error.NoGreedyHeadKernel, ops.greedyHeadLocal(stream, 0x11000, 43136, 129280, 86272, 3, 0x22000));
+    try std.testing.expectEqual(@as(usize, 2), Fake.calls);
+    ops.sample_head_local = .{ .d = &driver, .owner = owner, .handle = @ptrFromInt(103) };
+    ops.sample_head_merge = .{ .d = &driver, .owner = owner, .handle = @ptrFromInt(104) };
+    try ops.sampleHeadLocal(stream, 0x11000, 43136, 129280, 86272, 3, 28, 0x22000);
+    try ops.sampleHeadMerge(stream, 0x33000, 3, 3, 28, 0x44000, 0x55000, 0x66000);
+    try std.testing.expectEqual(@as(usize, 4), Fake.calls);
+    try std.testing.expect(Fake.good);
+    ops.sample_head_local = null;
+    try std.testing.expectError(error.NoGreedyHeadKernel, ops.sampleHeadLocal(stream, 0x11000, 43136, 129280, 86272, 3, 28, 0x22000));
+    try std.testing.expectEqual(@as(usize, 4), Fake.calls);
 }

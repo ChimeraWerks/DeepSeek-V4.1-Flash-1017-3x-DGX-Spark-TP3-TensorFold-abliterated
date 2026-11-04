@@ -17,6 +17,38 @@ pub const isTitle = messages_mod.isTitleRequest;
 
 /// ``render_prompt_ids``: messages normalized for this template, rendered, and a dangling ``<think>`` closed.
 pub fn renderIds(srv: *Server, cx: *Cx, messages: Value, tools: []const Value, thinking: bool, effort: ?[]const u8, generation: bool) errors.Refused![]const u32 {
+    return renderRequest(srv, cx, messages, tools, thinking, effort, generation, null);
+}
+
+/// The schema a request's ``response_format`` asks the template to state, or null for free text.
+pub fn responseFormat(f: Value) ?Value {
+    const rf = f.field("response_format") orelse return null;
+    if (rf != .object) return null;
+    if (rf.typeIs("json_object")) return rf;
+    if (rf.typeIs("json_schema")) if (rf.field("json_schema")) |js| return js.field("schema");
+    return null;
+}
+
+/// The template states tools and a response format in its system block, as deepseek-recipe does: an empty one if need be.
+fn withSystem(cx: *Cx, messages: Value) errors.Refused!Value {
+    if (messages != .array or messages.array.len == 0) return messages;
+    const role = messages.array[0].get("role");
+    if (role != null and role.? == .string and std.mem.eql(u8, role.?.string, "system")) return messages;
+    const system = try json.newObject(cx.a);
+    try system.put(cx.a, "role", .{ .string = "system" });
+    try system.put(cx.a, "content", .{ .string = "" });
+    return .{ .array = try std.mem.concat(cx.a, Value, &.{ &.{.{ .object = system }}, messages.array }) };
+}
+
+/// A last assistant message marked ``prefix`` is continued, so it must not end its turn.
+fn continues(messages: Value) bool {
+    if (messages != .array or messages.array.len == 0) return false;
+    const last = messages.array[messages.array.len - 1];
+    const prefix = last.get("prefix") orelse return false;
+    return prefix.truthy();
+}
+
+pub fn renderRequest(srv: *Server, cx: *Cx, messages: Value, tools: []const Value, thinking: bool, effort: ?[]const u8, generation: bool, format: ?Value) errors.Refused![]const u32 {
     var normalized = try messages_mod.toolArguments(cx, try messages_mod.normalize(cx, messages, srv.late_system, srv.needs_user_after_tool));
     if (srv.ds41_tool_separator) normalized = try messages_mod.ds41ToolSeparator(cx, normalized);
     var problem: []const u8 = "";
@@ -26,7 +58,9 @@ pub fn renderIds(srv: *Server, cx: *Cx, messages: Value, tools: []const Value, t
         .enable_thinking = thinking,
         .reasoning_effort = if (thinking) effort else null,
         .reasoning_effort_value = if (thinking) srv.effortValue(effort) else null,
+        .response_format = format,
     };
+    if (tools.len > 0 or format != null) normalized = try withSystem(cx, normalized);
     var ids = srv.text.renderIds(cx.a, normalized, options, &problem) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         error.Template => return cx.fail(.server, "{s}", .{problem}),
@@ -41,6 +75,10 @@ pub fn renderIds(srv: *Server, cx: *Cx, messages: Value, tools: []const Value, t
             if (close.len == 1) ids = try std.mem.concat(cx.a, u32, &.{ ids, close });
         }
     }
+    if (continues(messages) and ids.len > 0) {
+        const last = try srv.text.decode(cx.a, ids[ids.len - 1 ..]);
+        if (std.mem.endsWith(u8, last, "end▁of▁sentence｜>")) ids = ids[0 .. ids.len - 1];
+    }
     return ids;
 }
 
@@ -53,8 +91,9 @@ pub fn prepare(srv: *Server, cx: *Cx, input: chat.Input, thinking: bool, effort:
         } },
         .ids => |ids| return .{ .ids = ids },
     };
-    const prompt = try renderIds(srv, cx, input.messages, input.tools, thinking, effort, true);
-    const history = try renderIds(srv, cx, input.messages, input.tools, thinking, effort, false);
+    const format = responseFormat(input.fields);
+    const prompt = try renderRequest(srv, cx, input.messages, input.tools, thinking, effort, true, format);
+    const history = try renderRequest(srv, cx, input.messages, input.tools, thinking, effort, false, format);
     var history_len: usize = 0;
     if (history.len > 0 and history.len < prompt.len and std.mem.eql(u32, prompt[0..history.len], history)) history_len = history.len;
     if (history_len == 0 and prompt.len > 1 and std.mem.eql(u32, history, prompt)) history_len = prompt.len - 1; // a template with no generation suffix

@@ -108,7 +108,7 @@ pub const env = [_][]const u8{ "TENSORFOLD_API_KEY", "TENSORFOLD_NO_LIVE", "TENS
     (if (cuda_build) [_][]const u8{ "TF_CUDA_DEVICE", "TF_CUDA_SEGMENTS", "TENSORFOLD_CUDA_KERNELS", "TENSORFOLD_MEMORY_RESERVE_GIB", "TENSORFOLD_CUDA_MEMORY_LIMIT_GB" } else [_][]const u8{});
 
 /// The prompt cache tier's variables (api.Spill): its knobs beyond the flags.
-pub const spill_env = [_][]const u8{ "TF_SPILL_TURNS", "TF_SPILL_LOAD_MS", "TF_SPILL_LOAD_WAIT_MS", "TF_SPILL_FLUSH_MS" };
+pub const spill_env = [_][]const u8{ "TF_SPILL_TURNS", "TF_SPILL_LOAD_MS", "TF_SPILL_LOAD_WAIT_MS", "TF_SPILL_ROOM_WAIT_MS", "TF_SPILL_FLUSH_MS" };
 
 pub const Args = struct {
     model: []const u8 = "",
@@ -297,6 +297,7 @@ pub fn spill(args: Args, env_: anytype) api.Spill {
     if (env_.get("TF_SPILL_TURNS")) |v| s.turns = std.fmt.parseInt(u32, std.mem.trim(u8, v, " "), 10) catch s.turns;
     if (env_.get("TF_SPILL_LOAD_MS")) |v| s.load_ms = positive(v) orelse s.load_ms;
     if (env_.get("TF_SPILL_LOAD_WAIT_MS")) |v| s.load_wait_ms = positive(v) orelse s.load_wait_ms;
+    s.room_wait_ms = api.Spill.roomWaitMs(env_.get("TF_SPILL_ROOM_WAIT_MS"));
     if (env_.get("TF_SPILL_FLUSH_MS")) |v| s.flush_ms = std.fmt.parseInt(u32, std.mem.trim(u8, v, " "), 10) catch s.flush_ms;
     return s;
 }
@@ -466,4 +467,17 @@ test "spill flags and variables: off by default, checked, passed whole" {
     try capabilities(&out.writer, .{ .version = "0.6.5" });
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"--spill-gib\": {}") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"TF_SPILL_LOAD_MS\"") != null);
+}
+
+test "restore room CLI accepts zero bounded u32 and rejects invalid values to off" {
+    const Env = struct {
+        raw: ?[]const u8,
+        pub fn get(e: @This(), name: []const u8) ?[]const u8 {
+            return if (std.mem.eql(u8, name, "TF_SPILL_ROOM_WAIT_MS")) e.raw else null;
+        }
+    };
+    for ([_]?[]const u8{ null, "0", "", "-1", "4294967296", "bad" }) |raw|
+        try std.testing.expectEqual(@as(u32, 0), spill(.{}, Env{ .raw = raw }).room_wait_ms);
+    try std.testing.expectEqual(@as(u32, 30000), spill(.{}, Env{ .raw = " 30000 " }).room_wait_ms);
+    try std.testing.expectEqual(std.math.maxInt(u32), spill(.{}, Env{ .raw = "4294967295" }).room_wait_ms);
 }

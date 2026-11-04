@@ -228,6 +228,15 @@ pub fn thinkingFields(cx: *Cx, body: Value, levels: []const []const u8) errors.R
         out.enable = on.truthy();
         if (out.enable.? and out.effort != null and std.mem.eql(u8, out.effort.?, "none")) out.effort = null;
     };
+    // deepseek-recipe's request shape: a thinking object decides the mode before any effort does.
+    if (body.field("thinking")) |t| if (t == .object) {
+        if (t.typeIs("disabled")) {
+            out.enable = false;
+        } else if (t.typeIs("enabled") or t.typeIs("adaptive")) {
+            out.enable = true;
+            if (out.effort != null and std.mem.eql(u8, out.effort.?, "none")) out.effort = null;
+        }
+    };
     return out;
 }
 

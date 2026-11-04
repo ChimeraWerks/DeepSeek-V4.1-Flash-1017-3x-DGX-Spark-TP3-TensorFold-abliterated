@@ -1,3 +1,6 @@
+//! TF_DS_DRAFT_CAL=w: optional per-stream draft survival (finite 0..1; default 0/off).
+//! TF_DS_FIRST_DRAFT_DEPTH=1: optional full first head depth (default 0/off).
+//! Both settings must agree on rank 0 and both TP3 followers at startup.
 //! DeepSeek-V4.1-Flash behind the native CUDA family interface, tensor parallel over two GPUs: the server's process is
 //! rank 0 (the lane core over lanes.zig's Backend on model.zig), rank 1 is `tf-dsv41-lanes` following it on the other
 //! node (the same model directory, rank cache, kit, pool and port). The ranks link over TCP and NCCL; the inputs
@@ -41,6 +44,9 @@
 //! TF_TP_WORLD=4: the four nodes of the exact 2D split (prompt2d.zig), ranks 1-3 `tf-dsv41-lanes` following on the
 //! other nodes; TF_RDMA_DEVICES (and TF_DS_RDMA_KERNELS: rdma_gather.cu's fatbin, unset: the embedded one) put its
 //! decode-size exchanges on the RDMA rings, as the four-node Python lane's TF_RDMA_DEVICES does.
+//! TF_DS_KEYED_DRAFT=1 adds keyed Gumbel noise to eligible sampled drafts; default off.
+//! All ranks must agree. Unfiltered sampling only; target verification is unchanged.
+//! Build with -Dkeyed_draft=true to embed dsv41_keyed.fatbin; enabled startup refuses if absent.
 const std = @import("std");
 const cuda = @import("cuda");
 const lanes = @import("lanes");
@@ -151,6 +157,8 @@ pub const Snaps = struct {
     tail_window: u32,
     continuation_hint: *const fn (*anyopaque, *anyopaque, u64) void,
     adaptive_hint: *const fn (*anyopaque, *anyopaque, u32) void,
+    drop_many: *const fn (*anyopaque, []const *anyopaque) void,
+    first_hint: *const fn (*anyopaque, *anyopaque) void,
     ghost_range: *const fn (*anyopaque, *anyopaque) [2]u32,
 };
 
@@ -291,6 +299,7 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, ctx: *const cuda.Context, dir: [
         .map_mark = L.snapMapMarkFn,
         .automatic_marks = L.snapAutomaticMarksFn, .tail_window = @intCast(st.m.cfg.window),
         .continuation_hint = L.snapContinuationHintFn, .adaptive_hint = L.snapAdaptiveHintFn,
+        .drop_many = L.snapDropManyFn, .first_hint = L.snapFirstHintFn,
         .ghost_range = L.snapGhostRangeFn };
     const window: ?usize = if (st.m.kvs != null or st.m.pool_cap != o.context) st.m.window_cap else null;
     var tier: ?spill_tier.prompt_cache.Tier = null;
@@ -396,7 +405,7 @@ pub fn rankExchange(gpa: std.mem.Allocator, io: std.Io, mo: model.Options, m: *m
     // TF_DS_KV_SHARD's switches every rank's planner takes (carry, twins) and its part size: agreed in `features`
     const kvs: kv_lanes.Settings = if (m.kvs != null) try kv_lanes.Settings.fromEnv(getenvFn) else .{ .carry = false, .twins = false };
     const part_rows: u64 = if (m.caches.shard) |x| x.part else 0;
-    const features = try rank_identity.featureString(&fbuf, .{ .spill = s != null, .spill_min_tokens = if (s) |x| x.min_tokens else 0, .kv_shard = m.kvs != null, .kv_carry = kvs.carry, .twins = kvs.twins, .part_rows = part_rows, .image_cache = image_cache, .streams = @intCast(m.streams), .round_rows = @intCast(m.eng.round_rows), .pool = m.pool_cap, .drafts = m.drafting(), .owned = prompt.owned_on, .prefill128 = m.prefill.bits() });
+    const features = try rank_identity.featureString(&fbuf, .{ .spill = s != null, .spill_min_tokens = if (s) |x| x.min_tokens else 0, .kv_shard = m.kvs != null, .kv_carry = kvs.carry, .twins = kvs.twins, .part_rows = part_rows, .image_cache = image_cache, .streams = @intCast(m.streams), .round_rows = @intCast(m.eng.round_rows), .pool = m.pool_cap, .drafts = m.drafting(), .owned = prompt.owned_on, .prefill128 = m.prefill.bits(), .cache_batch = @import("cache_batch.zig").Flags.fromEnv().bits() });
     var pbuf: [model.Model.spill.StateLayout.max_encoded]u8 = undefined;
     const lp = try rank_identity.layoutPart(layout, m.world, &pbuf);
     var arena = std.heap.ArenaAllocator.init(gpa);
@@ -631,9 +640,13 @@ pub fn explain(_: ?*anyopaque, err: anyerror) ?[]const u8 {
         error.NoFreeSlot => "this engine serves TF_DS_STREAMS streams at once (default 4): --parallel at most that",
         error.BadRoundRows => "TF_DS_ROUND_ROWS: a round's rows at most, 16 .. 48",
         error.BadGraphCap => "TF_DS_GRAPH_CAP: captured round and drafter keys kept per cache, a count (0: all)",
+        error.BadDraftCal => "TF_DS_DRAFT_CAL must be a finite weight from 0 (off) to 1",
+        error.BadFirstDraftDepth => "TF_DS_FIRST_DRAFT_DEPTH must be 0 (off) or 1",
+        error.DraftSettingMismatch => "the ranks disagree on TF_DS_DRAFT_CAL or TF_DS_FIRST_DRAFT_DEPTH: set all three ranks alike",
         error.GraphSettingMismatch => "the ranks disagree on TF_DS_GRAPHS or TF_DS_GRAPH_CAP (--graphs/--graph-cap on followers): set both ranks alike",
         error.EngramRankFault => "a prompt chunk's Engram rows could not be read on one rank (its disk or memory failed; the other ranks wait for it in the layer's collective): the ranks exit 75; if it recurs, check the Engram tables' disk",
         error.BadEngramTable => "an Engram table has fewer rows than the hasher's ids reach: the Engram files are incomplete or for another checkpoint",
+        error.RestoreRoomSettingMismatch => "the ranks disagree on TF_SPILL_ROOM_WAIT_MS: set every rank to the same millisecond bound",
         error.PrefillSettingMismatch => "the ranks disagree on prefill step flags, TF_DS_PREFILL_OWNED or TF_DS_DIRECT_GATHER: set every rank alike",
         error.BadStreams => "TF_DS_STREAMS: the pool's streams, 1 .. 16",
         error.BadPool => "TF_DS_POOL_TOKENS: aggregate positions, at least alignUp(--context + 50, 2048), below 2^24 - 48; use the same --pool on followers and sufficient RoPE tables",
@@ -769,6 +782,7 @@ test "custody stage spillEvents actual constructor failure keeps initialized han
     var ctx: cuda.Context = undefined;
     ctx.d = &d;
     var m: model.Model = undefined;
+    m.rs = .{};
     m.ctx = &ctx;
     for ([_]usize{ 2, 4 }) |fail_at| for ([_]bool{ false, true }) |publish| for ([_]bool{ false, true }) |fail_free| {
         Mock.fail_at = fail_at; Mock.free_at = if (fail_at == 4) 2 else 1;
@@ -882,6 +896,7 @@ test "custody stage family State actual event and staging cleanup refusal" {
 
 test "custody stage openSpill actual unsupported world admission" {
     var m: model.Model = undefined;
+    m.rs = .{};
     for ([_]u32{ 0, 1, 4 }) |world| {
         m.world = world;
         var ln: lanes_mod.Lanes = .{ .gpa = std.testing.allocator, .m = &m, .peer = null };

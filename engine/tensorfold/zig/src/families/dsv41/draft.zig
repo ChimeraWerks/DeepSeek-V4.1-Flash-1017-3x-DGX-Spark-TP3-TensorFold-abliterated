@@ -24,6 +24,8 @@ const exl3_linear = @import("exl3_linear.zig");
 const exl3_experts = @import("exl3_experts.zig");
 const markov_tokens = @import("markov_tokens.zig");
 const draft2d = @import("draft2d.zig");
+const ops_mod = @import("ops.zig");
+const keyed_draft = @import("keyed_draft.zig");
 const graph_vote = @import("graph_vote.zig");
 
 const Engine = prompt.Engine;
@@ -99,6 +101,25 @@ pub const Probe = struct {
 /// window's first position.
 pub const Item = struct { slot: usize, taps: u64, n: usize, start: usize };
 
+/// The served sampler's keys of a pass's streams (TF_DS_KEYED_DRAFT): each stream's seed and temperature (<= 0:
+/// greedy, no noise). Draft j of a stream is keyed at q0 + 1 + j, the key the verify's sampler uses for that row.
+pub const Keyed = struct { seeds: []const u64, temps: []const f64 };
+
+/// The Markov loop's pre-step hook: step i's logits block row of every stream plus T * gumbel (each step reads its own
+/// block row of `local`, so no noise reaches another step).
+const NoiseTap = struct {
+    e: *const Engine,
+    dr: *const Drafter,
+    n: usize,
+
+    fn run(ctx: *anyopaque, step: usize) anyerror!void {
+        const x: *NoiseTap = @ptrCast(@alignCast(ctx));
+        const mk = x.dr.mk;
+        const lw = mk.rowCols();
+        try x.e.ops.keyedNoise(x.e.s, x.dr.local + 4 * step * lw, x.dr.n * lw, lw, mk.col0(), x.dr.nz, step, x.n);
+    }
+};
+
 /// The per-step gather of the Markov loop's bests: [world, rows, 4] fp32 into dst.
 const MarkovGather = struct {
     e: *const Engine,
@@ -114,6 +135,7 @@ const MarkovGather = struct {
 /// The drafter pass's CUDA graphs (BatchDraftGraph), one a (streams, steps): every pointer it reads is a fixed
 /// buffer and every per-pass value (ids, positions, slots, the pick lists) is uploaded ahead of the replay.
 const storage_guard = @import("graph_storage.zig");
+const graph_telemetry = @import("graph_telemetry.zig");
 const graph_cache = @import("graph_cache.zig");
 
 pub const PassGraphs = struct {
@@ -122,15 +144,24 @@ pub const PassGraphs = struct {
     lru: graph_cache.Lru(Key, ?Entry),
     voter: ?*graph_vote.Control = null,
     disabled: bool = false,
+    telemetry: graph_telemetry.Stats = .{},
     guard: bool = false,
 
-    pub const Key = struct { streams: u32, steps: u32 };
+    pub const Key = struct {
+        streams: u32,
+        steps: u32,
+        keyed: bool = false,
+        fn voteKey(key: @This()) graph_vote.Key {
+            return .{ .a = key.streams, .b = key.steps, .c = @intFromBool(key.keyed) };
+        }
+    };
 
     pub fn init(gpa: std.mem.Allocator, cap: usize) PassGraphs {
-        return .{ .gpa = gpa, .lru = .init(cap), .guard = storage_guard.enabled() };
+        return .{ .gpa = gpa, .lru = .init(cap), .guard = storage_guard.enabled(), .telemetry = .{ .on = graph_telemetry.enabled() } };
     }
 
     pub fn deinit(g: *PassGraphs) void {
+        g.telemetry.note("draft", g.lru.count(), g.lru.evicted, true);
         var it = g.lru.valueIterator();
         const cleanup = cuda.context_health.cleanupMark();
         while (it.next()) |x| if (x.*) |*owned| {
@@ -149,6 +180,7 @@ pub const PassGraphs = struct {
     // A voted tombstone counts against the same per-cache cap as a captured pass.
     // Eviction releases both the executable and its capture-owned storage signature.
     fn keep(g: *PassGraphs, key: Key, entry: ?Entry) void {
+        defer g.telemetry.kept(entry != null, g.lru.count());
         if (g.lru.putAssumeCapacity(key, entry)) |old| {
             if (old) |owned| {
                 var exec = owned.exec;
@@ -158,9 +190,15 @@ pub const PassGraphs = struct {
         }
     }
 
-    fn run(g: *PassGraphs, dr: *Drafter, e: *const Engine, ch: *const Chunk, pool: *const Pool, N: usize, steps: usize) !void {
-        const key: Key = .{ .streams = @intCast(N), .steps = @intCast(steps) };
-        if (g.disabled) return dr.body(e, ch, pool, N, steps, null);
+    fn run(g: *PassGraphs, dr: *Drafter, e: *const Engine, ch: *const Chunk, pool: *const Pool, N: usize, steps: usize, keyed: bool) !void {
+        const key: Key = .{ .streams = @intCast(N), .steps = @intCast(steps), .keyed = keyed };
+        g.telemetry.access();
+        defer g.telemetry.note("draft", g.lru.count(), g.lru.evicted, false);
+        errdefer g.telemetry.fail();
+        if (g.disabled) {
+            g.telemetry.eagerRun();
+            return dr.body(e, ch, pool, N, steps, null, key.keyed);
+        }
         var signature: storage_guard.Signature = .{};
         var signature_ok = true;
         if (g.guard) signature = signatureFor(dr, e, ch, pool) catch blk: {
@@ -181,14 +219,18 @@ pub const PassGraphs = struct {
                     if (g.voter != null) return error.GraphVoteFatal;
                     return err;
                 };
+                g.telemetry.hit();
                 return;
             }
-            return dr.body(e, ch, pool, N, steps, null);
+            g.telemetry.eagerRun();
+            return dr.body(e, ch, pool, N, steps, null, key.keyed);
         }
+        g.telemetry.miss();
         if (g.voter) |v| return g.runVoted(v, key, signature.slice(), signature_ok, dr, e, ch, pool, N, steps);
         if (!signature_ok) return error.GraphStorageChanged;
+        g.telemetry.capture();
         try cuda.graph.beginCapture(e.s, .thread_local);
-        dr.body(e, ch, pool, N, steps, null) catch |err| {
+        dr.body(e, ch, pool, N, steps, null, key.keyed) catch |err| {
             if (cuda.graph.endCapture(e.s)) |got| {
                 var x = got;
                 x.deinit();
@@ -224,7 +266,7 @@ pub const PassGraphs = struct {
     /// (ready). A healthy no at reserve runs this pass eagerly on every rank and remembers the key (null value); any
     /// other failure ends the world (GraphVoteFatal). A poisoned rank does no CUDA work, cleanup included.
     fn runVoted(g: *PassGraphs, v: *graph_vote.Control, key: Key, signature: []const u64, signature_ok: bool, dr: *Drafter, e: *const Engine, ch: *const Chunk, pool: *const Pool, N: usize, steps: usize) !void {
-        const wire_key: graph_vote.Key = .{ .a = key.streams, .b = key.steps, .c = 0 };
+        const wire_key = key.voteKey();
         const healthy = v.isHealthy();
         const reserved = healthy and if (g.lru.reserve(g.gpa)) |_| true else |_| false;
         const reserve_vote: graph_vote.Status = if (!healthy or !signature_ok) .fatal else if (!reserved) .disable else if (v.inject(.reserve)) .no else .yes;
@@ -232,11 +274,13 @@ pub const PassGraphs = struct {
             .fatal, .none => return error.GraphVoteFatal,
             .disable => {
                 g.disabled = true;
-                return dr.body(e, ch, pool, N, steps, null);
+                g.telemetry.eagerRun();
+                return dr.body(e, ch, pool, N, steps, null, key.keyed);
             },
             .no => {
                 g.keep(key, null);
-                return dr.body(e, ch, pool, N, steps, null);
+                g.telemetry.eagerRun();
+                return dr.body(e, ch, pool, N, steps, null, key.keyed);
             },
             .yes => {},
         }
@@ -247,8 +291,9 @@ pub const PassGraphs = struct {
             if (graph) |*x| x.deinit();
         };
         var built = false;
+        g.telemetry.capture();
         if (cuda.graph.beginCapture(e.s, .thread_local)) |_| {
-            const recorded = if (dr.body(e, ch, pool, N, steps, null)) |_| true else |_| false;
+            const recorded = if (dr.body(e, ch, pool, N, steps, null, key.keyed)) |_| true else |_| false;
             if (v.isHealthy()) {
                 if (cuda.graph.endCapture(e.s)) |got| graph = got else |_| {}
             }
@@ -333,6 +378,7 @@ pub const Drafter = struct {
     msc: tri_markov.Scratch,
     mg: u64, // fp32 [world, max_streams, 4]: a step's gathered bests
     out: u64, // int64 [max_streams, n + 1]: each stream's last token, then its drafts
+    nz: u64 = 0, // ops.KeyedRow [max_streams] (TF_DS_KEYED_DRAFT; 0: off): each stream's seed, temperature and first draft position
     // the confidence head
     embs: u64, // bf16 [max_rows, rank]: the Markov embedding rows of the tokens each step read
     xcf: u64, // fp32 [max_rows, D]
@@ -459,6 +505,7 @@ pub const Drafter = struct {
         try prompt.fill(e, dr.msc.send, 0, max_streams * 4 * 4);
         dr.mg = try a.take(dr.mk.world * max_streams * 4 * 4);
         dr.out = try a.take(max_streams * (max_block + 1) * 8);
+        dr.nz = if (e.ops.keyed_noise != null) try a.take(max_streams * @sizeOf(ops_mod.KeyedRow)) else 0;
         // the confidence head
         const rank = c.markov_rank;
         dr.embs = try a.take(R * rank * 2);
@@ -558,7 +605,7 @@ pub const Drafter = struct {
 
     /// BatchDraftGraph.run for N streams (tokens at positions q0 in slots): each stream's `steps` drafts and their
     /// confidences into drafts / confs. Each slot's rings hold its positions before q0 (absorbed).
-    pub fn pass(dr: *Drafter, e: *const Engine, ch: *const Chunk, pool: *const Pool, tokens: []const i64, q0: []const i64, slots: []const i64, steps: usize, probe: ?Probe) !void {
+    pub fn pass(dr: *Drafter, e: *const Engine, ch: *const Chunk, pool: *const Pool, tokens: []const i64, q0: []const i64, slots: []const i64, steps: usize, probe: ?Probe, keyed: ?Keyed) !void {
         const N = tokens.len;
         const n = dr.n;
         const R = N * n;
@@ -588,7 +635,21 @@ pub const Drafter = struct {
         var ho: [max_streams * (max_block + 1)]i64 = @splat(0);
         for (0..N) |i| ho[i * ts] = tokens[i];
         try prompt.upload(e, dr.out, &ho, N * ts * 8);
-        if (dr.graphs != null and probe == null) try dr.graphs.?.run(dr, e, ch, pool, N, steps) else try dr.body(e, ch, pool, N, steps, probe);
+        // the noise runs only in a pass with a sampled stream: all-greedy passes (and the flag off) launch what they did
+        var noisy = false;
+        if (keyed) |k| {
+            if (k.seeds.len != N or k.temps.len != N) return error.BadDraftPass;
+            var tab: [max_streams]ops_mod.KeyedRow = undefined;
+            for (0..N) |i| {
+                tab[i] = .{ .seed = k.seeds[i], .temp = k.temps[i], .pos = try keyed_draft.firstPosition(q0[i]) };
+                if (k.temps[i] > 0.0) noisy = true;
+            }
+            if (noisy) {
+                if (dr.nz == 0) return error.KeyedDraftOff;
+                try prompt.upload(e, dr.nz, &tab, N * @sizeOf(ops_mod.KeyedRow));
+            }
+        }
+        if (dr.graphs != null and probe == null) try dr.graphs.?.run(dr, e, ch, pool, N, steps, noisy) else try dr.body(e, ch, pool, N, steps, probe, noisy);
         // one host read: the drafts and the confidences
         try e.s.synchronize();
         var hc: [max_streams * max_block]f32 = undefined;
@@ -604,7 +665,7 @@ pub const Drafter = struct {
 
     /// The pass's device work for N streams of `steps` drafts, from the rows' embeddings to the confidence head (its
     /// inputs uploaded: the index rows, the pick lists, the Markov loop's first column): what a pass graph captures.
-    fn body(dr: *Drafter, e: *const Engine, ch: *const Chunk, pool: *const Pool, N: usize, steps: usize, probe: ?Probe) !void {
+    fn body(dr: *Drafter, e: *const Engine, ch: *const Chunk, pool: *const Pool, N: usize, steps: usize, probe: ?Probe, noisy: bool) !void {
         const c = e.c;
         const t = e.t;
         const n = dr.n;
@@ -659,7 +720,9 @@ pub const Drafter = struct {
         // the Markov loop: out [N, steps + 1], each stream's last token first
         const ts = steps + 1;
         var g: MarkovGather = .{ .e = e, .dst = dr.mg };
-        try dr.mk.steps(t, dr.local, dr.out, ts, N, n, steps, dr.msc, .{ .ctx = &g, .run = MarkovGather.run });
+        var nt: NoiseTap = .{ .e = e, .dr = dr, .n = N };
+        const noise: ?tri_markov.Tap = if (noisy) .{ .ctx = &nt, .run = NoiseTap.run } else null;
+        try dr.mk.stepsWith(t, dr.local, dr.out, ts, N, n, steps, dr.msc, .{ .ctx = &g, .run = MarkovGather.run }, noise);
         try Probe.check(probe, .markov, S, dr.out);
         // the confidence head: [xc (fp32), the embedding rows the steps read (fp32)] @ conf^T, a stream's first steps rows
         const rank = c.markov_rank;
@@ -834,4 +897,18 @@ test "draft depths and pass steps as multi.py takes them" {
 fn notPorted(src: std.builtin.SourceLocation) error{NotPortedYet} {
     std.debug.print("{{\"not_ported\": \"{s}:{d}\"}}\n", .{ src.file, src.line });
     return error.NotPortedYet;
+}
+
+test "keyed draft graph keys separate captures and cross-rank votes" {
+    const off: PassGraphs.Key = .{ .streams = 16, .steps = 5 };
+    const on: PassGraphs.Key = .{ .streams = 16, .steps = 5, .keyed = true };
+    var map: std.AutoHashMapUnmanaged(PassGraphs.Key, u8) = .empty;
+    defer map.deinit(std.testing.allocator);
+    try map.put(std.testing.allocator, off, 7);
+    try std.testing.expect(map.get(on) == null);
+    try map.put(std.testing.allocator, on, 9);
+    try std.testing.expectEqual(@as(usize, 2), map.count());
+    try std.testing.expectEqual(@as(u8, 7), map.get(off).?);
+    try std.testing.expectEqual(@as(u64, 0), off.voteKey().c);
+    try std.testing.expectEqual(@as(u64, 1), on.voteKey().c);
 }

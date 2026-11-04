@@ -182,7 +182,7 @@ pub fn translate(cx: *Cx, body: Value, count: bool) errors.Refused!Value {
         if (s != .bool) return cx.refuse("stream must be a boolean");
         try chat.put(a, "stream", s);
     }
-    for ([_][]const u8{ "temperature", "top_p", "top_k" }) |k| if (body.get(k)) |v| try chat.put(a, k, v);
+    for ([_][]const u8{ "temperature", "top_p", "top_k", "min_p", "presence_penalty", "frequency_penalty", "seed" }) |k| if (body.get(k)) |v| try chat.put(a, k, v);
     if (body.get("stop_sequences")) |stops| {
         const ok = stops == .array and for (stops.array) |s| {
             if (s != .string or s.string.len == 0) break false;
@@ -215,8 +215,8 @@ pub fn translate(cx: *Cx, body: Value, count: bool) errors.Refused!Value {
         if (schema != .object) return cx.refuse("tool.input_schema must be an object");
         const function = try json.newObject(a);
         try function.put(a, "name", .{ .string = name });
-        try function.put(a, "parameters", schema);
         if (tool.has("description")) try function.put(a, "description", .{ .string = try string(cx, tool.get("description"), "tool.description", true) });
+        try function.put(a, "parameters", schema);
         const t = try json.newObject(a);
         try t.put(a, "type", .{ .string = "function" });
         try t.put(a, "function", .{ .object = function });

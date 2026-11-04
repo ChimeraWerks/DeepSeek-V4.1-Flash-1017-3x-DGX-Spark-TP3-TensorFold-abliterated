@@ -31,6 +31,7 @@ const shard = @import("shard.zig");
 const shard_ops = @import("shard_ops.zig");
 const shard_ring = @import("shard_ring.zig");
 const graph_vote = @import("graph_vote.zig");
+const greedy_head = @import("decode_greedy_head.zig");
 const graph_cache = @import("graph_cache.zig");
 
 const Engine = prompt.Engine;
@@ -188,6 +189,22 @@ pub const Round = struct {
     // the head and the taps
     xc: u64, // bf16 [R, D]
     hl: u64, // fp32 [R, columns]
+    greedy_local: u64 = 0, // [R] raw-fp32/u32-ID pairs
+    greedy_all: u64 = 0, // [world,R] pairs, rank-major
+    greedy_out: u64 = 0, // nonzero only inside an eligible verify
+    greedy_reference: u64 = 0, // [R] full-head oracle argmax, allocated before capture
+    greedy_oracle: bool = false,
+    greedy_qualification: greedy_head.Qualification(max_rows) = .{},
+    sample_local: u64 = 0,
+    sample_all: u64 = 0,
+    sample_vals: u64 = 0,
+    sample_ids: u64 = 0,
+    sample_flags: u64 = 0,
+    sample_count: usize = 0,
+    sample_reference: u64 = 0,
+    sample_oracle: bool = false,
+    sample_qualified: [max_rows + 1][65]bool = @splat(@splat(false)),
+    sample_fallback: bool = false,
     hg: u64, // fp32 [world, R, columns]
     logits: u64, // fp32 [R, world * columns]: the rows' logits, the ranks' columns in rank order
     taps: u64, // bf16 [R, taps * D]
@@ -265,6 +282,22 @@ pub const Round = struct {
         const nb_max = bucketFor(pool_cap, pool_cap);
         var rd: Round = undefined;
         rd.r = 0;
+        rd.greedy_local = 0;
+        rd.greedy_all = 0;
+        rd.greedy_out = 0;
+        rd.greedy_reference = 0;
+        rd.greedy_oracle = false;
+        rd.greedy_qualification = .{};
+        rd.sample_local = 0;
+        rd.sample_all = 0;
+        rd.sample_vals = 0;
+        rd.sample_ids = 0;
+        rd.sample_flags = 0;
+        rd.sample_count = 0;
+        rd.sample_reference = 0;
+        rd.sample_oracle = false;
+        rd.sample_qualified = @splat(@splat(false));
+        rd.sample_fallback = false;
         // the profile's clocks off until Model.useClock (rd starts undefined: a field default does not apply)
         rd.launches = @splat(0);
         rd.launch_mark = 0;
@@ -1403,25 +1436,37 @@ const Carry = struct {
 /// replaying either refreshes its recency. All ranks use the same cap and ordered keys, including the same vote
 /// decisions, so a miss evicts the same least recently used key on each rank.
 const storage_guard = @import("graph_storage.zig");
+const graph_telemetry = @import("graph_telemetry.zig");
 
 pub const Graphs = struct {
     gpa: std.mem.Allocator,
     lru: graph_cache.Lru(Key, Entry),
     voter: ?*graph_vote.Control = null,
     disabled: bool = false,
+    telemetry: graph_telemetry.Stats = .{},
     guard: bool = false,
+    greedy_captures: usize = 0,
+    greedy_replays: usize = 0,
+    sample_captures: usize = 0,
+    sample_replays: usize = 0,
 
-    pub const Key = struct { rows: u32, bucket: u64, stretch: u32, mode: u8 = 0 }; // shard mode is part of capture identity
+    pub const Key = struct {
+        rows: u32, bucket: u64, stretch: u32, mode: u8 = 0, greedy: bool = false, sample_count: u8 = 0,
+        pub fn wire(key: Key) graph_vote.Key {
+            return .{ .a = key.rows, .b = key.bucket, .c = (@as(u64, key.stretch) << 8) | (@as(u64, key.sample_count) << 56) | (@as(u64, @intFromBool(key.greedy)) << 63) | key.mode };
+        }
+    }; // shard and head modes are both part of capture/vote identity
     const Entry = union(enum) {
         graph: struct { exec: cuda.graph.Exec, start: Carry, end: Carry, storage: ?[]u64 = null },
         tombstone,
     };
 
     pub fn init(gpa: std.mem.Allocator, cap: usize) Graphs {
-        return .{ .gpa = gpa, .lru = .init(cap), .guard = storage_guard.enabled() };
+        return .{ .gpa = gpa, .lru = .init(cap), .guard = storage_guard.enabled(), .telemetry = .{ .on = graph_telemetry.enabled() } };
     }
 
     pub fn deinit(g: *Graphs) void {
+        g.telemetry.note("round", g.lru.count(), g.lru.evicted, true);
         var it = g.lru.valueIterator();
         const cleanup = cuda.context_health.cleanupMark();
         while (it.next()) |en| switch (en.*) {
@@ -1444,6 +1489,7 @@ pub const Graphs = struct {
     /// Reserve first, then keep only a committed vote outcome or a successfully launched graph. The returned
     /// victim belongs to us; a running CUDA graph is destroyed once its launch has completed.
     fn keep(g: *Graphs, key: Key, entry: Entry) void {
+        defer g.telemetry.kept(entry == .graph, g.lru.count());
         if (g.lru.putAssumeCapacity(key, entry)) |old| {
             switch (old) {
                 .graph => |gr| {
@@ -1460,7 +1506,13 @@ pub const Graphs = struct {
     }
 
     fn run(g: *Graphs, key: Key, e: *const Engine, rd: *Round, ch: *const Chunk, cs: *const Caches, rings: []const u64, cy: *Carry, li: usize, end: usize) !void {
-        if (g.disabled) return stretch(e, rd, ch, cs, rings, cy, li, end, null);
+        g.telemetry.access();
+        defer g.telemetry.note("round", g.lru.count(), g.lru.evicted, false);
+        errdefer g.telemetry.fail();
+        if (g.disabled) {
+            g.telemetry.eagerRun();
+            return stretch(e, rd, ch, cs, rings, cy, li, end, null);
+        }
         var signature: storage_guard.Signature = .{};
         var signature_ok = true;
         if (g.guard) signature = signatureFor(e, rd, ch, cs, rings) catch blk: {
@@ -1469,6 +1521,7 @@ pub const Graphs = struct {
         };
         if (g.lru.get(key)) |en| switch (en.*) {
             .tombstone => {
+                g.telemetry.eagerRun();
                 if (!signature_ok) return error.GraphVoteFatal;
                 return stretch(e, rd, ch, cs, rings, cy, li, end, null);
             },
@@ -1486,6 +1539,15 @@ pub const Graphs = struct {
                     if (g.voter != null) return error.GraphVoteFatal;
                     return err;
                 };
+                g.telemetry.hit();
+                if (key.greedy) {
+                    g.greedy_replays += 1;
+                    if (std.math.isPowerOfTwo(g.greedy_replays)) std.log.info("greedy_head_graph replay rank={d} count={d} rows={d}", .{ e.comm.rank, g.greedy_replays, key.rows });
+                }
+                if (key.sample_count != 0) {
+                    g.sample_replays += 1;
+                    if (std.math.isPowerOfTwo(g.sample_replays)) std.log.info("sample_head_graph replay rank={d} count={d} rows={d} k={d}", .{ e.comm.rank, g.sample_replays, key.rows, key.sample_count });
+                }
                 cy.* = entry.end;
                 rd.kk = cy.kk;
                 rd.has_cand = cy.has_cand;
@@ -1493,9 +1555,11 @@ pub const Graphs = struct {
                 return;
             },
         };
+        g.telemetry.miss();
         if (g.voter) |v| return g.runVoted(v, key, signature.slice(), signature_ok, e, rd, ch, cs, rings, cy, li, end);
         if (!signature_ok) return error.GraphStorageChanged;
         const start = cy.*;
+        g.telemetry.capture();
         try cuda.graph.beginCapture(e.s, .thread_local);
         stretch(e, rd, ch, cs, rings, cy, li, end, null) catch |err| {
             if (cuda.graph.endCapture(e.s)) |got| {
@@ -1514,6 +1578,7 @@ pub const Graphs = struct {
         try exec.launchOn(e.s);
         try g.lru.reserve(g.gpa);
         g.keep(key, .{ .graph = .{ .exec = exec, .start = start, .end = cy.*, .storage = storage } });
+        g.captured(key, e.comm.rank);
     }
 
     fn signatureFor(e: *const Engine, rd: *Round, ch: *const Chunk, cs: *const Caches, rings: []const u64) !storage_guard.Signature {
@@ -1534,7 +1599,7 @@ pub const Graphs = struct {
     }
 
     fn runVoted(g: *Graphs, v: *graph_vote.Control, key: Key, signature: []const u64, signature_ok: bool, e: *const Engine, rd: *Round, ch: *const Chunk, cs: *const Caches, rings: []const u64, cy: *Carry, li: usize, end: usize) !void {
-        const wire_key: graph_vote.Key = .{ .a = key.rows, .b = key.bucket, .c = (@as(u64, key.stretch) << 8) | key.mode };
+        const wire_key = key.wire();
         const reserved = if (v.isHealthy()) blk: {
             g.lru.reserve(g.gpa) catch break :blk false;
             break :blk true;
@@ -1543,8 +1608,8 @@ pub const Graphs = struct {
         const reserve = try v.stage(.reserve, .round, key.stretch, wire_key, reserve_vote);
         switch (reserve) {
             .fatal, .none => return error.GraphVoteFatal,
-            .disable => { g.disabled = true; return stretch(e, rd, ch, cs, rings, cy, li, end, null); },
-            .no => { g.keep(key, .tombstone); return stretch(e, rd, ch, cs, rings, cy, li, end, null); },
+            .disable => { g.disabled = true; g.telemetry.eagerRun(); return stretch(e, rd, ch, cs, rings, cy, li, end, null); },
+            .no => { g.keep(key, .tombstone); g.telemetry.eagerRun(); return stretch(e, rd, ch, cs, rings, cy, li, end, null); },
             .yes => {},
         }
         const start = cy.*;
@@ -1555,6 +1620,7 @@ pub const Graphs = struct {
             if (graph) |*x| x.deinit();
         };
         var success = false;
+        g.telemetry.capture();
         if (cuda.graph.beginCapture(e.s, .thread_local)) |_| {
             const recorded = if (stretch(e, rd, ch, cs, rings, cy, li, end, null)) |_| true else |_| false;
             if (v.isHealthy()) {
@@ -1582,6 +1648,18 @@ pub const Graphs = struct {
         g.keep(key, .{ .graph = .{ .exec = owned, .start = start, .end = cy.*, .storage = storage } });
         storage = null;
         exec = null;
+        g.captured(key, e.comm.rank);
+    }
+
+    fn captured(g: *Graphs, key: Key, rank: usize) void {
+        if (key.sample_count != 0) {
+            g.sample_captures += 1;
+            if (std.math.isPowerOfTwo(g.sample_captures)) std.log.info("sample_head_graph capture rank={d} count={d} rows={d} k={d}", .{ rank, g.sample_captures, key.rows, key.sample_count });
+        }
+        if (key.greedy) {
+            g.greedy_captures += 1;
+            if (std.math.isPowerOfTwo(g.greedy_captures)) std.log.info("greedy_head_graph capture rank={d} count={d} rows={d}", .{ rank, g.greedy_captures, key.rows });
+        }
     }
 };
 
@@ -1590,7 +1668,7 @@ pub const Graphs = struct {
 /// BadRingRows: a sized send may be in flight with no receive, or the peer waits in a collect). Rank 0 ends the pair
 /// on each (native.pair_fatal: TF_DS_PAIR_BROKEN=exit exits 75, both ranks restart); a follower stops following
 /// (lanes.followPair) instead of taking the next frame.
-pub const pair_ending = [_]anyerror{ error.EngramRankFault, error.PrefillQualificationFailed, error.MaskedAttentionNumericalMismatch, error.RaggedMmaNumericalMismatch, error.RingFailed, error.CommAborted, error.RingOrder, error.ShardRingOrder, error.BadRingRows, error.GraphVoteFatal, error.GraphStorageChanged, error.GraphStateMismatch };
+pub const pair_ending = [_]anyerror{ error.SampleHeadMismatch, error.GreedyHeadMismatch, error.GreedyHeadRankFault, error.EngramRankFault, error.PrefillQualificationFailed, error.MaskedAttentionNumericalMismatch, error.RaggedMmaNumericalMismatch, error.RingFailed, error.CommAborted, error.RingOrder, error.ShardRingOrder, error.BadRingRows, error.GraphVoteFatal, error.GraphStorageChanged, error.GraphStateMismatch };
 
 pub fn endsPair(err: anyerror) bool {
     for (pair_ending) |x| if (x == err) return true;
@@ -1606,6 +1684,11 @@ pub fn forward(e: *const Engine, rd: *Round, ch: *const Chunk, cs: *const Caches
     const R = rows.ids.len;
     if (R == 0 or R > e.round_rows or rows.pos.len != R) return error.BadRound;
     rd.r = R;
+    if (rd.greedy_out != 0 and (probe != null or e.two != null)) return error.GreedyHeadRankFault;
+    rd.greedy_oracle = rd.greedy_out != 0 and try rd.greedy_qualification.needsOracle(R);
+    if (rd.sample_count != 0 and (rd.sample_count > 64 or e.world != 3 or e.two != null or probe != null or rd.greedy_out != 0)) return error.GreedyHeadRankFault;
+    rd.sample_fallback = false;
+    rd.sample_oracle = rd.sample_count != 0 and !rd.sample_qualified[R][rd.sample_count];
     // kernels.round_rows(): up to the round's bound its rows take the row-invariant decode kernels
     const bound = tri.decode_rows;
     tri.decode_rows = e.round_rows;
@@ -1646,18 +1729,82 @@ pub fn forward(e: *const Engine, rd: *Round, ch: *const Chunk, cs: *const Caches
             try engramLand(e, rd, eh orelse return error.NoEngramTables, &ah, li);
         }
         try rd.clock(e, Round.clock_wait);
-        if (graphs) |g| {
-            try g.run(.{ .rows = @intCast(R), .bucket = rd.bucket, .stretch = sn, .mode = @backingInt(rd.smode) }, e, rd, ch, cs, rings, &cy, li, end);
+        // Qualification runs the shared body once eagerly: no cache insertion,
+        // graph voting or capture until the full-head oracle passes on this rank.
+        if (if (rd.greedy_oracle or rd.sample_oracle) null else graphs) |g| {
+            try g.run(.{ .rows = @intCast(R), .bucket = rd.bucket, .stretch = sn, .mode = @backingInt(rd.smode), .greedy = rd.greedy_out != 0, .sample_count = @intCast(rd.sample_count) }, e, rd, ch, cs, rings, &cy, li, end);
         } else try stretch(e, rd, ch, cs, rings, &cy, li, end, probe);
         try rd.clock(e, Round.clock_tail);
         if (!ahead) try engramAhead(e, eh orelse return error.NoEngramTables, seq, rows, &ah);
         ahead = true;
         li = end;
     }
+    if (rd.greedy_oracle) {
+        try e.ops.argmaxRows(e.s, rd.logits, e.c.vocab, e.c.tokenVocab(), R, rd.greedy_reference);
+        try e.s.synchronize();
+        var want: [max_rows]u32 = undefined;
+        var got: [max_rows]u32 = undefined;
+        try e.d.check(e.d.api.cuMemcpyDtoH_v2(&want, rd.greedy_reference, R * 4), "greedy oracle reference");
+        try e.d.check(e.d.api.cuMemcpyDtoH_v2(&got, rd.greedy_out, R * 4), "greedy oracle selected");
+        try rd.greedy_qualification.accept(want[0..R], got[0..R]);
+        std.log.info("greedy_head_oracle PASS rank={d} rows={d}", .{ e.comm.rank, R });
+    }
+    if (rd.sample_count != 0) {
+        // Every rank receives identical merged flags and makes the same choice.
+        // Keep hl alive: fallback needs no second forward and never reads stale logits.
+        try e.s.synchronize();
+        var flags: [max_rows]i32 = undefined;
+        try e.d.check(e.d.api.cuMemcpyDtoH_v2(&flags, rd.sample_flags, R * 4), "sample head flags");
+        for (flags[0..R]) |flag| if (flag != 0) { rd.sample_fallback = true; break; };
+        if (rd.sample_fallback or rd.sample_oracle) try fullHead(e, rd);
+        if (rd.sample_oracle) {
+            try sampleOracle(e, rd, flags[0..R]);
+            rd.sample_qualified[R][rd.sample_count] = true;
+            std.log.info("sample_head_oracle PASS rank={d} rows={d} k={d}", .{ e.comm.rank, R, rd.sample_count });
+        }
+    }
     if (graphs != null) {
         try Probe.check(probe, .logits, w.layers.len, rd.logits);
         if (cy.ntap > 0) try Probe.check(probe, .taps, w.layers.len, rd.taps);
     }
+}
+
+/// Compare the exact existing candidate kernel on first use, before any capture.
+fn sampleOracle(e: *const Engine, rd: *Round, flags: []const i32) !void {
+    const R = rd.r;
+    const count = rd.sample_count;
+    const vals = rd.sample_reference;
+    const ids = vals + max_rows * 64 * 4;
+    const ref_flags = ids + max_rows * 64 * 8;
+    try e.ops.topCandRows(e.s, rd.logits, e.c.vocab, e.c.tokenVocab(), R, count, vals, ids, ref_flags);
+    try e.s.synchronize();
+    var want_flags: [max_rows]i32 = undefined;
+    try e.d.check(e.d.api.cuMemcpyDtoH_v2(&want_flags, ref_flags, R * 4), "sample oracle flags");
+    if (!std.mem.eql(i32, flags, want_flags[0..R])) return error.SampleHeadMismatch;
+    // Compare original f32 encodings rather than float equality (signed zero).
+    var want_vals: [max_rows * 64]u32 = undefined;
+    var got_vals: [max_rows * 64]u32 = undefined;
+    var want_ids: [max_rows * 64]i64 = undefined;
+    var got_ids: [max_rows * 64]i64 = undefined;
+    try e.d.check(e.d.api.cuMemcpyDtoH_v2(&want_vals, vals, R * count * 4), "sample oracle values");
+    try e.d.check(e.d.api.cuMemcpyDtoH_v2(&got_vals, rd.sample_vals, R * count * 4), "sample reduced values");
+    try e.d.check(e.d.api.cuMemcpyDtoH_v2(&want_ids, ids, R * count * 8), "sample oracle ids");
+    try e.d.check(e.d.api.cuMemcpyDtoH_v2(&got_ids, rd.sample_ids, R * count * 8), "sample reduced ids");
+    for (flags, 0..) |flag, row| {
+        if (flag != 0) continue; // both kernels intentionally leave fallback candidates undefined
+        const lo = row * count;
+        const hi = lo + count;
+        try greedy_head.compareSampleRow(flag, want_flags[row], got_vals[lo..hi], want_vals[lo..hi], got_ids[lo..hi], want_ids[lo..hi]);
+    }
+}
+
+/// Full logits from the existing local fp32 head, after a reduced-head fallback.
+fn fullHead(e: *const Engine, rd: *Round) !void {
+    const R = rd.r;
+    const hn = e.w.head.n;
+    const hh = if (e.two) |tw| tw.hw[0] + tw.hw[1] else hn;
+    if (e.two) |tw| try tw.quarters(e, rd.hl, rd.hg, R, tw.hw, 4) else try e.gatherF32(rd.hl, rd.hg, R * hn);
+    for (0..e.world) |k| try e.ops.copyRows(e.s, rd.hg + k * R * hh * 4, hh * 4, rd.logits + k * hh * 4, e.world * hh * 4, hh * 4, R);
 }
 
 /// Layers li .. end of a round (the first stretch starts with the rows' streams, the last ends with the head), from
@@ -1738,6 +1885,40 @@ fn stretch(e: *const Engine, rd: *Round, ch: *const Chunk, cs: *const Caches, ri
     const hn: usize = w.head.n;
     try prompt.grouped(e, ch, R, &.{w.head}, &.{rd.xc}, &.{d}, &.{rd.hl}, &.{hn}, &.{.f32});
     try Probe.check(probe, .head_cols, w.layers.len, rd.hl);
+    if (rd.greedy_out != 0) {
+        const Head = struct {
+            e: *const Engine,
+            rd: *Round,
+            rows: usize,
+            width: usize,
+            pub fn local(x: *@This()) !void {
+                try x.e.ops.greedyHeadLocal(x.e.s, x.rd.hl, x.width, x.e.c.tokenVocab(), x.e.comm.rank * x.width, x.rows, x.rd.greedy_local);
+            }
+            pub fn gather(x: *@This()) !void {
+                // Integer transport, no arithmetic or host staging of fp32 payloads.
+                try x.e.comm.allGather(x.rd.greedy_local, x.rd.greedy_all, x.rows, .u64, x.e.s);
+            }
+            pub fn merge(x: *@This()) !void {
+                try x.e.ops.greedyHeadMerge(x.e.s, x.rd.greedy_all, x.rows, x.e.world, x.rd.greedy_out);
+            }
+        };
+        var head: Head = .{ .e = e, .rd = rd, .rows = R, .width = hn };
+        try greedy_head.run(&head);
+        if (!rd.greedy_oracle) {
+            try rd.mark(e, .head);
+            if (ntap > 0) try Probe.check(probe, .taps, w.layers.len, rd.taps);
+            return;
+        }
+        // First use keeps the same freshly computed fp32 head columns for
+        // the full gather and independent argmax oracle, without another forward.
+    }
+    if (rd.sample_count != 0) {
+        try e.ops.sampleHeadLocal(e.s, rd.hl, hn, c.tokenVocab(), e.comm.rank * hn, R, rd.sample_count, rd.sample_local);
+        try e.comm.allGather(rd.sample_local, rd.sample_all, R * (rd.sample_count + 1), .u64, e.s);
+        try e.ops.sampleHeadMerge(e.s, rd.sample_all, R, e.world, rd.sample_count, rd.sample_vals, rd.sample_ids, rd.sample_flags);
+        try rd.mark(e, .head);
+        return;
+    }
     const hh = if (e.two) |tw| tw.hw[0] + tw.hw[1] else hn; // a rank's vocabulary half (2D: both pairs' quarters)
     if (e.two) |tw| try tw.quarters(e, rd.hl, rd.hg, R, tw.hw, 4) else try e.gatherF32(rd.hl, rd.hg, R * hn);
     try Probe.check(probe, .head_gather, w.layers.len, rd.hg);
@@ -1859,4 +2040,42 @@ test "prefill128 numerical qualification failures terminate the rank group" {
     try std.testing.expect(endsPair(error.MaskedAttentionNumericalMismatch));
     try std.testing.expect(endsPair(error.RaggedMmaNumericalMismatch));
     try std.testing.expect(!endsPair(error.Cancelled));
+}
+
+test "decode greedy head graph cache and vote keys separate head and shard modes" {
+    const base: Graphs.Key = .{ .rows = 16, .bucket = 2048, .stretch = 2 };
+    var head = base;
+    head.greedy = true;
+    try std.testing.expect(!std.meta.eql(base, head));
+    try std.testing.expect(!std.meta.eql(base.wire(), head.wire()));
+    for (0..256) |mode| {
+        var key = base;
+        key.mode = @intCast(mode);
+        try std.testing.expect(key.wire().c != head.wire().c);
+    }
+    var next = base;
+    next.stretch += 1;
+    head.mode = 255;
+    try std.testing.expect(next.wire().c != head.wire().c);
+    try std.testing.expect(endsPair(error.GreedyHeadMismatch));
+    try std.testing.expect(endsPair(error.SampleHeadMismatch));
+    try std.testing.expectEqual((@as(u64, base.stretch) << 8) | base.mode, base.wire().c);
+}
+
+test "decode greedy head graph keys distinguish every sampled count" {
+    const base: Graphs.Key = .{ .rows = 16, .bucket = 2048, .stretch = 2 };
+    for (1..65) |k| {
+        var a = base;
+        a.sample_count = @intCast(k);
+        try std.testing.expect(a.wire().c != base.wire().c);
+        for (0..256) |mode| {
+            var b = base;
+            b.mode = @intCast(mode);
+            b.greedy = true;
+            try std.testing.expect(a.wire().c != b.wire().c);
+        }
+        var next = a;
+        next.stretch += 1;
+        try std.testing.expect(a.wire().c != next.wire().c);
+    }
 }

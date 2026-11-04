@@ -191,11 +191,14 @@ const AdaptiveClock = struct {
     fn clock(c: *@This()) be.Clock { return .{.ptr=c,.vtable=&.{.start=start,.elapsed_ms=elapsed}}; }
 };
 fn runAdaptiveCases(cases: []const Case, learning: bool, staggered: bool) ![][]u32 {
+    return runAdaptiveTiming(cases, learning, staggered, .none);
+}
+fn runAdaptiveTiming(cases: []const Case, learning: bool, staggered: bool, capture: fake.Fake.CaptureTiming) ![][]u32 {
     var costs: [48]@import("config.zig").Cost = undefined;
     for (&costs, 1..) |*cost, width| cost.* = .{ .width=@intCast(width), .ms=5+@as(f64,@floatFromInt(width))*0.8 };
     var cfg=try Config.init(gpa,.{.adaptive_learning=learning,.exact_width=16,.gpu_tokens=true,.mtp=true,.speculate=true,.speculate_early=false,.drafts=4,.window_costs=&costs,.shared_costs=&costs,.mtp_step_ms=0.5,.hidden_rows=true,.batch_rows=48,.max_streams=12,.draft_streams=true},16,15);
     defer cfg.deinit(gpa);
-    var target: fake.Fake=.{.gpa=gpa};
+    var target: fake.Fake=.{.gpa=gpa, .capture_timing=capture};
     defer target.deinit();
     var clock: AdaptiveClock=.{};
     var engine=Engine.init(gpa,&cfg,target.backend(),clock.clock());
@@ -227,9 +230,15 @@ fn runAdaptiveCases(cases: []const Case, learning: bool, staggered: bool) ![][]u
         try std.testing.expect(engine.learner.?.acceptance_updates>0);
         // The fake target can reach EOS in its first two cold rounds. Such a
         // completion must not manufacture warm timing samples.
-        if(engine.learner.?.rounds>2) {
+        if (capture == .verify) {
+            try std.testing.expectEqual(@as(u64,0),engine.learner.?.cost_updates);
+        } else if(engine.learner.?.rounds>2) {
             try std.testing.expect(engine.learner.?.cost_updates>0);
         } else try std.testing.expectEqual(@as(u64,0),engine.learner.?.cost_updates);
+        if (capture != .none) {
+            for (engine.learner.?.overhead) |cell| try std.testing.expectEqual(@as(u32, 0), cell.count);
+            try std.testing.expect(target.timing_begins > 0);
+        }
     } else try std.testing.expect(engine.learner==null);
     const out=try gpa.alloc([]u32,cases.len);
     for(out,streams) |*value,*stream| value.*=try gpa.dupe(u32,stream.emitted());
@@ -412,4 +421,34 @@ test "structured output: a masked stream beside a plain stream leaves the plain 
         defer free(solo);
         try std.testing.expectEqualSlices(u32, solo[0], mixed.plain.?);
     }
+}
+
+test "graph telemetry excludes verify and draft capture timing but keeps acceptance and tokens" {
+    const cases = [_]Case{
+        .{ .prompt = &p2, .max_new = 80 },
+        .{ .prompt = &p1, .max_new = 80, .sampling = .{ .seed = 17 } },
+    };
+    // C1 covers familyRound, C2 covers roundStreams; both eventually finish.
+    for ([_]usize{ 1, 2 }) |count| {
+        const clean = try runAdaptiveTiming(cases[0..count], true, false, .none);
+        defer free(clean);
+        for ([_]fake.Fake.CaptureTiming{ .verify, .draft }) |capture| {
+            const dirty = try runAdaptiveTiming(cases[0..count], true, false, capture);
+            defer free(dirty);
+            for (clean, dirty) |want, got| try std.testing.expectEqualSlices(u32, want, got);
+        }
+    }
+}
+
+test "graph telemetry backend without hooks retains legacy clean timing" {
+    var target: fake.Fake = .{ .gpa = gpa };
+    defer target.deinit();
+    var vt = target.backend().vtable.*;
+    vt.begin_timing = null;
+    vt.timing_clean = null;
+    var backend = target.backend();
+    backend.vtable = &vt;
+    backend.beginTiming();
+    try std.testing.expect(backend.timingClean());
+    try std.testing.expectEqual(@as(usize, 0), target.timing_begins);
 }

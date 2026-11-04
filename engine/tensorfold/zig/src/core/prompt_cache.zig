@@ -46,6 +46,9 @@ pub const Snapshots = struct {
         /// Make the live state `saved`'s: the next prompt chunk starts at its position.
         restore: *const fn (ptr: *anyopaque, owner: ?*anyopaque, saved: Saved) anyerror!void,
         drop: *const fn (ptr: *anyopaque, saved: Saved) void,
+        /// Synchronous bounded release; all rank receipts complete before return.
+        drop_many: ?*const fn (*anyopaque, []const Saved) void = null,
+        first_hint: ?*const fn (*anyopaque, Saved) void = null,
         /// Optional storage liveness and request compatibility, checked before longest-prefix selection.
         live: ?*const fn (ptr: *anyopaque, saved: Saved) bool = null,
         dead_reason: ?*const fn (ptr: *anyopaque, saved: Saved) u8 = null,
@@ -555,6 +558,8 @@ pub const Store = struct {
     reasons: Reasons = .{},
     diagnostics: bool = true,
     prune_dead: bool = true,
+    batch_dead: bool = false,
+    first_continuation: bool = false,
     victim_dead: bool = false,
     reuse_eviction: bool = false, // 126b: pressure-only; no timer, GPU work or extra state storage
 
@@ -576,6 +581,8 @@ pub const Store = struct {
             if (std.c.getenv("TF_CACHE_X1_TRACE")) |v| s.x.trace = std.mem.eql(u8, std.mem.span(v), "1");
             if (std.c.getenv("TF_DS_STREAMS")) |v| s.x.slots = std.math.clamp(std.fmt.parseInt(u32, std.mem.span(v), 10) catch 12, 1, 64);
             if (std.c.getenv("TF_CACHE_ADAPTIVE_PREFIX")) |v| s.adaptive = std.mem.eql(u8, std.mem.span(v), "1");
+            if (std.c.getenv("TF_CACHE_BATCH_DEAD")) |v| s.batch_dead = std.mem.eql(u8, std.mem.span(v), "1");
+            if (std.c.getenv("TF_CACHE_FIRST_CONTINUATION")) |v| s.first_continuation = std.mem.eql(u8, std.mem.span(v), "1");
             if (s.adaptive) s.x.enabled = true;
             if (s.x.enabled) s.diagnostics = true;
             if (s.reuse_eviction) s.diagnostics = true; // real restore observations are required
@@ -635,6 +642,43 @@ pub const Store = struct {
         s.xRemoved(e);
         e.retired = true;
         if (e.pins == 0) s.releaseRetired(e);
+    }
+
+    /// Only unborrowed, already-dead entries in the existing keep scan.
+    /// All host accounting remains charged until the synchronous all-rank receipt.
+    fn removeDeadRun(s: *Store, start: usize) bool {
+        if (!s.batch_dead) return false;
+        const many = s.family.vtable.drop_many orelse return false;
+        const is_live = s.family.vtable.live orelse return false;
+        var saved: [16]Saved = undefined;
+        var n: usize = 0;
+        while (n < saved.len and start + n < s.entries.items.len) : (n += 1) {
+            const e = s.entries.items[start + n];
+            if (e.pins != 0 or is_live(s.family.ptr, e.saved)) break;
+            saved[n] = e.saved;
+        }
+        if (n < 2) return false;
+        const t0 = if (s.x.trace) x1.now() else 0;
+        for (s.entries.items[start..][0..n]) |e| {
+            s.x.last_reason = .dead;
+            s.audit.dead_at_keep +|= 1;
+            s.noteDead(e);
+            s.xRemoved(e); // Ghost metadata is read before storage release.
+            // Preserve the durable tier's capture custody before freeing any buffer.
+            if (e.point) |p| if (s.tier) |t| if (t.vtable.release) |f| f(t.ptr, p, e.saved);
+        }
+        many(s.family.ptr, saved[0..n]);
+        for (0..n) |_| {
+            const e = s.entries.orderedRemove(start);
+            s.held -= e.bytes;
+            s.gpa.free(e.tokens);
+            s.gpa.free(e.last);
+            s.gpa.free(e.lineage);
+            if (e.media.len > 0) s.gpa.free(e.media);
+            s.gpa.destroy(e);
+        }
+        if (s.x.trace) s.x.drop_ns +|= x1.now() -| t0;
+        return true;
     }
 
     /// Engine-thread scoped borrow. Retired entries remain charged until the final borrower releases.
@@ -1268,6 +1312,7 @@ pub const Store = struct {
         while (old_i < s.entries.items.len) {
             const old = s.entries.items[old_i];
             if (s.family.vtable.live) |f| if (!f(s.family.ptr, old.saved)) {
+                if (s.removeDeadRun(old_i)) continue;
                 s.x.last_reason = .dead;
                 s.audit.dead_at_keep +|= 1;
                 s.noteDead(old);
@@ -1815,6 +1860,12 @@ pub const Store = struct {
             .elapsed_ns = elapsed_ns, .prefill_ns = prefill_ns, .outcome = outcome });
         if (s.adaptive) {
             s.history.completed(r.namespace_id, r.history, r.id, r.input_len, cached, prefill_ns, outcome == 1);
+            if (s.first_continuation and outcome == 1) if (s.history.get(r.namespace_id, r.history)) |h| {
+                if (h.returns == 0) if (s.family.vtable.first_hint) |hint| {
+                    for (s.entries.items) |e| if (!e.shared and e.x.created_request == r.id and
+                        (e.x.role == .prompt_end or e.x.role == .decode_end)) hint(s.family.ptr, e.saved);
+                };
+            };
             // Update only this request's saved endpoints, once at completion.
             for (s.entries.items) |e| if (e.x.created_request == r.id) { s.adaptiveHint(e); };
             if (!@import("builtin").is_test and s.x.trace) std.log.info("checkpoint_x3: request={d} namespace={d} history={d} density_us={d} returns={d} forks={d} ghosts={d} cost_samples={d} replaced={d}", .{
@@ -1831,7 +1882,7 @@ pub const Store = struct {
         // Bounded, numeric metadata, flushed only at prefill/completion boundaries.
         for (0..s.x.event_count) |off| {
             const e = s.x.events[(s.x.event_start + off) % x1.trace_capacity];
-            std.log.info("checkpoint_x1: {{\"kind\":\"{s}\",\"reason\":\"{s}\",\"role\":\"{s}\",\"request\":{d},\"namespace\":{d},\"state\":{d},\"cohort\":{d},\"parent\":{d},\"at\":{d},\"prompt\":{d},\"desired\":{d},\"effective\":{d},\"bytes\":{d},\"baseline\":{d},\"elapsed_ns\":{d},\"prefill_ns\":{d},\"outcome\":{d}}}", .{ @tagName(e.kind), @tagName(e.reason), @tagName(e.role), e.request, e.namespace_id, e.state, e.cohort, e.parent, e.at, e.prompt, e.desired, e.effective, e.bytes, e.baseline, e.elapsed_ns, e.prefill_ns, e.outcome });
+            std.log.info("checkpoint_x1: {{\"kind\":\"{s}\",\"reason\":\"{s}\",\"role\":\"{s}\",\"request\":{d},\"namespace\":{d},\"state\":{d},\"cohort\":{d},\"parent\":{d},\"at\":{d},\"prompt\":{d},\"desired\":{d},\"effective\":{d},\"bytes\":{d},\"baseline\":{d},\"elapsed_ns\":{d},\"prefill_ns\":{d},\"outcome\":{d},\"event_ns\":{d}}}", .{ @tagName(e.kind), @tagName(e.reason), @tagName(e.role), e.request, e.namespace_id, e.state, e.cohort, e.parent, e.at, e.prompt, e.desired, e.effective, e.bytes, e.baseline, e.elapsed_ns, e.prefill_ns, e.outcome, e.event_ns });
         }
         s.x.event_count = 0;
         s.x.event_start = 0;
@@ -3047,4 +3098,92 @@ test "image cache retains full digest identity even for identical shortened toke
     try std.testing.expectEqual(@as(usize, 2), store.entries.items.len);
     try std.testing.expect(store.findMediaScoped(null, &key, &.{}, &first) == first_entry);
     try std.testing.expect(store.findMediaScoped(null, &key, &.{}, &other) != first_entry);
+}
+const BatchFake401 = struct {
+    var calls: usize = 0;
+    var max_count: usize = 0;
+    var store: ?*Store = null;
+    fn many(ptr:*anyopaque,saved:[]const Saved) void {
+        calls+=1;max_count=@max(max_count,saved.len);
+        // All bytes remain charged while the backend owns these buffers.
+        std.debug.assert(store.?.held >= saved.len);
+        for(saved) |p| K2aFake.drop_(ptr,p);
+    }
+};
+test "401a dead batches preserve live entries, budget and exactly-once frees" {
+    var f:K2aFake=.{};
+    var vt=f.family(true).vtable.*;vt.drop_many=BatchFake401.many;
+    var s=Store.init(std.testing.allocator,.{.ptr=&f,.vtable=&vt},.{},128);
+    defer s.deinit();s.batch_dead=true;
+    BatchFake401.store=&s;defer BatchFake401.store=null;
+    BatchFake401.calls=0;BatchFake401.max_count=0;
+    const survivor=try K2aFake.add(&s,&.{7},1);
+    for(0..35) |_| {const e=try K2aFake.add(&s,&.{9},1);K2aFake.state(e).live=false;}
+    while(s.removeDeadRun(1)) {}
+    try std.testing.expectEqual(@as(usize,1),s.entries.items.len);
+    try std.testing.expect(s.entries.items[0]==survivor);
+    try std.testing.expectEqual(@as(usize,35),f.drops);
+    try std.testing.expectEqual(@as(usize,3),BatchFake401.calls);
+    try std.testing.expectEqual(@as(usize,16),BatchFake401.max_count);
+    try std.testing.expectEqual(@as(u64,1),s.held);
+    try std.testing.expectEqual(@as(u64,35),s.audit.dead_at_keep);
+}
+test "401a disabled or unsupported batch release keeps production behavior" {
+    var f:K2aFake=.{};
+    var s=Store.init(std.testing.allocator,f.family(true),.{},128);defer s.deinit();
+    for(0..2) |_| {const e=try K2aFake.add(&s,&.{9},1);K2aFake.state(e).live=false;}
+    try std.testing.expect(!s.removeDeadRun(0));s.batch_dead=true;
+    try std.testing.expect(!s.removeDeadRun(0));
+    try std.testing.expectEqual(@as(usize,0),f.drops);
+}
+
+const FirstFake401=struct {
+    var calls:usize=0;
+    fn hint(_: *anyopaque,_:Saved) void { calls+=1; }
+};
+test "401a first hint requires success and fresh unshared terminal history" {
+    var f:K2aFake=.{};
+    var vt=f.family(true).vtable.*;vt.first_hint=FirstFake401.hint;
+    var s=Store.init(std.testing.allocator,.{.ptr=&f,.vtable=&vt},.{},128);
+    defer s.deinit();s.adaptive=true;s.first_continuation=true;
+    _=s.history.begin(1,1);
+    const e=try K2aFake.add(&s,&.{1,2},2);
+    e.x.created_request=1;e.x.role=.decode_end;
+    const r:RequestState=.{.id=1,.namespace_id=1,.history=1,.input_len=2};
+    FirstFake401.calls=0;
+    s.completedRequest(r,0,0,0,3); // cancelled
+    try std.testing.expectEqual(@as(usize,0),FirstFake401.calls);
+    s.completedRequest(r,0,0,0,1);
+    try std.testing.expectEqual(@as(usize,1),FirstFake401.calls);
+    e.shared=true;s.completedRequest(r,0,0,0,1);
+    e.shared=false;e.x.role=.auxiliary;s.completedRequest(r,0,0,0,1);
+    e.x.role=.decode_end;_=s.history.returned(1,2,1,1,false,false);
+    s.completedRequest(r,0,0,0,1);
+    try std.testing.expectEqual(@as(usize,1),FirstFake401.calls);
+}
+
+test "cache batch dead run stops at scoped borrowers and retains their accounting" {
+    var f: K2aFake = .{};
+    var vt = f.family(true).vtable.*;
+    vt.drop_many = BatchFake401.many;
+    var s = Store.init(std.testing.allocator, .{ .ptr = &f, .vtable = &vt }, .{}, 128);
+    defer s.deinit();
+    s.batch_dead = true;
+    BatchFake401.store = &s;
+    defer BatchFake401.store = null;
+    BatchFake401.calls = 0;
+    const borrowed = try K2aFake.add(&s, &.{1}, 1);
+    K2aFake.state(borrowed).live = false;
+    s.pin(borrowed);
+    for (0..2) |_| { const e = try K2aFake.add(&s, &.{9}, 1); K2aFake.state(e).live = false; }
+    try std.testing.expect(!s.removeDeadRun(0));
+    try std.testing.expect(s.removeDeadRun(1));
+    try std.testing.expectEqual(@as(usize, 1), s.entries.items.len);
+    try std.testing.expectEqual(@as(u64, 1), s.held);
+    try std.testing.expectEqual(@as(usize, 2), f.drops);
+    s.remove(0);
+    try std.testing.expectEqual(@as(u64, 1), s.held);
+    s.unpin(borrowed);
+    try std.testing.expectEqual(@as(u64, 0), s.held);
+    try std.testing.expectEqual(@as(usize, 3), f.drops);
 }

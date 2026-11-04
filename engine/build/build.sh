@@ -9,7 +9,11 @@ FATBINS=${FATBINS:-"$ROOT/engine/build/fatbins-samplecand"}
 OUT=${OUT:-"$ROOT/engine/build/out"}
 C=${C:-"$ROOT/engine/build/zig-cache"}
 JOBS=${JOBS:-8}
+# KEYED_DRAFT: true embeds the isolated dsv41_keyed.fatbin; default false.
+#              Runtime still requires TF_DS_KEYED_DRAFT=1 on every rank.
+KEYED_DRAFT=${KEYED_DRAFT:-false}
 fail() { printf 'FAIL: build: %s\n' "$*" >&2; exit 1; }
+[[ "$KEYED_DRAFT" == true || "$KEYED_DRAFT" == false ]] || fail 'KEYED_DRAFT must be true or false'
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || fail 'JOBS must be a positive integer'
 for tool in realpath sha256sum python3 nice ionice; do
   command -v "$tool" >/dev/null || fail "missing prerequisite: $tool"
@@ -72,7 +76,7 @@ cd -- "$W"
 # native safe; dsv41-tools fast. No CUDA compiler or GPU is invoked.
 if ZIG_LOCAL_CACHE_DIR="$C/xlocal" ZIG_GLOBAL_CACHE_DIR="$C/global" nice -n 10 ionice -c3 \
   "$ZIG" build native dsv41-tools "-j$JOBS" -Dtarget=aarch64-linux-gnu \
-  -Dfatbins="$FATBINS" -Dsample_cand=true --prefix "$OUT" --summary all; then
+  -Dfatbins="$FATBINS" -Dsample_cand=true -Dkeyed_draft="$KEYED_DRAFT" --prefix "$OUT" --summary all; then
   (cd -- "$OUT" && sha256sum native/bin/tensorfold-native bin/tf-dsv41-lanes bin/tf-dsv41-check > SHA256SUMS)
   python3 - "$OUT" <<'PY'
 import json, pathlib, sys

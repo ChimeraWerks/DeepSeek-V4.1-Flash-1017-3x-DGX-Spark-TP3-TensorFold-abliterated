@@ -10,6 +10,7 @@ pub const ac_rows: usize = 4096;
 pub const max_rows: usize = 8192;
 
 pub const Flags = struct {
+    slice_layers: u6 = 0, // TF_DS_PREFILL_SLICE: 0 whole chunks, 1..40 layers, 63 invalid
     ae: bool = false,
     w: bool = false,
     k: bool = false,
@@ -28,7 +29,7 @@ pub const Flags = struct {
     prompt_alias: bool = false,
 
     pub fn fromEnv() Flags {
-        return .{ .ae = enabled("TF_DS_PREFILL_AE"), .w = enabled("TF_DS_PREFILL_W"), .k = enabled("TF_DS_PREFILL_K"), .ac = enabled("TF_DS_PREFILL_AC"), .af = enabled("TF_DS_PREFILL_AF"), .e = enabled("TF_DS_PREFILL_E"), .f = enabled("TF_DS_PREFILL_F"), .d = enabled("TF_DS_PREFILL_D"), .rows = envRows("TF_DS_PREFILL_COMPUTE_ROWS"), .w_range16 = enabled("TF_DS_PREFILL_W_RANGE16"), .prompt_alias = enabled("TF_DS_PROMPT_ALIAS"), .shared_split = enabled("TF_DS_PREFILL_SHARED_SPLIT") };
+        return .{ .slice_layers = sliceLayers(if (std.c.getenv("TF_DS_PREFILL_SLICE")) |v| std.mem.span(v) else null), .ae = enabled("TF_DS_PREFILL_AE"), .w = enabled("TF_DS_PREFILL_W"), .k = enabled("TF_DS_PREFILL_K"), .ac = enabled("TF_DS_PREFILL_AC"), .af = enabled("TF_DS_PREFILL_AF"), .e = enabled("TF_DS_PREFILL_E"), .f = enabled("TF_DS_PREFILL_F"), .d = enabled("TF_DS_PREFILL_D"), .rows = envRows("TF_DS_PREFILL_COMPUTE_ROWS"), .w_range16 = enabled("TF_DS_PREFILL_W_RANGE16"), .prompt_alias = enabled("TF_DS_PROMPT_ALIAS"), .shared_split = enabled("TF_DS_PREFILL_SHARED_SPLIT") };
     }
 
     /// A window needs AC, a whole number of 2K cache quanta and at most max_rows.
@@ -39,6 +40,7 @@ pub const Flags = struct {
 
     /// Check only after rank agreement, so a bad dependency ends every rank.
     pub fn validateRagged(f: Flags) !void {
+        if (f.slice_layers > 40) return error.BadPrefillSlice;
         if (f.w_range16 and !f.w) return error.WRange16RequiresW;
         if (f.shared_split and !f.w) return error.SharedSplitRequiresW;
     }
@@ -48,11 +50,19 @@ pub const Flags = struct {
     }
 
     /// Bits 8-11 carry the window; 15 agrees aliasing, 16 W range16, 17 shared split.
-    /// Bits 12-14 belong to other experiments. Off keeps every existing key.
+    /// Bits 12-14 belong to other experiments. Bits 24-29 encode slices (actual
+    /// startup agreement word 6 bits 26-31 after its <<2). Off keeps every existing key.
     pub fn bits(f: Flags) u64 {
-        return @as(u64, @intFromBool(f.ae)) | (@as(u64, @intFromBool(f.w)) << 1) | (@as(u64, @intFromBool(f.k)) << 2) | (@as(u64, @intFromBool(f.ac)) << 3) | (@as(u64, @intFromBool(f.af)) << 4) | (@as(u64, @intFromBool(f.e)) << 5) | (@as(u64, @intFromBool(f.f)) << 6) | (@as(u64, @intFromBool(f.d)) << 7) | (@as(u64, @intCast(f.rows / cache_quantum & 0xf)) << 8) | (@as(u64, @intFromBool(f.w_range16)) << 16) | (@as(u64, @intFromBool(f.prompt_alias)) << 15) | (@as(u64, @intFromBool(f.shared_split)) << 17);
+        return @as(u64, @intFromBool(f.ae)) | (@as(u64, @intFromBool(f.w)) << 1) | (@as(u64, @intFromBool(f.k)) << 2) | (@as(u64, @intFromBool(f.ac)) << 3) | (@as(u64, @intFromBool(f.af)) << 4) | (@as(u64, @intFromBool(f.e)) << 5) | (@as(u64, @intFromBool(f.f)) << 6) | (@as(u64, @intFromBool(f.d)) << 7) | (@as(u64, @intCast(f.rows / cache_quantum & 0xf)) << 8) | (@as(u64, @intFromBool(f.w_range16)) << 16) | (@as(u64, @intFromBool(f.prompt_alias)) << 15) | (@as(u64, @intFromBool(f.shared_split)) << 17) | (@as(u64, f.slice_layers) << 24);
     }
 };
+
+/// Preserve invalid values until the all-rank agreement; never fail one rank before it.
+pub fn sliceLayers(text: ?[]const u8) u6 {
+    const t = text orelse return 0;
+    const n = std.fmt.parseInt(u8, std.mem.trim(u8, t, " "), 10) catch return 63;
+    return if (n <= 40) @intCast(n) else 63;
+}
 
 /// An unparsable value reads as an impossible window, which validate rejects.
 fn envRows(comptime name: [:0]const u8) usize {
@@ -292,4 +302,23 @@ test "prefill128 prompt alias is default off with independent agreement bit" {
             try std.testing.expectEqual(@as(u64, 0), f.bits() & (7 << 12));
         }
     }
+}
+
+test "prefill slice flags default off and preserve neighboring actual agreement bits" {
+    try std.testing.expectEqual(@as(u6, 0), sliceLayers(null));
+    try std.testing.expectEqual(@as(u6, 5), sliceLayers("5"));
+    try std.testing.expectEqual(@as(u6, 40), sliceLayers(" 40 "));
+    for ([_][]const u8{ "", "-1", "41", "64", "abc", "4.0" }) |text| {
+        try std.testing.expectEqual(@as(u6, 63), sliceLayers(text));
+        try std.testing.expectError(error.BadPrefillSlice, (Flags{ .slice_layers = sliceLayers(text) }).validateRagged());
+    }
+    const legacy: Flags = .{ .w = true, .w_range16 = true, .shared_split = true, .prompt_alias = true };
+    for (0..41) |n| {
+        var f = legacy;
+        f.slice_layers = @intCast(n);
+        try f.validateRagged();
+        try std.testing.expectEqual(@as(u64, n) << 26, (f.bits() ^ legacy.bits()) << 2);
+        try std.testing.expectEqual(@as(u64, 0), ((f.bits() ^ legacy.bits()) << 2) & ((@as(u64, 3) << 24) | (@as(u64, 7) << 48) | (@as(u64, 1) << 63)));
+    }
+    try std.testing.expectEqual(@as(u64, 0), (Flags{}).bits());
 }

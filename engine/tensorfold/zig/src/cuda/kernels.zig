@@ -36,6 +36,8 @@ pub const dsv41_shard: []const u8 = if (available) &Blob("fatbin_dsv41_shard").b
 pub const dsv41_rdma: []const u8 = if (available) &Blob("fatbin_dsv41_rdma").bytes else &.{};
 /// GPU top candidates for bounded sampled rows; embedded only by -Dsample_cand.
 pub const dsv41_sample_cand: []const u8 = if (available and options.has_dsv41_sample_cand) &Blob("fatbin_dsv41_sample_cand").bytes else &.{};
+/// Keyed draft proposal noise; embedded only by -Dkeyed_draft, loaded only with TF_DS_KEYED_DRAFT=1.
+pub const dsv41_keyed: []const u8 = if (available and options.has_dsv41_keyed) &Blob("fatbin_dsv41_keyed").bytes else &.{};
 /// The GLM port's spill block staging (dsv41_port.cu; families/dsv41/port_kernels.zig). Opt in: embedded only by a
 /// build with -Dport_kernels, else empty (Port.load: error.NoPortKernels).
 pub const dsv41_port: []const u8 = if (available and options.has_dsv41_port) &Blob("fatbin_dsv41_port").bytes else &.{};

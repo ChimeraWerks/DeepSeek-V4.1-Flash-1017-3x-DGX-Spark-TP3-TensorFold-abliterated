@@ -803,3 +803,34 @@ test "prefill128 shared split copied base identities stay unchanged off" {
     try std.testing.expect(!std.mem.eql(u8, &saved.common(), &on.common()));
     for (copied) |key| try std.testing.expectEqualSlices(u8, &key, &off.common());
 }
+
+test "cache batch fingerprint dry run keeps copied flag-off production records" {
+    const identity = @import("rank_identity.zig");
+    const original_features = "spill=1;spill_min=0;kv_shard=0;kv_carry=0;twins=0;engram_lanes=1;image_cache=1;streams=16;round_rows=48;pool=8000000;drafts=1;owned=1;prefill128=4ff;";
+    var old = testInputs();
+    old.features = original_features;
+    const stored = try build(std.testing.allocator, std.testing.io, old);
+    const copied = [_]Digest{ stored.common(), stored.common(), stored.common() };
+    var off_buf: [256]u8 = undefined;
+    var newer = old;
+    newer.features = try identity.featureString(&off_buf, .{ .spill = true, .streams = 16, .round_rows = 48, .pool = 8000000, .drafts = true, .owned = true, .prefill128 = 0x4ff });
+    try std.testing.expectEqualStrings(original_features, newer.features);
+    const off = try build(std.testing.allocator, std.testing.io, newer);
+    var reprocess: usize = 0;
+    for (copied) |key| if (!std.mem.eql(u8, &key, &off.common())) { reprocess += 1; };
+    try std.testing.expectEqual(@as(usize, 0), reprocess);
+    try std.testing.expectEqualSlices(u8, &stored.rankDigest(), &off.rankDigest());
+    var arms: [3]Digest = undefined;
+    for (1..4) |flags| {
+        var on_buf: [256]u8 = undefined;
+        newer.features = try identity.featureString(&on_buf, .{ .spill = true, .streams = 16, .round_rows = 48, .pool = 8000000, .drafts = true, .owned = true, .prefill128 = 0x4ff, .cache_batch = flags });
+        const on = try build(std.testing.allocator, std.testing.io, newer);
+        arms[flags - 1] = on.common();
+        try std.testing.expect(!std.mem.eql(u8, &off.common(), &on.common()));
+        try std.testing.expectEqual(@as(?u16, @intFromEnum(Field.features)), off.exchange().differs(&on.exchange()));
+    }
+    try std.testing.expect(!std.mem.eql(u8, &arms[0], &arms[1]));
+    try std.testing.expect(!std.mem.eql(u8, &arms[0], &arms[2]));
+    try std.testing.expect(!std.mem.eql(u8, &arms[1], &arms[2]));
+    for (copied) |key| try std.testing.expectEqualSlices(u8, &key, &off.common());
+}

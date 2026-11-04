@@ -306,6 +306,7 @@ pub const HfText = struct {
         if (options.reasoning_effort_value) |v| {
             try context.put(a, "reasoning_effort", .{ .integer = v });
         } else if (options.reasoning_effort) |e| try context.put(a, "reasoning_effort", .{ .string = e });
+        if (options.response_format) |f| try context.put(a, "response_format", try toStd(a, f));
         var diag: template.Diag = .{};
         const tools: std.json.Value = if (options.tools) |tl| try toStd(a, tl) else .null;
         const out = template.render(a, compiled, try toStd(a, messages), tools, .{ .object = context }, options.add_generation_prompt, &diag) catch |e| {

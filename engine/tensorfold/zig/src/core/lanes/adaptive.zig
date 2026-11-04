@@ -152,6 +152,7 @@ pub const Input = struct {
     context: u64,
     fixed: u32 = 1,
     survivals: []const f64,
+    survival_scale: ?f64 = null, // explicit per-stream correction replaces, never compounds, pooled calibration
     source: Source = .head,
     sampled: bool = false,
     warm: bool = true,
@@ -254,7 +255,7 @@ pub const Controller = struct {
                 f.raw[depth] = conditional;
                 const cal = &c.calibration[calIndex(input.sampled, input.source, depth, conditional)];
                 const fitted = cal.predict(conditional, c.rounds);
-                reach *= if (c.guards[guardIndex(input.sampled, input.source)].useLearned()) fitted else conditional;
+                reach *= if (input.survival_scale) |scale| conditional * scale else if (c.guards[guardIndex(input.sampled, input.source)].useLearned()) fitted else conditional;
                 probabilities[i][depth] = reach;
                 previous = @min(previous, @max(0, survival));
             }
@@ -744,4 +745,24 @@ test "cdef stale residual bank renews only on observation and excludes old width
     for (0..4) |_| c.verified(104);
     try std.testing.expectApproxEqAbs(@as(f64,1),c.shape_priors[bucket].residual,1e-9);
     try std.testing.expectEqual(30*std.time.ns_per_s,c.now_ns);
+}
+
+test "per stream survival replaces pooled correction without changing raw training" {
+    const a = std.testing.allocator;
+    var costs: Table = .{};
+    defer costs.deinit(a);
+    for (1..17) |r| try costs.put(a, @intCast(r), 5 + 2 * @as(f64, @floatFromInt(r)));
+    const c = try a.create(Controller);
+    defer a.destroy(c);
+    c.* = .{};
+    c.guards[guardIndex(false, .head)] = .{
+        .raw = .{ .count = 64, .value = 1 },
+        .learned = .{ .count = 64, .value = 0.1 },
+    };
+    for (&c.calibration) |*cal| cal.* = .{ .trials = 128, .successes = 0 };
+    const inputs = [_]Input{.{ .key = 1, .context = 5, .survivals = &.{ 0.9, 0.81, 0.729, 0.6561 }, .survival_scale = 1 }};
+    const result = try c.allocate(a, &inputs, &costs, 8, 16);
+    defer a.free(result);
+    try std.testing.expectEqual(@as(u32, 4), result[0]);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.9), c.frame.streams[0].raw[1], 1e-12);
 }

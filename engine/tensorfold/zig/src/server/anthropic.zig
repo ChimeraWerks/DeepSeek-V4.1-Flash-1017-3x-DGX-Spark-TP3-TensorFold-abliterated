@@ -53,7 +53,7 @@ fn countTokens(srv: *Server, cx: *Cx, chat: Value) errors.Refused!usize {
     // masked as the chat route masks them (issue #21), so the count is the prompt that route serves
     const tools = try tool_specs.active(cx, try messages_mod.maskControls(cx.a, srv.text, chat.get("tools")), chat.get("tool_choice"));
     const msgs = try messages_mod.normalize(cx, try messages_mod.requestMessages(cx, srv.text, chat.get("messages")), "system", srv.needs_user_after_tool);
-    const ids_ = prompt.renderIds(srv, cx, msgs, tools, on, srv.effortFor(thinking.effort), true) catch |e| switch (e) {
+    const ids_ = prompt.renderRequest(srv, cx, msgs, tools, on, srv.effortFor(thinking.effort), true, prompt.responseFormat(chat)) catch |e| switch (e) {
         error.Refused => return cx.other(cx.message),
         else => |x| return x,
     };

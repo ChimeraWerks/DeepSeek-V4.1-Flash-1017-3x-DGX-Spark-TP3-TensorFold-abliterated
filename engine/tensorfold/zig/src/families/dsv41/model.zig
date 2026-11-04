@@ -17,6 +17,7 @@ const tri_attn = @import("tri_attn.zig");
 const round = @import("round.zig");
 const sampling = @import("sampling.zig");
 const graph_vote = @import("graph_vote.zig");
+const greedy_head = @import("decode_greedy_head.zig");
 const draft = @import("draft.zig");
 const engram = @import("engram.zig");
 const engram_io = @import("engram_io.zig");
@@ -25,6 +26,7 @@ const exl3_prefill = @import("exl3_prefill.zig");
 const exl3_linear = @import("exl3_linear.zig");
 const exl3_experts = @import("exl3_experts.zig");
 const ops_mod = @import("ops.zig");
+const keyed_draft = @import("keyed_draft.zig");
 const exact = @import("exact.zig");
 const cublas = @import("cublas.zig");
 const comm_mod = @import("comm.zig");
@@ -35,9 +37,48 @@ const pool_mod = @import("pool.zig");
 const shard = @import("shard.zig");
 const shard_ops = @import("shard_ops.zig");
 
+/// Host scheduling policy is runtime-only: never change the durable spill namespace.
+fn roomWaitAgreement(leader: u64, follower: u64) !void {
+    if (leader != follower) return error.RestoreRoomSettingMismatch;
+}
+
+test "restore room agreement checks both TP3 followers and exact wait bounds" {
+    for ([_][3]u64{ .{ 0, 0, 0 }, .{ 30000, 30000, 30000 } }) |values| {
+        for (values[1..]) |v| try roomWaitAgreement(values[0], v);
+    }
+    for ([_][3]u64{ .{ 30000, 0, 30000 }, .{ 30000, 30000, 0 }, .{ 30000, 30000, 29999 } }) |values| {
+        var mismatches: usize = 0;
+        for (values[1..]) |v| roomWaitAgreement(values[0], v) catch { mismatches += 1; };
+        try std.testing.expectEqual(@as(usize, 1), mismatches);
+    }
+}
+
 /// Historical cache/snapshot quantum. Compute is independently selected by TF_DS_PREFILL_AC.
 pub const cache_quantum = prefill128.cache_quantum;
 pub const chunk_rows = cache_quantum;
+
+pub const SliceArgs = struct { start: usize, n: usize, replay: usize };
+pub const SliceEnd = enum { more, head, encoder_only };
+pub const SliceResume = struct {
+    live: bool = false,
+    next: usize = 0,
+    args: SliceArgs = .{ .start = 0, .n = 0, .replay = 0 },
+    shared: prompt.Shared = .{},
+    floor: usize = 0,
+    kv_done: ?usize = null,
+    ahead: ?std.Thread = null,
+
+    pub fn validate(rs: *const SliceResume, args: SliceArgs, lo: usize, hi: usize, layers: usize, seq_len: usize) !void {
+        if (hi <= lo or hi > layers or args.n == 0 or args.start > seq_len or args.n != seq_len - args.start) return error.BadSlice;
+        if (lo == 0) {
+            if (rs.live) return error.OpenPrefillChunk;
+        } else if (!rs.live or rs.next != lo or !std.meta.eql(args, rs.args)) return error.BadSlice;
+    }
+};
+
+pub fn sliceHi(layers: usize, per: usize, lo: usize) usize {
+    return if (per == 0) layers else lo + @min(per, layers - lo);
+}
 /// The pool's streams (--parallel 4).
 pub const max_streams = draft.max_streams;
 /// The pool's streams when unset (--parallel 4).
@@ -122,6 +163,7 @@ pub const Options = struct {
 };
 
 pub const Model = struct {
+    draft_settings: @import("draft_settings.zig").Settings = .{},
     gpa: std.mem.Allocator,
     host: std.heap.ArenaAllocator, // allocations that live as long as the model
     io: std.Io,
@@ -173,6 +215,10 @@ pub const Model = struct {
     logits: []f32, // round.max_rows rows of logits on the host
     amax: u64, // u32 [round.max_rows]: a round's greedy tokens on the device (roundArgmax)
     amax_host: [round.max_rows]u32 = undefined,
+    decode_greedy_head: bool = false,
+    decode_sample_head: bool = false,
+    sample_output: usize = 0,
+    greedy_output: greedy_head.Output = .{}, // published only after verifyHead fences
     cand: u64, // optional GPU top candidates: [vals f32, ids i64, flags i32]
     cand_vals: [round.max_rows * sampling.max_candidates]f32 = undefined,
     cand_ids: [round.max_rows * sampling.max_candidates]i64 = undefined,
@@ -184,6 +230,7 @@ pub const Model = struct {
     fill_seq: []const i32 = &.{},
     ahead: ?std.Thread = null,
     prefill: prefill128.Flags = .{},
+    rs: SliceResume = .{},
     compute_rows: usize = chunk_rows,
     prompt_cap: usize = 0,
     // Rank zero sends the next exact chunk size, including its cache marks.
@@ -217,6 +264,7 @@ pub const Model = struct {
     /// Loads rank o.rank's weights from the lane's rank cache, links the ranks (rank 0 listens on o.port), opens NCCL
     /// and sets up every buffer. Needs `ctx` current on this thread.
     pub fn open(gpa: std.mem.Allocator, io: std.Io, ctx: *const cuda.Context, o: Options) !*Model {
+        const keyed_image = try keyed_draft.selectImage(keyed_draft.enabled(), cuda.kernels.dsv41_keyed);
         try checkWorldMode(o.world, experimentalTP3());
         if (o.rank >= o.world) return error.UnsupportedRank;
         if (o.round_rows < round.default_rows or o.round_rows > round.max_rows) return error.BadRoundRows;
@@ -229,9 +277,14 @@ pub const Model = struct {
         errdefer if (cuda.context_health.cleanupReleased(cleanup)) gpa.destroy(m);
         m.* = undefined;
         m.gpa = gpa;
+        // m.* = undefined skips field defaults: the read-ahead thread and its sequence must start empty, since
+        // fillChunk and joinAhead read them before any prompt pass sets them
+        m.ahead = null;
+        m.fill_seq = &.{};
         if (std.c.getenv("TF_DS_REPLAY_FLOOR")) |v| prompt.replay_floor = std.mem.eql(u8, std.mem.span(v), "1"); // every rank alike
         prompt.short_continuation_gather = if (std.c.getenv("TF_DS_CACHE_SHORT_CONTINUATION")) |v| std.mem.eql(u8, std.mem.span(v), "1") else false; // same opt-in on every rank
         prompt.owned_on = if (std.c.getenv("TF_DS_PREFILL_OWNED")) |v| std.mem.eql(u8, std.mem.span(v), "1") else false; // every rank alike (its collectives pair up)
+        m.rs = .{};
         m.prefill = prefill128.Flags.fromEnv();
         try m.prefill.validate();
         m.compute_rows = m.prefill.computeRows();
@@ -271,6 +324,10 @@ pub const Model = struct {
         m.pgraphs = null;
         m.gvote = null;
         m.cand = 0;
+        m.decode_greedy_head = greedy_head.enabled(envOf("TF_DS_DECODE_GREEDY_HEAD"));
+        m.decode_sample_head = greedy_head.enabled(envOf("TF_DS_DECODE_SAMPLE_HEAD"));
+        m.sample_output = 0;
+        m.greedy_output = .{};
         m.two = null;
         m.rdma_rings = null;
         m.kvs = null;
@@ -373,7 +430,14 @@ pub const Model = struct {
         if (sample_cand and cuda.kernels.dsv41_sample_cand.len == 0) return error.NoSampleCandidateKernel;
         m.ops = try ops_mod.Ops.load(d, cuda.kernels.torch_pointwise, cuda.kernels.torch_movement, cuda.kernels.dsv41_ops);
         errdefer if (cleanupAllowed(m, cleanup)) m.ops.unload();
+        if (m.decode_sample_head and (!sample_cand or o.world != 3 or m.two != null)) m.pairFault(error.GreedyHeadRankFault);
+        if (m.decode_greedy_head or m.decode_sample_head) {
+            const path = envOf("TF_DS_REDUCED_HEAD_FATBIN") orelse m.pairFault(error.NoGreedyHeadKernel);
+            const blob = std.Io.Dir.cwd().readFileAllocOptions(io, path, a, .limited(1 << 28), .@"16", null) catch |err| m.pairFault(err);
+            m.ops.enableGreedyHead(d, blob) catch |err| m.pairFault(err);
+        }
         if (sample_cand) try m.ops.enableCandidates(d, cuda.kernels.dsv41_sample_cand);
+        if (keyed_image) |image| try m.ops.enableKeyed(d, image);
         m.ex = try exact.Exact.load(d, cuda.kernels.dsv41_torch);
         errdefer if (cleanupAllowed(m, cleanup)) m.ex.unload();
 
@@ -448,7 +512,20 @@ pub const Model = struct {
         m.rd = try round.Round.init(&m.eng, &m.arena, a, m.request_cap);
         if (m.kvs != null) try m.rd.useShard(&m.eng, &m.arena, a);
         m.amax = try m.arena.take(round.max_rows * 4);
+        if (m.decode_greedy_head) {
+            m.rd.greedy_local = m.arena.take(round.max_rows * 8) catch |err| m.pairFault(err);
+            m.rd.greedy_all = m.arena.take(o.world * round.max_rows * 8) catch |err| m.pairFault(err);
+            m.rd.greedy_reference = m.arena.take(round.max_rows * 4) catch |err| m.pairFault(err);
+        }
         if (sample_cand) m.cand = try m.arena.take(round.max_rows * (sampling.max_candidates * 12 + 4));
+        if (m.decode_sample_head) {
+            m.rd.sample_local = m.arena.take(round.max_rows * (sampling.max_candidates + 1) * 8) catch |err| m.pairFault(err);
+            m.rd.sample_all = m.arena.take(o.world * round.max_rows * (sampling.max_candidates + 1) * 8) catch |err| m.pairFault(err);
+            m.rd.sample_reference = m.arena.take(round.max_rows * (sampling.max_candidates * 12 + 4)) catch |err| m.pairFault(err);
+            m.rd.sample_vals = m.cand;
+            m.rd.sample_ids = m.cand + round.max_rows * sampling.max_candidates * 4;
+            m.rd.sample_flags = m.rd.sample_ids + round.max_rows * sampling.max_candidates * 8;
+        }
         if (o.graphs) m.graphs = round.Graphs.init(gpa, o.graph_cap);
         if (o.side) try m.rd.useSide(&m.eng);
         if (o.prefetch) try m.rd.usePrefetch(&m.eng);
@@ -559,7 +636,10 @@ pub const Model = struct {
     }
 
     fn agree(m: *Model, o: Options, want_mode: anyerror!shard.Mode, want_pool: anyerror!usize, want_window: anyerror!?usize) !Agreed {
-        const n: usize = 7;
+        const n: usize = 10;
+        const draft_config = @import("draft_settings.zig");
+        const want_draft = draft_config.Settings.parse(envOf("TF_DS_DRAFT_CAL"), envOf("TF_DS_FIRST_DRAFT_DEPTH"));
+        const draft_words = if (want_draft) |v| v.words() else |_| draft_config.invalid;
         const bad_setting: u64 = 0xff;
         const mine = [n]u64{
             if (want_mode) |x| @backingInt(x) else |_| bad_setting,
@@ -570,7 +650,10 @@ pub const Model = struct {
             if (o.graphs) 1 | (@as(u64, graph_vote.version) << 8) else 0,
             if (o.graphs) @intCast(o.graph_cap) else 0, // rank 0 and every follower must use one LRU cap
             // the prompt's collectives pair up only when every rank runs the same kind
-            @as(u64, @intFromBool(prompt.owned_on)) | @as(u64, @intFromBool(directGather())) << 1 | (m.prefill.bits() << 2),
+            @import("cache_batch.zig").Flags.fromEnv().agreement(@as(u64, @intFromBool(prompt.owned_on)) | @as(u64, @intFromBool(directGather())) << 1 | (m.prefill.bits() << 2) |
+                (if (@import("graph_telemetry.zig").enabled()) @import("graph_telemetry.zig").agreement_bit else 0) | keyed_draft.settingBit(keyed_draft.enabled()) | greedy_head.agreement(m.decode_greedy_head) | (if (m.decode_sample_head) greedy_head.sample_agreement_bit else @as(u64, 0))),
+            draft_words[0], draft_words[1],
+            @import("engine_api").Spill.roomWaitMs(if (std.c.getenv("TF_SPILL_ROOM_WAIT_MS")) |v| std.mem.span(v) else null),
         };
         var dev = try cuda.DeviceBuffer.alloc(m.ctx.d, (1 + o.world) * n * 8);
         defer dev.free();
@@ -581,6 +664,7 @@ pub const Model = struct {
         if (o.world > all.len) return error.BadWorld;
         try dev.download(n * 8, std.mem.sliceAsBytes(all[0..o.world]));
         // this rank's own parse errors first (each rank names what it could not read), then any other rank's
+        m.draft_settings = try want_draft;
         const mode = try want_mode;
         const pool = try want_pool;
         _ = try want_window;
@@ -589,7 +673,11 @@ pub const Model = struct {
             if (r[0] == bad_setting or r[1] == 0 or r[2] == bad_setting) return error.KvShardMismatch;
             if (r[0] != all[0][0] or r[1] != all[0][1] or r[3] != all[0][3]) return error.KvShardMismatch;
             if (r[4] != all[0][4] or r[5] != all[0][5]) return error.GraphSettingMismatch;
-            if (r[6] != all[0][6]) return error.PrefillSettingMismatch;
+            try greedy_head.agree(r[6], all[0][6]);
+            try keyed_draft.checkAgreement(r[6], all[0][6]);
+            try prefillAgreement(all[0][6], r[6]);
+            try draft_config.check(all[0][7..9].*, r[7..9].*);
+            try roomWaitAgreement(all[0][9], r[9]);
             f.* = r[0..4].*;
         }
         const window = try pool_mod.agreedWindow(firsts[0..o.world]);
@@ -822,6 +910,8 @@ pub const Model = struct {
     }
 
     pub fn joinAhead(m: *Model) void {
+        if (m.rs.ahead) |th| th.join();
+        m.rs.ahead = null;
         if (m.ahead) |th| th.join();
         m.ahead = null;
     }
@@ -1319,6 +1409,7 @@ pub const Model = struct {
         if (slot >= m.streams) return error.BadSlot;
         // a read-ahead an earlier pass left (cancelled between chunks) never feeds this one: a resume at that pass's
         // next chunk start would otherwise take its rows, hashed from the other prompt's ids
+        if (m.rs.live) return error.OpenPrefillChunk;
         m.resetEngramAhead();
         m.spans.clearRetainingCapacity();
         m.ch.spans = &.{};
@@ -1340,6 +1431,24 @@ pub const Model = struct {
     /// the decoder's first layer). A chunk that reaches the head leaves the logits of its last row in ch.head_g and,
     /// drafting, its DSpark taps absorbed into the slot's drafter rings. True when it reached the head.
     pub fn fillChunk(m: *Model, seq: []const i32, start: usize, n: usize, replay: usize) !bool {
+        return (try m.fillSlice(seq, .{ .start = start, .n = n, .replay = replay }, 0, m.eng.c.layers)) == .head;
+    }
+
+    pub fn dropChunk(m: *Model) void {
+        m.joinAhead();
+        m.rs = .{};
+    }
+
+    pub fn fillSlice(m: *Model, seq: []const i32, args: SliceArgs, lo: usize, hi: usize) !SliceEnd {
+        try m.rs.validate(args, lo, hi, m.eng.c.layers, seq.len);
+        if (lo == 0) try m.openChunk(seq, args);
+        // Fatal rank-local failures must poison the world before any joining cleanup.
+        return m.runSlice(seq, lo, hi);
+    }
+
+    fn openChunk(m: *Model, seq: []const i32, args: SliceArgs) !void {
+        const start = args.start;
+        const n = args.n;
         if (n == 0 or n > m.compute_rows or seq.len != start + n) return error.BadChunk;
         if (m.prefill.af and seq.len > m.prompt_cap) return error.PromptTooLong;
         const e = &m.eng;
@@ -1349,21 +1458,17 @@ pub const Model = struct {
         // image token's, which its span row then replaces
         const image_id: i64 = if (c.image_token) |t| t else 0;
         for (0..n) |j| m.ids64[j] = if (seq[start + j] < 0) image_id else seq[start + j];
-        var shared: prompt.Shared = .{};
         const pt = m.ptimer;
         if (pt) |t| try t.mark(m.stream, .start);
         try prompt.begin(e, ch, m.ids64[0..n], start, m.host_pos);
         if (ch.spans.len > 0) try prompt.embedSpans(e, ch);
         if (pt) |t| try t.mark(m.stream, .embed);
-        const taps = m.dr != null;
-        var floor: usize = 0;
-        var kv_done: ?usize = null;
         // Engram rows read ahead on a thread while the GPU runs the layers before them (the served reader pool's
         // overlap): this chunk's both layers' during the chunk before it (m.ahead), else the first layer's from the
         // chunk's start and the next's once the first is applied
         var ahead: ?std.Thread = m.ahead;
         m.ahead = null;
-        defer if (ahead) |th| th.join();
+        errdefer if (ahead) |th| th.join();
         if (m.eh) |*eh| {
             if (ahead != null and (eh.ahead_start != start or eh.ahead_n != n)) {
                 ahead.?.join();
@@ -1379,27 +1484,42 @@ pub const Model = struct {
                 ahead = std.Thread.spawn(.{}, prompt.engramReadAhead, .{ eh, c, seq, start, n, @as(usize, 0) }) catch null;
             }
         }
-        for (0..c.layers) |li| {
+        m.rs = .{ .live = true, .args = args, .ahead = ahead };
+    }
+
+    fn runSlice(m: *Model, seq: []const i32, lo: usize, hi: usize) !SliceEnd {
+        const e = &m.eng;
+        const c = e.c;
+        const ch = &m.ch;
+        const rs = &m.rs;
+        const start = rs.args.start;
+        const n = rs.args.n;
+        const replay = rs.args.replay;
+        const pt = m.ptimer;
+        const taps = m.dr != null;
+        for (lo..hi) |li| {
             if (li == c.layers / 2) {
-                if (!try prompt.replayCut(e, ch, &m.view, &shared, li, replay, m.host_pos)) {
+                if (!try prompt.replayCut(e, ch, &m.view, &rs.shared, li, replay, m.host_pos)) {
                     // encoder-only: no synchronize either (as at the chunk's end below), so the next chunk's host steps
                     // run while this one's last layers do; the profile alone waits
                     if (pt) |t| {
                         try m.stream.synchronize();
                         try t.finish();
                     }
-                    return false;
+                    if (rs.ahead) |th| th.join();
+                    rs.* = .{}; // preserve next-chunk read-ahead exactly as whole chunks did
+                    return .encoder_only;
                 }
-                floor = replay;
-                kv_done = li;
+                rs.floor = replay;
+                rs.kv_done = li;
             }
             if (e.w.layers[li].engram_wkv != null) {
                 const eh = if (m.eh) |*x| x else return error.NoEngramTables;
-                if (ahead) |th| {
+                if (rs.ahead) |th| {
                     const wait_begin = if (m.engram_audit) m.now() else 0;
                     th.join();
                     if (m.engram_audit) std.debug.print("prefill_engram_wait: rank={d} start={d} rows={d} layer={d} ns={d}\n", .{ m.rank, start, n, li, m.now() - wait_begin });
-                    ahead = null;
+                    rs.ahead = null;
                 }
                 if (eh.ahead_err) |err| return err;
                 try prompt.engramApply(e, ch, eh, li, seq);
@@ -1407,7 +1527,7 @@ pub const Model = struct {
                 const ne = @min(2, c.engram_layers.slice().len);
                 if (j + 1 < ne) {
                     if (!eh.ahead_ready[j + 1])
-                        ahead = std.Thread.spawn(.{}, prompt.engramReadAhead, .{ eh, c, seq, start, n, j + 1 }) catch null;
+                        rs.ahead = std.Thread.spawn(.{}, prompt.engramReadAhead, .{ eh, c, seq, start, n, j + 1 }) catch null;
                 } else if (m.fill_seq.len > start + n and m.fill_seq.ptr == seq.ptr) {
                     // the next chunk's rows while this one's layers run
                     const nn = if (m.prefill.ae) m.next_engram_rows else @min(m.compute_rows, m.fill_seq.len - start - n);
@@ -1429,7 +1549,7 @@ pub const Model = struct {
             if (taps) if (std.mem.indexOfScalar(u16, c.dspark_taps.slice(), @intCast(li))) |j| try prompt.tap(e, ch, j);
             try prompt.attnMixes(e, ch, li);
             if (pt) |t| try t.mark(m.stream, .mix_attn);
-            try prompt.attention(e, ch, &m.view, &shared, li, m.ring_view[li], floor, kv_done != null and kv_done.? == li);
+            try prompt.attention(e, ch, &m.view, &rs.shared, li, m.ring_view[li], rs.floor, rs.kv_done != null and rs.kv_done.? == li);
             if (pt) |t| try t.mark(m.stream, .attn);
             try prompt.gather(e, ch, ch.pa, ch.ga);
             if (pt) |t| try t.mark(m.stream, .gather_a);
@@ -1441,6 +1561,8 @@ pub const Model = struct {
             if (pt) |t| try t.mark(m.stream, .gather_m);
             prompt.endLayer(ch);
         }
+        rs.next = hi;
+        if (hi < c.layers) return .more;
         try prompt.head(e, ch);
         if (pt) |t| try t.mark(m.stream, .head);
         if (m.dr) |*dr| {
@@ -1456,7 +1578,9 @@ pub const Model = struct {
             try m.stream.synchronize();
             try t.finish();
         }
-        return true;
+        if (rs.ahead) |th| th.join();
+        rs.* = .{}; // next-chunk m.ahead deliberately survives the whole-chunk path
+        return .head;
     }
 
     /// The prompt's logits (its last row's, the ranks' columns in rank order) after a fill's last chunk.
@@ -1469,11 +1593,49 @@ pub const Model = struct {
     /// eager absorb: rows past the ones the round keeps sit where the drafter never reads, and the next window
     /// overwrites them). absorb[i]: window i's stream drafts.
     pub fn verify(m: *Model, rows: round.Rows, absorb: []const bool) !void {
+        return m.verifyHead(rows, absorb, false);
+    }
+
+    /// Explicit agreed Lanes choice only. Direct verify callers keep full logits.
+    /// No error-path drain: Lanes owns command custody before sending/parsing.
+    pub fn verifyHead(m: *Model, rows: round.Rows, absorb: []const bool, use_head: bool) !void {
+        m.greedy_output.begin();
+        m.sample_output = 0;
+        m.rd.sample_count = 0;
+        m.rd.greedy_out = 0;
+        if (use_head) {
+            if (!m.decode_greedy_head or m.two != null or m.rd.greedy_local == 0 or m.rd.greedy_all == 0 or m.rd.greedy_reference == 0)
+                return error.GreedyHeadRankFault;
+            m.rd.greedy_out = m.amax;
+        }
+        defer m.rd.greedy_out = 0;
+        try m.verifyRun(rows, absorb);
+        if (use_head) m.greedy_output.complete(rows.ids.len);
+    }
+
+
+    /// All ranks enter from the agreed sampled-count verify-frame extension.
+    pub fn verifySampleHead(m: *Model, rows: round.Rows, absorb: []const bool, count: usize) !void {
+        m.greedy_output.begin();
+        m.sample_output = 0;
+        m.rd.greedy_out = 0;
+        m.rd.sample_count = 0;
+        if (!m.decode_sample_head or m.two != null or m.rd.sample_local == 0 or m.rd.sample_all == 0 or m.rd.sample_reference == 0 or m.cand == 0 or count == 0 or count > sampling.max_candidates)
+            return error.GreedyHeadRankFault;
+        m.rd.sample_count = count;
+        defer m.rd.sample_count = 0;
+        try m.verifyRun(rows, absorb);
+        m.sample_output = count;
+        // Reuse output custody to refuse stale logits on a successful reduction.
+        if (!m.rd.sample_fallback) m.greedy_output.complete(rows.ids.len);
+    }
+
+    fn verifyRun(m: *Model, rows: round.Rows, absorb: []const bool) !void {
         m.joinAhead(); // a prompt chunk's Engram read-ahead shares the host buffers a round's Engram reads use
         const e = &m.eng;
         if (m.prof) try m.stream.synchronize(); // (the GPU idle, so the issue time shows whether the host keeps it fed)
         const t0 = m.now();
-        try round.forward(e, &m.rd, &m.ch, &m.caches, m.rings, if (m.eh) |*x| x else null, &.{}, rows, m.request_cap, null, if (m.graphs) |*g| g else null);
+        try round.forward(e, &m.rd, &m.ch, &m.caches, m.rings, if (m.eh) |*x| x else null, &.{}, rows, m.request_cap, null, if (m.rs.live) null else if (m.graphs) |*g| g else null);
         if (m.prof) {
             m.t_enqueue = m.now() - t0;
             try m.stream.synchronize();
@@ -1506,6 +1668,10 @@ pub const Model = struct {
         }
         try m.stream.synchronize();
         if (m.prof) m.t_absorb = m.now() - t1;
+        if (m.rs.live) if (m.eh) |*eh| {
+            const args = m.rs.args;
+            eh.hasher.hashes(m.fill_seq, args.start, args.n, eh.hashes[0 .. args.n * eh.hasher.layers * eh.hasher.cols()]);
+        };
     }
 
     /// The rounds' GPU clocks (a profile): the forward's start and each stretch's ends, for its gaps.
@@ -1539,8 +1705,11 @@ pub const Model = struct {
     /// The round's logits, R rows of the vocabulary, on the host (after verify).
     /// The round's greedy tokens, R rows (the device's argmax of the round's logits, as sampling.argmax), on the host.
     pub fn roundArgmax(m: *Model, R: usize) ![]const u32 {
+        if (m.sample_output != 0) return error.HeadLogitsUnavailable;
+        const selected = try m.greedy_output.selected(R);
         const d = m.ctx.d;
-        try m.ops.argmaxRows(m.stream, m.rd.logits, m.vocab, m.cfg.tokenVocab(), R, m.amax);
+        if (!selected)
+            try m.ops.argmaxRows(m.stream, m.rd.logits, m.vocab, m.cfg.tokenVocab(), R, m.amax);
         try m.stream.synchronize();
         try d.check(d.api.cuMemcpyDtoH_v2(&m.amax_host, m.amax, R * 4), "cuMemcpyDtoH");
         return m.amax_host[0..R];
@@ -1551,11 +1720,18 @@ pub const Model = struct {
     /// Bounded sampled rows read only their sorted candidates unless any row needs CPU fallback.
     fn copyCandidates(m: *Model, logits: u64, R: usize, count: usize) !CandidateRows {
         if (m.cand == 0 or R == 0 or R > round.max_rows or count == 0 or count > sampling.max_candidates) return error.BadCandidateShape;
-        const d = m.ctx.d;
         const vals = m.cand;
         const ids = vals + round.max_rows * sampling.max_candidates * 4;
         const flags = ids + round.max_rows * sampling.max_candidates * 8;
         try m.ops.topCandRows(m.stream, logits, m.vocab, m.cfg.tokenVocab(), R, count, vals, ids, flags);
+        return m.readCandidates(R, count);
+    }
+
+    fn readCandidates(m: *Model, R: usize, count: usize) !CandidateRows {
+        const d = m.ctx.d;
+        const vals = m.cand;
+        const ids = vals + round.max_rows * sampling.max_candidates * 4;
+        const flags = ids + round.max_rows * sampling.max_candidates * 8;
         try m.stream.synchronize();
         try d.check(d.api.cuMemcpyDtoH_v2(&m.cand_flags, flags, R * 4), "cuMemcpyDtoH");
         var good = true;
@@ -1568,6 +1744,11 @@ pub const Model = struct {
     }
 
     pub fn roundCandidates(m: *Model, R: usize, count: usize) !CandidateRows {
+        if (m.sample_output != 0) {
+            if (count != m.sample_output or R != m.rd.r) return error.BadCandidateShape;
+            return m.readCandidates(R, count);
+        }
+        try m.greedy_output.requireLogits();
         return m.copyCandidates(m.rd.logits, R, count);
     }
 
@@ -1576,6 +1757,7 @@ pub const Model = struct {
     }
 
     pub fn roundLogits(m: *Model, R: usize) ![]const f32 {
+        try m.greedy_output.requireLogits();
         const d = m.ctx.d;
         try m.stream.synchronize();
         try d.check(d.api.cuMemcpyDtoH_v2(m.logits.ptr, m.rd.logits, R * m.vocab * 4), "cuMemcpyDtoH");
@@ -1586,6 +1768,7 @@ pub const Model = struct {
     /// Rows first .. first + n of the round's logits on the host, at their places in roundLogits' layout (the other
     /// rows are left as they were): the grammar-masked windows' rows when the rest of the round needs none.
     pub fn roundLogitRows(m: *Model, first: usize, n: usize) !void {
+        try m.greedy_output.requireLogits();
         const d = m.ctx.d;
         const V = m.vocab;
         try m.stream.synchronize();
@@ -1604,12 +1787,15 @@ pub const Model = struct {
 
     /// The drafter's batched pass for N streams: each one's pending token at position q0 in its slot (its rings hold
     /// its positions below q0), `steps` drafts each (the drafter's drafts and confidences on the host).
-    pub fn pass(m: *Model, tokens: []const i64, q0: []const i64, slots: []const i64, steps: usize) !void {
+    pub fn pass(m: *Model, tokens: []const i64, q0: []const i64, slots: []const i64, steps: usize, keyed: ?draft.Keyed) !void {
         if (m.dr == null) return error.NoDrafter;
         const dr = &m.dr.?;
         const pool = &m.dpool.?;
+        const graphs = dr.graphs;
+        if (m.rs.live) dr.graphs = null;
+        defer dr.graphs = graphs;
         for (q0, slots) |q, s| pool.absorbed[@intCast(s)] = @intCast(q);
-        try dr.pass(&m.eng, &m.ch, pool, tokens, q0, slots, steps, null);
+        try dr.pass(&m.eng, &m.ch, pool, tokens, q0, slots, steps, null, keyed);
     }
 };
 
@@ -1622,4 +1808,140 @@ test "pickWindow: --context wins and must match TF_DS_WINDOW; a follower takes T
     try std.testing.expectEqual(@as(?usize, 65536), try Model.pickWindow(null, 2101248, "65536"));
     try std.testing.expectEqual(@as(?usize, 2101248), try Model.pickWindow(null, 2101248, "9999999")); // never past the pool
     try std.testing.expectEqual(@as(?usize, null), try Model.pickWindow(null, 2101248, null));
+}
+
+test "decode greedy head actual Model rejects stale logits and invalid row reads before driver access" {
+    var m: Model = undefined; // no CUDA driver exists in this test
+    m.greedy_output = .{ .rows = 2 };
+    m.sample_output = 0;
+    try std.testing.expectError(error.HeadLogitsUnavailable, m.roundLogits(2));
+    try std.testing.expectError(error.HeadLogitsUnavailable, m.roundLogitRows(0, 1));
+    try std.testing.expectError(error.HeadLogitsUnavailable, m.roundCandidates(2, 1));
+    try std.testing.expectError(error.BadGreedyHeadRows, m.roundArgmax(1));
+}
+
+test "decode greedy head actual Model invalid route resets previous readiness without CUDA" {
+    var m: Model = undefined;
+    m.greedy_output = .{ .rows = 16 };
+    m.rd.greedy_out = 17;
+    m.decode_greedy_head = false;
+    try std.testing.expectError(error.GreedyHeadRankFault, m.verifyHead(undefined, &.{}, true));
+    try std.testing.expectEqual(@as(usize, 0), m.greedy_output.rows);
+    try std.testing.expectEqual(@as(u64, 0), m.rd.greedy_out);
+}
+
+
+test "decode greedy head actual Model selected output fences then copies only token ids" {
+    const Fake = struct {
+        var phase: usize = 0;
+        var good: bool = true;
+        fn sync(_: cuda.abi.Stream) callconv(.c) cuda.abi.Result {
+            good = good and phase % 2 == 0;
+            phase += 1;
+            return cuda.abi.success;
+        }
+        fn copy(dst: ?*anyopaque, src: cuda.abi.DevicePtr, bytes: usize) callconv(.c) cuda.abi.Result {
+            good = good and phase % 2 == 1 and src == 0x12340 and bytes == 8;
+            phase += 1;
+            const ids: *[2]u32 = @ptrCast(@alignCast(dst.?));
+            ids.* = .{ 43136, 129279 };
+            return cuda.abi.success;
+        }
+    };
+    Fake.phase = 0;
+    Fake.good = true;
+    var driver: cuda.Driver = undefined;
+    driver.api.cuStreamSynchronize = Fake.sync;
+    driver.api.cuMemcpyDtoH_v2 = Fake.copy;
+    // Pure host registry fixture; no Driver.open, cuInit or GPU context creation.
+    const health = cuda.context_health;
+    const fake_context: cuda.abi.Context = @ptrFromInt(0x7dd85002);
+    try health.retain(@intFromPtr(&driver), fake_context);
+    defer health.release(@intFromPtr(&driver), fake_context);
+    health.setCurrent(@intFromPtr(&driver), fake_context);
+    defer health.clearCurrent(@intFromPtr(&driver), fake_context);
+    var owner = health.Owner.capture();
+    defer owner.release();
+    var ctx: cuda.Context = undefined;
+    ctx.d = &driver;
+    var m: Model = undefined;
+    m.ctx = &ctx;
+    m.stream = .{ .d = &driver, .owner = owner, .handle = null };
+    m.amax = 0x12340;
+    m.greedy_output = .{ .rows = 2 };
+    m.sample_output = 0;
+    // Ops and logits are deliberately undefined: selected output cannot touch them.
+    try std.testing.expectEqualSlices(u32, &.{ 43136, 129279 }, try m.roundArgmax(2));
+    try std.testing.expectEqualSlices(u32, &.{ 43136, 129279 }, try m.roundArgmax(2));
+    try std.testing.expectEqual(@as(usize, 4), Fake.phase);
+    try std.testing.expect(Fake.good);
+}
+
+test "decode greedy head sampled custody refuses stale logits and resets invalid routes" {
+    var m: Model = undefined;
+    m.sample_output = 28;
+    m.greedy_output = .{ .rows = 2 };
+    m.rd.r = 2;
+    try std.testing.expectError(error.HeadLogitsUnavailable, m.roundArgmax(2));
+    try std.testing.expectError(error.HeadLogitsUnavailable, m.roundLogits(2));
+    try std.testing.expectError(error.BadCandidateShape, m.roundCandidates(2, 20));
+    try std.testing.expectError(error.BadCandidateShape, m.roundCandidates(1, 28));
+    m.decode_sample_head = false;
+    try std.testing.expectError(error.GreedyHeadRankFault, m.verifySampleHead(undefined, &.{}, 28));
+    try std.testing.expectEqual(@as(usize, 0), m.sample_output);
+    try std.testing.expectEqual(@as(usize, 0), m.rd.sample_count);
+    try std.testing.expectEqual(@as(usize, 0), m.greedy_output.rows);
+}
+
+test "prefill slice bounds preserve complete layer order and whole path" {
+    for ([_]usize{ 1, 20, 40 }) |layers| for ([_]usize{ 0, 1, 5, 10, 40 }) |per| {
+        var lo: usize = 0;
+        while (lo < layers) {
+            const hi = sliceHi(layers, per, lo);
+            try std.testing.expect(hi > lo and hi <= layers);
+            if (per > 0) try std.testing.expect(hi - lo <= per);
+            lo = hi;
+        }
+        try std.testing.expectEqual(layers, lo);
+    };
+    try std.testing.expectEqual(@as(usize, 40), sliceHi(40, 0, 0));
+}
+
+test "prefill slice resume after park validates exact arguments and rejects replay or skipped layers" {
+    const a: SliceArgs = .{ .start = 8192, .n = 8192, .replay = 32768 };
+    var rs: SliceResume = .{};
+    try rs.validate(a, 0, 5, 40, 16384);
+    rs = .{ .live = true, .next = 5, .args = a, .shared = .{ .kv_layer = 3, .kk = 4, .pool = true }, .floor = 7 };
+    try rs.validate(a, 5, 10, 40, 16384);
+    try std.testing.expectError(error.OpenPrefillChunk, rs.validate(a, 0, 5, 40, 16384));
+    try std.testing.expectError(error.BadSlice, rs.validate(a, 10, 15, 40, 16384));
+    try std.testing.expectError(error.BadSlice, rs.validate(.{ .start = 8192, .n = 8192, .replay = 0 }, 5, 10, 40, 16384));
+    try std.testing.expectError(error.BadSlice, rs.validate(a, 5, 41, 40, 16384));
+    try std.testing.expectEqual(@as(?usize, 3), rs.shared.kv_layer);
+    try std.testing.expectEqual(@as(usize, 7), rs.floor);
+    var model_: Model = undefined;
+    model_.rs = .{};
+    model_.rs = rs;
+    model_.rs.ahead = try std.Thread.spawn(.{}, struct {
+        fn run() void {}
+    }.run, .{});
+    model_.ahead = null;
+    model_.dropChunk();
+    try std.testing.expect(!model_.rs.live and model_.rs.ahead == null);
+    try std.testing.expectError(error.BadSlice, model_.rs.validate(a, 5, 10, 40, 16384));
+}
+
+fn prefillAgreement(leader: u64, follower: u64) !void {
+    if (leader != follower) return error.PrefillSettingMismatch;
+}
+
+test "prefill slice mismatch refuses either follower and off word stays exact" {
+    const base = @as(u64, 1) | @as(u64, 1) << 1 | (prefill128.Flags{ .ac = true, .rows = 8192, .w = true, .w_range16 = true, .shared_split = true }).bits() << 2;
+    for (0..2) |mismatch| {
+        var followers = [_]u64{ base | @as(u64, 5) << 26, base | @as(u64, 5) << 26 };
+        try prefillAgreement(followers[0], followers[1]);
+        followers[mismatch] = base | @as(u64, 10) << 26;
+        try std.testing.expectError(error.PrefillSettingMismatch, prefillAgreement(base | @as(u64, 5) << 26, followers[mismatch]));
+    }
+    try prefillAgreement(base, base | (prefill128.Flags{}).bits() << 2);
 }

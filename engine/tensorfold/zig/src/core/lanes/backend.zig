@@ -84,7 +84,18 @@ pub const Backend = struct {
         release: *const fn (ptr: *anyopaque, s: *Stream) void,
         /// Engine-thread-only host accounting; never invokes kernels or synchronizes the device.
         token_pool: ?*const fn (ptr: *anyopaque) TokenPool = null,
+        /// Optional engine-thread timing scope. No GPU work or synchronization.
+        begin_timing: ?*const fn (ptr: *anyopaque) void = null,
+        /// Capture/maintenance invalidates timing only, never token feedback.
+        timing_clean: ?*const fn (ptr: *anyopaque) bool = null,
     };
+
+    pub fn beginTiming(b: Backend) void {
+        if (b.vtable.begin_timing) |f| f(b.ptr);
+    }
+    pub fn timingClean(b: Backend) bool {
+        return if (b.vtable.timing_clean) |f| f(b.ptr) else true;
+    }
 
     pub fn prefill(b: Backend, s: *Stream) !void {
         s.backend_owned = true; // even a partially opened prompt may need release

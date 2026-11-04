@@ -105,6 +105,15 @@ pub const Markov = struct {
         m.slot = slot;
     }
 
+    /// The columns of a logits row this rank scores, and the global id of the first.
+    pub fn rowCols(m: Markov) usize {
+        return if (m.lg_w != 0) m.lg_w else m.n_cols;
+    }
+
+    pub fn col0(m: Markov) usize {
+        return m.seg0 * m.n_cols;
+    }
+
     /// Markov.local_best: step i of out [N, steps + 1] int64 (row stride ts) on this rank's columns: out[:, i + 1], or the returned send [N, 4] (split).
     pub fn localBest(m: Markov, t: Tri, lg: u64, out: u64, ts: usize, n: usize, block: usize, i: usize, sc: Scratch) !?u64 {
         if (n > np) return error.TooManyRows;
@@ -133,11 +142,23 @@ pub const Markov = struct {
 
     /// Markov.steps: out [N, count + 1] int64 (out[:, 0] the last tokens) -> out[:, 1:] the drafts, each step's bests gathered over the ranks before its pick.
     pub fn steps(m: Markov, t: Tri, lg: u64, out: u64, ts: usize, n: usize, block: usize, count: usize, sc: Scratch, gather: Gather) !void {
+        return m.stepsWith(t, lg, out, ts, n, block, count, sc, gather, null);
+    }
+
+    /// `steps` with `pre` run before step i's first launch (it may rewrite the step's logits block row: no later step reads it).
+    pub fn stepsWith(m: Markov, t: Tri, lg: u64, out: u64, ts: usize, n: usize, block: usize, count: usize, sc: Scratch, gather: Gather, pre: ?Tap) !void {
         for (0..count) |i| {
+            if (pre) |x| try x.run(x.ctx, i);
             const send = try m.localBest(t, lg, out, ts, n, block, i, sc) orelse continue;
             try m.pick(t, try gather.run(gather.ctx, send, n), m.world, out, ts, n, i);
         }
     }
+};
+
+/// A hook of the Markov loop, run with the step index.
+pub const Tap = struct {
+    ctx: *anyopaque,
+    run: *const fn (ctx: *anyopaque, step: usize) anyerror!void,
 };
 
 /// prefill.HAD_SCALE: 1 / sqrt(128).
@@ -279,5 +300,57 @@ test "steps: each step's bias, score and finish, then the pick of the ranks' gat
         if (j % 4 != 3) continue;
         try std.testing.expectEqual(0x7d00_0000_0000 + 0x1000 * @as(u64, j / 4 + 1), k.args[0].value.ptr.addr);
         try std.testing.expectEqual(out + 8 * @as(u64, j / 4 + 1), k.args[2].value.ptr.addr);
+    }
+}
+
+test "a pre hook runs before each step's launches and adds none" {
+    var log: tri.Log = .{ .gpa = std.testing.allocator };
+    defer log.deinit();
+    const cfg = try modelConfig();
+    const m = try Markov.init(cfg, .{ .rank = 1, .world = tp }, elsewhere, elsewhere, elsewhere);
+    const Probe = struct {
+        log: *tri.Log,
+        seen: [3]usize = undefined,
+        n: usize = 0,
+        fn gather(_: *anyopaque, _: u64, _: usize) anyerror!u64 {
+            return 0x7d00_0000_0000;
+        }
+        fn pre(ctx: *anyopaque, step: usize) anyerror!void {
+            const r: *@This() = @ptrCast(@alignCast(ctx));
+            try std.testing.expectEqual(r.n, step);
+            r.seen[step] = r.log.items.items.len;
+            r.n += 1;
+        }
+    };
+    var pr: Probe = .{ .log = &log };
+    const sc: Scratch = .{ .pv = 0x7c00_0000_0000, .pi = 0x7c00_0000_0100, .send = 0x7c00_0000_0200, .stage = 0x7c00_0000_0300 };
+    try m.stepsWith(.{ .log = &log }, elsewhere, 0x7b00_0000_0000, 4, 3, cfg.dspark_block, 3, sc, .{ .ctx = &pr, .run = Probe.gather }, .{ .ctx = &pr, .run = Probe.pre });
+    try std.testing.expectEqual(@as(usize, 3), pr.n);
+    try std.testing.expectEqualSlices(usize, &.{ 0, 4, 8 }, &pr.seen);
+    try std.testing.expectEqual(@as(usize, 12), log.items.items.len);
+}
+
+test "a logits row's columns and first global id: TP2's slice, a 2D node's quarter" {
+    const cfg = try modelConfig();
+    const m = try Markov.init(cfg, .{ .rank = 1, .world = tp }, elsewhere, elsewhere, elsewhere);
+    try std.testing.expectEqual(cfg.vocab / tp, m.rowCols());
+    try std.testing.expectEqual(cfg.vocab / tp, m.col0());
+    var q = m;
+    q.lg_w = 3 * 128;
+    q.n_cols = 128;
+    q.seg0 = 5;
+    try std.testing.expectEqual(@as(usize, 384), q.rowCols());
+    try std.testing.expectEqual(@as(usize, 640), q.col0());
+}
+
+test "keyed draft TP3 columns use padded physical widths and global token IDs" {
+    var cfg = try modelConfig();
+    cfg.vocab = 129408;
+    cfg.logical_vocab = 129280;
+    for (0..3) |rank| {
+        const m = try Markov.init(cfg, .{ .rank = @intCast(rank), .world = 3 }, elsewhere, elsewhere, elsewhere);
+        try std.testing.expectEqual(@as(usize, 43136), m.rowCols());
+        try std.testing.expectEqual(rank * 43136, m.col0());
+        try std.testing.expectEqual((rank + 1) * 43136 - 1, m.col0() + m.rowCols() - 1);
     }
 }

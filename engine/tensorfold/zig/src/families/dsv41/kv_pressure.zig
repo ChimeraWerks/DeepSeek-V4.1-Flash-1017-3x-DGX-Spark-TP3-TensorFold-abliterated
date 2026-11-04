@@ -20,6 +20,7 @@ pub const State = struct {
 
     continuation_at: u64 = 0,
     adaptive_density: u32 = 0, adaptive_at: u64 = 0,
+    first_completed_at: u64 = 0,
 
     pub fn immovable(s: State) bool {
         return s.protected or s.loading or s.borrowed or s.pinned;
@@ -59,6 +60,7 @@ pub const Plan = struct {
     adaptive_extra_rows: usize = 0, adaptive_evaluations: usize = 0,
     adaptive_geometry_skip: bool = false,
     refine: RefineStats = .{},
+    first: FirstStats = .{},
 };
 pub const Options = struct {
     max_move_rows: usize = 0,
@@ -73,6 +75,7 @@ pub const Options = struct {
     continuation_clock: u64 = 0,
     adaptive_prefix: bool = false,
     short_return_rescue: bool = false,
+    first_continuation: bool = false,
 };
 /// The only commit order used by the real native mover and its CPU fault-injection tests.
 pub fn transferAndCommit(runtime: anytype) !usize {
@@ -284,6 +287,7 @@ pub fn plan(gpa: std.mem.Allocator, input: []const State, live: []const [2]usize
     }
     if (!short_done) best = shortRefine(states, live, starts.items, before, size, cap, best.?, &evals, options);
     best = adaptiveRefine(states, live, starts.items, before, size, cap, best.?, &evals, options);
+    best = firstRefine(states, live, starts.items, before, size, cap, best.?, &evals, options);
     best.?.evaluations = evals;
     best.?.truncated = !budget(evals, options);
     best.?.baseline_base = baseline.base;
@@ -1096,4 +1100,158 @@ test "X4 bounded random geometry preserves active and protected snapshots" {
             }
         } else try std.testing.expect(old==null);
     }
+}
+
+// 4.0.1a: a narrow tie-break AFTER the complete production planner.
+// No extra lost rows, <=5% learned cost premium, no new proven reuse victim.
+pub const FirstStats = struct {
+    gate: enum { disabled, copied, no_loss, geometry, no_fresh, budget, searched } = .disabled,
+    evaluated: usize = 0, invalid: usize = 0, rows: usize = 0,
+    proven: usize = 0, cost: usize = 0, no_gain: usize = 0,
+    saved: usize = 0, before_us: u64 = 0, after_us: u64 = 0,
+};
+fn fresh401(s: State, clock: u64) bool {
+    return s.restores == 0 and !recentContinuation(s,clock) and
+        s.first_completed_at != 0 and clock >= s.first_completed_at and
+        clock - s.first_completed_at < 32 and s.len % 2 == 0;
+}
+fn firstLoss(states: []const State, p: Plan, size: usize, clock: u64) usize {
+    var total: usize = 0;
+    var i: usize = 0;
+    while (i < states.len) {
+        const base = states[i].base;
+        var fresh: usize = 0;
+        var kept: usize = 0;
+        while (i < states.len and states[i].base == base) : (i += 1) {
+            const s = states[i];
+            if (fresh401(s, clock)) fresh = @max(fresh, s.len);
+            if (!victim(s, p.base, size)) kept = @max(kept, s.len);
+        }
+        total +|= fresh -| kept;
+    }
+    return total;
+}
+fn firstRefine(states: []const State, live: []const [2]usize, starts: []const usize,
+    before: usize, size: usize, cap: usize, baseline: Plan, evals: *usize, o: Options) Plan
+{
+    var result = baseline;
+    if (!o.first_continuation) return result;
+    if (baseline.move != null) { result.first.gate = .copied; return result; }
+    if (baseline.lost == 0) { result.first.gate = .no_loss; return result; }
+    if (!budget(evals.*, o) or now() >= o.deadline_ns) { result.first.gate = .budget; return result; }
+    if (!adaptiveGeometry(states)) { result.first.gate = .geometry; return result; }
+    const clock = o.continuation_clock;
+    const original_loss = firstLoss(states, baseline, size, clock);
+    if (original_loss == 0) { result.first.gate = .no_fresh; return result; }
+    var best_loss = original_loss;
+    const original_cost = adaptiveLoss(states, baseline.base, size, clock);
+    var diag: FirstStats = .{ .gate = .searched, .before_us = original_cost, .after_us = original_cost };
+    // At most 32 existing boundary candidates, inside the existing global deadline.
+    const count = @min(@as(usize,32), starts.len);
+    for (0..count) |j| {
+        if (!budget(evals.*, o) or now() >= o.deadline_ns) { diag.gate = .budget; break; }
+        const idx = if (count > 1) j*(starts.len-1)/(count-1) else 0;
+        const b = starts[idx];
+        if (b == baseline.base) continue;
+        evals.* += 1;
+        diag.evaluated += 1;
+        const p = evaluateSorted(states, live, cap, size, b, before) orelse { diag.invalid += 1; continue; };
+        if (p.lost > baseline.lost) { diag.rows += 1; continue; }
+        const harms = for (states) |s| {
+            if (!victim(s, baseline.base, size) and victim(s, b, size) and
+                (s.restores > 0 or recentContinuation(s,clock))) break true;
+        } else false;
+        if (harms) { diag.proven += 1; continue; }
+        const cost = adaptiveLoss(states,b,size,clock);
+        if (cost > original_cost +| original_cost/20) { diag.cost += 1; continue; }
+        const loss = firstLoss(states,p,size,clock);
+        if (loss >= best_loss) { diag.no_gain += 1; continue; }
+        if (now() >= o.deadline_ns) { diag.gate = .budget; break; }
+        // Preserve prior stage diagnostics while replacing only placement facts.
+        result.base = p.base;
+        result.lost = p.lost;
+        result.reuse_loss = p.reuse_loss;
+        result.recency_loss = p.recency_loss;
+        result.victims = p.victims;
+        best_loss = loss;
+        diag.saved = original_loss-loss;
+        diag.after_us = cost;
+    }
+    result.first = diag;
+    return result;
+}
+
+test "401a first continuation rescues equal-cost cold endpoint without new lost rows" {
+    const q=quantum;
+    const s=[_]State{
+        .{.key=1,.base=0,.len=16*q,.first_completed_at=100,.adaptive_density=20,.adaptive_at=100},
+        .{.key=2,.base=16*q,.len=16*q,.adaptive_density=20,.adaptive_at=100},
+    };
+    const off=(try plan(std.testing.allocator,&s,&.{},16*q,32*q,.{})).?;
+    const on=(try plan(std.testing.allocator,&s,&.{},16*q,32*q,.{.first_continuation=true,.continuation_clock=100})).?;
+    try std.testing.expectEqual(@as(usize,0),off.base);
+    try std.testing.expectEqual(@as(usize,16*q),on.base);
+    try std.testing.expectEqual(off.lost,on.lost);
+    try std.testing.expectEqual(@as(usize,16*q),on.first.saved);
+}
+test "401a first preference cannot sacrifice proven reuse or stale and odd endpoints" {
+    const q=quantum;
+    var s=[_]State{
+        .{.key=1,.base=0,.len=16*q,.first_completed_at=100},
+        .{.key=2,.base=16*q,.len=16*q,.restores=1},
+    };
+    const opts:Options=.{.first_continuation=true,.continuation_clock=100};
+    const guarded=(try plan(std.testing.allocator,&s,&.{},16*q,32*q,opts)).?;
+    try std.testing.expectEqual(@as(usize,0),guarded.base);
+    try std.testing.expect(guarded.first.proven>0);
+    s[1].restores=0;
+    s[0].first_completed_at=68;
+    const old=(try plan(std.testing.allocator,&s,&.{},16*q,32*q,opts)).?;
+    try std.testing.expectEqual(@as(usize,0),old.first.evaluated);
+    s[0].first_completed_at=100;s[0].len-=1;
+    const odd=(try plan(std.testing.allocator,&s,&.{},16*q,32*q,opts)).?;
+    try std.testing.expectEqual(@as(usize,0),odd.first.evaluated);
+}
+
+test "401a randomized first tie-break keeps cost row and proven-victim bounds" {
+    var rng=std.Random.DefaultPrng.init(401);
+    const r=rng.random();
+    for(0..120) |_| {
+        var states:[24]State=undefined;
+        for(&states,0..) |*s,i| s.*=.{.key=i+1,.base=i*8*quantum,.len=8*quantum,
+            .restores=r.intRangeAtMost(u32,0,2),.first_completed_at=if(r.boolean()) 100 else 0,
+            .used=r.intRangeAtMost(u32,1,100),.adaptive_density=r.intRangeAtMost(u32,16,200),.adaptive_at=100};
+        const size=r.intRangeAtMost(usize,4,24)*quantum;
+        const opts:Options=.{.adaptive_prefix=true,.short_return_rescue=true,.continuation_clock=100};
+        const off=(try plan(std.testing.allocator,&states,&.{},size,192*quantum,opts)).?;
+        var enabled=opts;enabled.first_continuation=true;
+        const on=(try plan(std.testing.allocator,&states,&.{},size,192*quantum,enabled)).?;
+        if(on.first.saved>0) {
+            try std.testing.expect(on.lost<=off.lost);
+            try std.testing.expect(on.first.after_us<=on.first.before_us+on.first.before_us/20);
+            for(states) |s| if(s.restores>0 and !victim(s,off.base,size))
+                try std.testing.expect(!victim(s,on.base,size));
+        }
+        try std.testing.expect(on.first.evaluated<=32 and on.evaluations<=enabled.max_evaluations);
+    }
+}
+
+test "cache batch first refinement shares exhausted deadline and never adds a move" {
+    const states = [_]State{
+        .{ .key = 1, .base = 0, .len = 8 * quantum, .first_completed_at = 100 },
+        .{ .key = 2, .base = 8 * quantum, .len = 8 * quantum },
+    };
+    const baseline: Plan = .{ .base = 0, .lost = 8 * quantum };
+    var evals: usize = 0;
+    const expired = firstRefine(&states, &.{}, &.{ 0, 8 * quantum }, 16 * quantum, 8 * quantum, 16 * quantum, baseline, &evals,
+        .{ .first_continuation = true, .continuation_clock = 100, .deadline_ns = 0 });
+    try std.testing.expectEqual(@as(usize, 0), evals);
+    try std.testing.expectEqual(baseline.base, expired.base);
+    try std.testing.expectEqual(@as(usize, 0), expired.first.saved);
+    var moving = baseline;
+    moving.move = .{ .from = 0, .to = 16 * quantum, .len = 8 * quantum };
+    const copied = firstRefine(&states, &.{}, &.{ 0, 8 * quantum }, 16 * quantum, 8 * quantum, 24 * quantum, moving, &evals,
+        .{ .first_continuation = true, .continuation_clock = 100 });
+    try std.testing.expectEqual(moving.move, copied.move);
+    try std.testing.expectEqual(@as(usize, 0), copied.first.evaluated);
 }

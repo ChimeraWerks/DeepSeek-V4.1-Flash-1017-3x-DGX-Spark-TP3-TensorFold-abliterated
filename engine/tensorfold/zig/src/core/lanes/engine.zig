@@ -62,6 +62,7 @@ pub const Engine = struct {
     backend: be.Backend,
     clock: be.Clock,
     log: ?*ev.Log = null,
+    hold_finished: bool = false, // decode-only prefill park: defer snapshots/releases
     learner: ?*adaptive.Controller = null,
     rule: depth.Rule,
     live: std.ArrayList(*Stream) = .empty, // admitted streams in admission order (Python `_live`)
@@ -92,6 +93,7 @@ pub const Engine = struct {
                 .mtp_step_ms = cfg.mtp_step_ms,
                 .plain_guard = cfg.plain_guard,
                 .node_probabilities = cfg.node_probabilities,
+                .first_draft_depth = cfg.first_draft_depth,
                 .batch_rows = cfg.batch_rows,
             },
         };
@@ -166,7 +168,7 @@ pub const Engine = struct {
         var asked: ?u32 = null;
         if (e.cfg.family_mtp and s.drafts) {
             // the head reads the prompt's last row and the first token, and drafts the one after it
-            const d: u32 = if (s.gate != null and s.force.items.len > 0) 0 else @intCast(try e.rule.depth(win.who(s)));
+            const d: u32 = if (s.gate != null and s.force.items.len > 0) 0 else @intCast(try e.rule.openDepth(win.who(s)));
             asked = d;
             try e.backend.draft(&.{.{ .stream = s, .follow = &.{}, .first = feed, .rows = null, .start = s.prompt_len, .position = position + 1, .depth = d }});
             s.dropHeld(e.gpa);
@@ -183,12 +185,14 @@ pub const Engine = struct {
         _ = try s.commit(e.gpa, &.{value});
         try e.afterCommit(s);
         s.pending = value;
-        try trail.resolve(e);
         if (s.finished) {
+            // The host discards only unfinished streams: release even when the trace fails.
+            defer e.release(s);
+            try trail.resolve(e);
             try trail.finish(e, s);
-            e.release(s);
             return;
         }
+        try trail.resolve(e);
         try e.live.append(e.gpa, s);
     }
 
@@ -249,6 +253,12 @@ pub const Engine = struct {
             }
         }
         try trail.resolve(e);
+        if (!e.hold_finished) try e.settle();
+        try trail.state(e);
+    }
+
+    /// Run only at a complete-chunk boundary, never inside a prefill park.
+    pub fn settle(e: *Engine) !void {
         // Remove settled entries immediately: a later fallible finish must not leave
         // an interrupted in-place compaction with duplicated live pointers.
         var i: usize = 0;
@@ -260,7 +270,6 @@ pub const Engine = struct {
                 _ = e.live.orderedRemove(i);
             } else i += 1;
         }
-        try trail.state(e);
     }
 
     /// Least recently served streams within the stream and row limits, never cutting pending or forced rows.
@@ -302,6 +311,7 @@ pub const Engine = struct {
 
     /// One stream's round: verify pending and drafted tokens together, keep drafts to the first mismatch.
     fn familyRound(e: *Engine, s: *Stream, copied: ?[]const u32) !Result {
+        e.backend.beginTiming();
         e.clock.start();
         const priced = s.priced;
         s.priced = null;
@@ -317,7 +327,10 @@ pub const Engine = struct {
         const verify_started = e.clock.elapsedMs(.cost);
         try e.backend.verify(&windows, &out);
         // A constrained window is not a plain cost sample, even when it added no grammar drafts.
-        if (e.learner) |learner| if (plainRound(plan)) learner.verified(e.clock.elapsedMs(.cost) - verify_started);
+        if (e.learner) |learner| if (plainRound(plan)) {
+            if (!e.backend.timingClean()) learner.frame.warm = false;
+            learner.verified(e.clock.elapsedMs(.cost) - verify_started);
+        };
         const tokens = try win.tokens(e, windows[0], out[0]);
         const parents = try win.rowParents(e, windows[0]);
         const o = try e.conclude(s, plan, out[0].sampled, tokens, parents, windows[0].positions);
@@ -336,10 +349,10 @@ pub const Engine = struct {
                 const ms = e.clock.elapsedMs(.cost);
                 const first = s.rounds == 1; // a stream's first round carries the prefill-to-decode switch
                 try trail.event(e, &.{ f("ev", str("cost")), f("stream", str(s.id)), f("drafts", int(rows - 1)), f("init", .{ .bool = first }), f("ms", ev.bits(ms)) });
-                try e.rule.observeCost(@intCast(rows - 1), ms, first, win.who(s));
+                if (e.backend.timingClean()) try e.rule.observeCost(@intCast(rows - 1), ms, first, win.who(s));
             }
         }
-        if (plainRound(plan) and s.graft_room != null and s.rounds > 1) {
+        if (plainRound(plan) and s.graft_room != null and s.rounds > 1 and e.backend.timingClean()) {
             // the stream's round time beyond its window and head levels, for the lane planner
             if (e.cfg.lane_costs.get(@intCast(rows))) |w| {
                 const over = e.clock.elapsedMs(.cost) - w - e.cfg.mtp_step_ms * @as(f64, @floatFromInt(held_levels));
@@ -352,14 +365,18 @@ pub const Engine = struct {
         if (plan.kind == .head and plainRound(plan)) {
             const ms = e.clock.elapsedMs(.overhead);
             try trail.event(e, &.{ f("ev", str("overhead")), f("streams", int(1)), f("rows", int(rows)), f("ms", ev.bits(ms)) });
-            try e.rule.observeOverhead(1, rows, ms);
+            if (e.backend.timingClean()) try e.rule.observeOverhead(1, rows, ms);
         }
-        if (e.learner) |learner| if (plainRound(plan)) learner.finished(e.clock.elapsedMs(.overhead), o.got.len);
+        if (e.learner) |learner| if (plainRound(plan)) {
+            if (!e.backend.timingClean()) learner.frame.warm = false;
+            learner.finished(e.clock.elapsedMs(.overhead), o.got.len);
+        };
         return .{ .rows = @intCast(rows), .keep = @intCast(o.path.len), .got = o.got };
     }
 
     /// The stream windows of a shared round in one forward, then each verified, committed and drafted on its own.
     fn roundStreams(e: *Engine, entries: []*Stream) !void {
+        e.backend.beginTiming();
         e.clock.start();
         const a = e.arena.allocator();
         const plans = try a.alloc(Plan, entries.len);
@@ -377,7 +394,10 @@ pub const Engine = struct {
         const verify_started = e.clock.elapsedMs(.cost);
         try e.backend.verify(windows, out);
         const unaugmented = for (plans) |p| { if (!plainRound(p)) break false; } else true;
-        if (e.learner) |learner| if (unaugmented) learner.verified(e.clock.elapsedMs(.cost) - verify_started);
+        if (e.learner) |learner| if (unaugmented) {
+            if (!e.backend.timingClean()) learner.frame.warm = false;
+            learner.verified(e.clock.elapsedMs(.cost) - verify_started);
+        };
         const outcomes = try a.alloc(Outcome, plans.len);
         const paths = try a.alloc([]const u32, plans.len);
         for (plans, windows, out, outcomes, paths) |p, w, o, *oc, *path| {
@@ -412,11 +432,12 @@ pub const Engine = struct {
         try e.backend.keep(windows, paths);
         const ms = e.clock.elapsedMs(.overhead);
         try trail.event(e, &.{ f("ev", str("overhead")), f("streams", int(plans.len)), f("rows", int(total)), f("ms", ev.bits(ms)) });
-        if (unaugmented) try e.rule.observeOverhead(@intCast(plans.len), total, ms);
+        if (unaugmented and e.backend.timingClean()) try e.rule.observeOverhead(@intCast(plans.len), total, ms);
         if (e.learner) |learner| {
             if (unaugmented) {
                 var emitted: usize = 0;
                 for (outcomes) |o| emitted += o.got.len;
+                if (!e.backend.timingClean()) learner.frame.warm = false;
                 learner.finished(ms, emitted);
             }
         }
@@ -457,6 +478,13 @@ pub const Engine = struct {
                         s.copy_width = if (own_kept == own) @min(e.cfg.max_copy, 2 * width + 1) else e.cfg.first_copy;
                     }
                 } else if (p.kind == .head) {
+                    if (e.cfg.draft_cal > 0) {
+                        if (plainRound(p) and accept.isChain(parents) and p.branch_from == 0 and own == s.cal_n) {
+                            s.observeCal(e.cfg.draft_cal, @floatFromInt(own_kept));
+                            s.logCal(e.cfg.cal_log, rows, own_kept, path.len);
+                        }
+                        s.cal_n = 0;
+                    }
                     if (p.lanes) |l| if (s.odds != null) observeLanes(s, l, path);
                     const ds = try accept.depths(a, parents);
                     const chain = if (p.branch_from > 0) ds[0..p.branch_from] else ds[0..own_end];

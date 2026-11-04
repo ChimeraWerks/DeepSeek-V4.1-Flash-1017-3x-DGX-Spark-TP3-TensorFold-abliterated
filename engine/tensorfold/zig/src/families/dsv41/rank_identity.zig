@@ -136,6 +136,7 @@ pub const Features = struct {
     pool: u64,
     drafts: bool,
     owned: bool = false, // TF_DS_PREFILL_OWNED: its row exchanges pair up only when every rank runs it
+    cache_batch: u64 = 0,
     prefill128: u64 = 0, // experimental arms never consume a different arm's persistent state
 };
 
@@ -150,6 +151,7 @@ pub fn featureString(buf: []u8, f: Features) ![]const u8 {
     if (f.kv_shard) at += (try std.fmt.bufPrint(buf[at..], "part={d};", .{f.part_rows})).len;
     if (f.owned) at += (try std.fmt.bufPrint(buf[at..], "owned=1;", .{})).len;
     if (f.prefill128 != 0) at += (try std.fmt.bufPrint(buf[at..], "prefill128={x};", .{f.prefill128})).len;
+    if (f.cache_batch != 0) at += (try std.fmt.bufPrint(buf[at..], "cache_batch={x};", .{f.cache_batch})).len;
     return buf[0..at];
 }
 

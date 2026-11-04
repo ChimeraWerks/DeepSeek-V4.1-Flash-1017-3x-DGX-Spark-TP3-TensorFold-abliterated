@@ -225,6 +225,21 @@ test "base64 as Python's b64decode reads it" {
 }
 
 /// ``normalize_messages`` (text only): leading system and developer text merged, later ones as ``late_system``; a template that needs a user query gains one user turn after a trailing tool run.
+/// An assistant turn's replayed thinking under vLLM's input name: vLLM's chat_utils reads an assistant message's
+/// `reasoning` and gives the template both `reasoning` and `reasoning_content`, while the chat templates here read only
+/// `reasoning_content`. A gateway in front of vLLM sends `reasoning` (LiteLLM's hosted_vllm transform removes
+/// `reasoning_content` from assistant messages), so without this every replayed turn rendered an empty think block.
+/// An assistant message whose `reasoning` is a non-empty string and whose `reasoning_content` is absent, null or empty
+/// gains `reasoning_content` = `reasoning`; any other message comes back as it was (no copy). After Mia's AI Lab patch
+/// 0047 (nuk3s).
+fn replayedReasoning(cx: *Cx, o: *json.Object, role: []const u8) !*json.Object {
+    if (!std.mem.eql(u8, role, "assistant")) return o;
+    const r = o.get("reasoning") orelse return o;
+    if (r != .string or r.string.len == 0) return o;
+    if (o.get("reasoning_content")) |rc| if (rc.truthy()) return o;
+    return withField(cx, o, "reasoning_content", r);
+}
+
 pub fn normalize(cx: *Cx, messages: ?Value, late_system: []const u8, needs_user_after_tool: bool) errors.Refused!Value {
     return normalizeImages(cx, messages, late_system, needs_user_after_tool, null);
 }
@@ -248,9 +263,10 @@ pub fn normalizeImages(cx: *Cx, messages: ?Value, late_system: []const u8, needs
             const rest = try json.copyObject(cx.a, message.object);
             _ = rest.orderedRemove("content");
             if (fields.hasMedia(.{ .object = rest })) return cx.refuse("this server accepts text only; image, audio and video inputs are unsupported");
-            for ([_][]const u8{ "content", "reasoning_content" }) |key| if (message.get(key)) |v| if (v == .string and std.mem.indexOf(u8, v.string, im.placeholder) != null) return cx.refuse(image_text_refusal);
+            const base = try replayedReasoning(cx, message.object, role.?.string);
+            for ([_][]const u8{ "content", "reasoning_content" }) |key| if (base.get(key)) |v| if (v == .string and std.mem.indexOf(u8, v.string, im.placeholder) != null) return cx.refuse(image_text_refusal);
             const content = message.get("content");
-            var item: *json.Object = message.object;
+            var item: *json.Object = base;
             if (content != null and content.? == .array) {
                 const r = role.?.string;
                 if (!std.mem.eql(u8, r, "user") and !std.mem.eql(u8, r, "tool")) for (content.?.array) |part| if (isImagePart(part)) return cx.refuse(image_role_refusal);
@@ -269,9 +285,9 @@ pub fn normalizeImages(cx: *Cx, messages: ?Value, late_system: []const u8, needs
                     if (std.mem.indexOf(u8, t.string, im.placeholder) != null) return cx.refuse(image_text_refusal);
                     try text.appendSlice(cx.a, t.string);
                 }
-                item = try withField(cx, message.object, "content", .{ .string = text.items });
+                item = try withField(cx, base, "content", .{ .string = text.items });
             } else if (content == null or content.? == .null) {
-                item = try withField(cx, message.object, "content", .{ .string = "" });
+                item = try withField(cx, base, "content", .{ .string = "" });
             } else if (content.? != .string) {
                 return cx.refuse("message content must be text or an array of text parts");
             }
@@ -280,7 +296,8 @@ pub fn normalizeImages(cx: *Cx, messages: ?Value, late_system: []const u8, needs
         }
         if (fields.hasMedia(message)) return cx.refuse("this server accepts text only; image, audio and video inputs are unsupported");
         const content = message.get("content");
-        var item: *json.Object = message.object;
+        const base = try replayedReasoning(cx, message.object, role.?.string);
+        var item: *json.Object = base;
         if (content != null and content.? == .array) {
             var text: std.ArrayList(u8) = .empty;
             for (content.?.array) |part| {
@@ -290,9 +307,9 @@ pub fn normalizeImages(cx: *Cx, messages: ?Value, late_system: []const u8, needs
                 if (t != .string) return cx.refuse("a text content part must contain a text string");
                 try text.appendSlice(cx.a, t.string);
             }
-            item = try withField(cx, message.object, "content", .{ .string = text.items });
+            item = try withField(cx, base, "content", .{ .string = text.items });
         } else if (content == null or content.? == .null) {
-            item = try withField(cx, message.object, "content", .{ .string = "" });
+            item = try withField(cx, base, "content", .{ .string = "" });
         } else if (content.? != .string) {
             return cx.refuse("message content must be text or an array of text parts");
         }
@@ -576,4 +593,19 @@ test "maskControls keeps colliding original keys and joins text before masking" 
     )).ok;
     const normalized = try normalize(&cx, try requestMessages(&cx, text, parts), "system", false);
     try std.testing.expectEqualStrings("<|x>", normalized.array[0].get("content").?.string);
+}
+
+test "an assistant turn's reasoning field reaches the template as reasoning_content, as vLLM reads it" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    const messages = (try json.parse(cx.a,
+        \\[{"role": "user", "content": "run it"}, {"role": "assistant", "content": "", "reasoning": "plan: call f", "tool_calls": [{"id": "t1", "type": "function", "function": {"name": "f", "arguments": {}}}]}, {"role": "tool", "tool_call_id": "t1", "content": "42 rows"}, {"role": "assistant", "content": "done", "reasoning": "read 42", "reasoning_content": "own text"}, {"role": "assistant", "content": "x", "reasoning": ""}, {"role": "user", "content": "more", "reasoning": "not a turn of thinking"}]
+    )).ok;
+    const out = try normalize(&cx, messages, "system", true);
+    try std.testing.expectEqualStrings("plan: call f", out.array[1].get("reasoning_content").?.string);
+    try std.testing.expectEqualStrings("own text", out.array[3].get("reasoning_content").?.string); // a client's reasoning_content wins
+    try std.testing.expect(out.array[4].get("reasoning_content") == null); // an empty reasoning adds nothing
+    try std.testing.expect(out.array[5].get("reasoning_content") == null); // only assistant turns
+    try std.testing.expect(messages.array[1].get("reasoning_content") == null); // the request itself unchanged
 }

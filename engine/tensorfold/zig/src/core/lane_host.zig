@@ -76,6 +76,7 @@ pub const LaneHost = struct {
     filling: ?*Job = null,
     between_err: ?anyerror = null,
     share: Share = .{},
+    slice_decode_ns: i64 = 0, // current long chunk: parks are decode occupancy, not prefill
     prefix: prefix.Wait = .{},
     ahead_on: bool = false,
     ahead_grid: ?Grid = null,
@@ -113,11 +114,14 @@ pub const LaneHost = struct {
         pump_ns: u64 = 2 * std.time.ns_per_ms,
         /// How long a request waits parked on a restore before it is admitted without it (TF_SPILL_LOAD_WAIT_MS).
         load_wait_ns: i96 = 30 * std.time.ns_per_s,
+        room_wait_ns: i96 = 0, // TF_SPILL_ROOM_WAIT_MS, nonsharded only
         /// A clean shutdown's bound for draining writes (TF_SPILL_FLUSH_MS).
         flush_ns: u64 = 60 * std.time.ns_per_s,
     };
 
     pub const HostCounts = struct {
+        restore_room_waits: u64 = 0,
+        restore_room_expiries: u64 = 0,
         restore_waits: u64 = 0, // requests parked on a restore
         restore_wait_timeouts: u64 = 0, // of them admitted without it at load_wait_ns
         restore_wait_ns: u64 = 0,
@@ -150,6 +154,8 @@ pub const LaneHost = struct {
         warm: ?*Warm = null,
         cache_request: pc.RequestState = .{},
         kept0: u64 = 0, // the store's kept count when the job looked it up
+        room_since: ?i96 = null, // first ContextFull refusal, never renewed by a retry
+        room_retry_at: i96 = 0,
         tried_disk: bool = false, // it waited for a restore once: a later lookup takes what memory has
         join: pc.Join = .{}, // its conversation (0111)
         parent: ?u64 = null, // the durable point its pass resumes from, and where
@@ -264,6 +270,7 @@ pub const LaneHost = struct {
         h.tier.service_ns = @as(u64, @max(sp.load_ms, 1)) * std.time.ns_per_ms;
         h.tier.pump_ns = @min(h.tier.pump_ns, h.tier.service_ns);
         h.tier.load_wait_ns = @as(i96, @max(sp.load_wait_ms, 1)) * std.time.ns_per_ms;
+        h.tier.room_wait_ns = @as(i96, sp.room_wait_ms) * std.time.ns_per_ms;
         h.tier.flush_ns = @as(u64, sp.flush_ms) * std.time.ns_per_ms;
         const store_on = if (h.cache) |s| s.tier != null or s.groups else false;
         h.tele = if (store_on) .{} else null;
@@ -457,7 +464,8 @@ pub const LaneHost = struct {
         }
     }
 
-    /// Sends a stream's new tokens; true once it has finished (its job freed).
+    /// Sends a stream's new tokens; true once it has finished (out of `admitted`, then freed: a submission walks the
+    /// admitted jobs under the lock and must never meet a freed one).
     fn deliver(h: *LaneHost, job: *Job) bool {
         h.send(job);
         if (!job.stream.finished) return false;
@@ -468,6 +476,7 @@ pub const LaneHost = struct {
             else => .stop,
         };
         const warm = if (reason == .stop or reason == .length) h.aheadOf(job) else null;
+        h.remove(job);
         h.finish(job, reason, job.stream.problem);
         if (warm) |w| {
             if (h.broken()) h.finish(w, .cancelled, "") else h.queueAhead(w);
@@ -665,6 +674,8 @@ pub const LaneHost = struct {
     /// Prefills the next queued request into a free lane; false when none waits or no lane is free.
     fn admitOne(h: *LaneHost) bool {
         h.lock();
+        // Deadline retirement is safety work: do it even when capacity or decode debt blocks admission.
+        if (!h.broken() and h.tier.room_wait_ns > 0) h.expireRoomWaits(std.Io.Clock.awake.now(h.io).toNanoseconds());
         if (h.broken() or (h.queued.items.len == 0 and h.ready.items.len == 0) or h.admitted.items.len >= h.info_.lanes) {
             h.unlock();
             return false;
@@ -682,6 +693,17 @@ pub const LaneHost = struct {
         if (h.parking() and !h.tierWorkAllowed()) {
             h.unlock();
             return false;
+        }
+        // Keep the refused request at the queue front, but let completed restores leave ready first.
+        // Throttle retries without waiting for resident count to change (paused/suspended residents count).
+        if (h.ready.items.len == 0 and h.queued.items.len > 0) {
+            const front = h.queued.items[0];
+            if (front.room_since != null and h.residentCount(null) > 0 and
+                std.Io.Clock.awake.now(h.io).toNanoseconds() < front.room_retry_at)
+            {
+                h.unlock();
+                return false;
+            }
         }
         const job = if (h.ready.items.len > 0) h.ready.orderedRemove(0) else blk: {
             prefix.release(h);
@@ -703,7 +725,7 @@ pub const LaneHost = struct {
         }
         if (h.parking()) {
             h.unlock();
-            if (h.park(job)) return true; // waits for a restore, holding no lane
+            if (h.park(job)) return job.room_since == null; // room refusal ends this admission batch
             h.lock();
         }
         h.admitted.append(h.gpa, job) catch {
@@ -785,7 +807,10 @@ pub const LaneHost = struct {
         h.fillGauges();
         h.unlock();
         defer h.noteLive();
-        if (h.stepped() and h.core.log == null) return true; // image fills keep their uncached rows per slot
+        if (h.stepped() and h.core.log == null) {
+            job.stream.between = .{ .ptr = h, .wanted = sliceWanted, .run = sliceBetween };
+            return true;
+        } // image fills keep their uncached rows per slot
         if (h.loneFits(job)) return h.runLone(job, began);
         // between two prompt chunks: the other streams' rounds (interleave), and parked work's service, which runs
         // with the interleave off too
@@ -800,8 +825,50 @@ pub const LaneHost = struct {
             return h.drop(job, h.words(e));
         };
         h.prefilled(job, began);
-        if (h.deliver(job)) h.remove(job);
+        _ = h.deliver(job);
         return true;
+    }
+
+    fn sliceWanted(ptr: *anyopaque) bool {
+        const h: *LaneHost = @ptrCast(@alignCast(ptr));
+        return !h.broken() and h.core.log == null and h.core.runnableCount() > 0;
+    }
+
+    /// Exactly one decode round. No cancellation draining, terminal release,
+    /// snapshots, admission, placement, restore pumping or graph capture.
+    fn sliceBetween(ptr: *anyopaque) anyerror!void {
+        const h: *LaneHost = @ptrCast(@alignCast(ptr));
+        if (h.broken()) return error.PeerDown;
+        if (!sliceWanted(ptr)) return;
+        const began = std.Io.Clock.awake.now(h.io).toNanoseconds();
+        defer h.slice_decode_ns +|= @intCast(@max(0, std.Io.Clock.awake.now(h.io).toNanoseconds() - began));
+        h.core.hold_finished = true;
+        defer h.core.hold_finished = false;
+        h.core.step() catch |err| {
+            if (h.peer_monitor) |*monitor| monitor.signal(err);
+            h.between_err = err;
+            return err;
+        };
+        if (h.broken()) return error.PeerDown;
+        for (h.admitted.items) |job| {
+            if (job == h.filling or job.prefilled == null) continue;
+            h.send(job); // streaming only; finish/release waits until the chunk closes
+            if (h.broken()) return error.PeerDown;
+        }
+    }
+
+    /// A complete chunk (or ordered abort) releases and finishes decoders
+    /// that settled during a park. Otherwise an empty core could strand them.
+    fn finishSlices(h: *LaneHost) !void {
+        try h.core.settle();
+        if (h.broken()) return error.PeerDown;
+        var i: usize = 0;
+        while (i < h.admitted.items.len) {
+            const job = h.admitted.items[i];
+            if (job == h.filling or job.prefilled == null or !job.stream.finished) { i += 1; continue; }
+            if (!h.deliver(job)) i += 1; // a finished job left `admitted` inside deliver
+            if (h.broken()) return error.PeerDown;
+        }
     }
 
     fn betweenWanted(ptr: *anyopaque) bool {
@@ -838,11 +905,7 @@ pub const LaneHost = struct {
                         i += 1;
                         continue;
                     }
-                    if (h.deliver(job)) {
-                        h.lock();
-                        _ = h.admitted.orderedRemove(i);
-                        h.unlock();
-                    } else i += 1;
+                    if (!h.deliver(job)) i += 1; // a finished job left `admitted` inside deliver
                     if (h.broken()) return error.PeerDown;
                 }
                 h.noteLive();
@@ -949,7 +1012,7 @@ pub const LaneHost = struct {
             h.send(job);
             return true;
         }
-        if (h.deliver(job)) h.remove(job);
+        _ = h.deliver(job);
         return true;
     }
 
@@ -1142,11 +1205,17 @@ pub const LaneHost = struct {
             };
             if (h.broken()) return;
             break :blk b.vtable.prefill_step.?(b.ptr, &job.stream) catch |err| {
+                if (h.peer_monitor) |*monitor| monitor.signal(err);
+                if (!h.broken()) h.finishSlices() catch {};
                 h.fillFailed(job, err);
                 return;
             };
         };
         if (h.broken()) return;
+        h.finishSlices() catch |err| {
+            h.fillFailed(job, err);
+            return;
+        };
         job.reported(); // restore ownership has transferred before any later admission may evict the entry
         if (!done) return;
         b.vtable.prefill_end.?(b.ptr, &job.stream);
@@ -1156,7 +1225,7 @@ pub const LaneHost = struct {
         };
         if (h.broken()) return;
         h.prefilled(job, job.began);
-        if (h.deliver(job)) h.remove(job);
+        _ = h.deliver(job);
     }
 
     fn fillFailed(h: *LaneHost, job: *Job, err: anyerror) void {
@@ -1190,9 +1259,10 @@ pub const LaneHost = struct {
         if (h.share.debt_ns > 0 and h.core.runnableCount() > 0) return;
         const decoding = h.core.runnableCount() > 0;
         const before = std.Io.Clock.awake.now(h.io).toNanoseconds();
+        h.slice_decode_ns = 0;
         h.fillAt(job);
         if (h.broken()) return;
-        h.share.stepped(@intCast(std.Io.Clock.awake.now(h.io).toNanoseconds() - before), decoding);
+        h.share.sliced(@intCast(std.Io.Clock.awake.now(h.io).toNanoseconds() - before), h.slice_decode_ns, decoding);
     }
 
     fn broken(h: *LaneHost) bool {
@@ -1268,12 +1338,7 @@ pub const LaneHost = struct {
         while (i < h.admitted.items.len) {
             const job = h.admitted.items[i];
             if (job.prefilled == null) { i += 1; continue; }
-            if (h.deliver(job)) {
-                h.lock();
-                _ = h.admitted.orderedRemove(i);
-                h.fillGauges();
-                h.unlock();
-            } else i += 1;
+            if (!h.deliver(job)) i += 1; // a finished job left `admitted` inside deliver
             if (h.broken()) return true;
         }
         return true;
@@ -1359,17 +1424,49 @@ pub const LaneHost = struct {
             if (room) |_| {
                 if (store.restoreBeginMedia(p, key, tierMedia(r))) |rs| {
                     h.lock();
+                    job.room_since = null;
                     h.loading.appendAssumeCapacity(.{ .job = job, .restore = rs, .since = now });
                     h.unlock();
                     h.host_counts.restore_waits += 1;
                     return true;
                 } else |err| {
                     if (h.peer_monitor) |*monitor| monitor.signal(err);
+                    if (!h.broken() and err == error.ContextFull and h.tier.room_wait_ns > 0 and
+                        h.kv_parts == null and h.residentCount(null) > 0)
+                    {
+                        h.lock();
+                        // Removal left a slot, but concurrent submit may have filled it. Failure retains the
+                        // ordinary memory fallback; never drop or duplicate detached request ownership.
+                        if (h.queued.insert(h.gpa, 0, job)) |_| {
+                            if (job.room_since == null) {
+                                job.room_since = now;
+                                h.host_counts.restore_room_waits += 1;
+                            }
+                            job.room_retry_at = now + poll_ns;
+                            job.tried_disk = false;
+                            h.unlock();
+                            return true;
+                        } else |_| {}
+                        h.unlock();
+                    }
+                    job.room_since = null;
                     note("reading {d} kept tokens from disk did not start ({s}); prefilling", .{ p.at, @errorName(err) });
                 }
             } else |_| {}
         };
+        job.room_since = null;
         return false;
+    }
+
+    /// Caller holds the host lock. Retire each bound once, even while full_wait/decode debt prevents admission.
+    fn expireRoomWaits(h: *LaneHost, now: i96) void {
+        for (h.queued.items) |job| {
+            const since = job.room_since orelse continue;
+            if (now - since < h.tier.room_wait_ns) continue;
+            job.room_since = null;
+            job.tried_disk = true;
+            h.host_counts.restore_room_expiries += 1;
+        }
     }
 
     /// A woken job to the ready list (the lock held; released here). Out of memory fails it alone.
@@ -1545,6 +1642,8 @@ pub const LaneHost = struct {
             t.spill = store.tierCounts();
         }
         const hc = h.host_counts;
+        t.restore_room_waits = hc.restore_room_waits;
+        t.restore_room_expiries = hc.restore_room_expiries;
         t.restore_waits = hc.restore_waits;
         t.restore_wait_timeouts = hc.restore_wait_timeouts;
         t.restore_wait_ns = hc.restore_wait_ns;
@@ -3210,4 +3309,336 @@ test "FR01 partial terminal open and released finished control drain once" {
     try std.testing.expectEqual(@as(usize, 2), seen.done);
     try std.testing.expectEqual(@as(usize, 0), core.live.items.len);
     try std.testing.expectEqual(@as(usize, 0), target.lanes.count());
+}
+
+
+// Single-threaded fake backend + durable tier: no timing races or GPU dependencies.
+const RoomRig = struct {
+    cfg: lanes.Config,
+    target: lanes.fake.Fake,
+    clock: lanes.fake.FixedClock = .{},
+    core: lanes.Engine,
+    store: pc.Store,
+    tier: @import("prompt_cache_fake_tier.zig").FakeTier,
+    host: LaneHost,
+    decoder: lanes.Stream,
+    const a = std.testing.allocator;
+    const key = [_]u32{ 3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 7, 7, 5, 3, 8, 8 };
+    const Reply = struct {
+        cached: ?u32 = null,
+        done: ?Reason = null,
+        tokens: std.ArrayList(u32) = .empty,
+        fn event(ptr: *anyopaque, _: Id, e: *const Event) void {
+            const b: *Reply = @ptrCast(@alignCast(ptr));
+            switch (e.*) {
+                .prefilled => |v| b.cached = v,
+                .finished => |v| b.done = v.reason,
+                .tokens => |v| b.tokens.appendSlice(a, v) catch unreachable,
+            }
+        }
+        fn sink(b: *Reply) Sink { return .{ .ctx = b, .event = event }; }
+        fn deinit(b: *Reply) void { b.tokens.deinit(a); }
+    };
+    fn bytes(_: *anyopaque, at: u32) u64 { return 64 + 4 * @as(u64, at); }
+    fn save(p: *anyopaque, owner: ?*anyopaque, at: u32) !pc.Saved {
+        const f: *lanes.fake.Fake = @ptrCast(@alignCast(p));
+        return f.save(@ptrCast(@alignCast(owner.?)), at);
+    }
+    fn restore(_: *anyopaque, _: ?*anyopaque, _: pc.Saved) !void { return error.BackendRestores; }
+    fn drop(p: *anyopaque, saved: pc.Saved) void {
+        const f: *lanes.fake.Fake = @ptrCast(@alignCast(p)); f.drop(saved);
+    }
+    fn pack(_: *anyopaque, alloc: Allocator, saved: pc.Saved) ![]u8 {
+        const list: *std.ArrayList(u32) = @ptrCast(@alignCast(saved));
+        return alloc.dupe(u8, std.mem.sliceAsBytes(list.items));
+    }
+    fn unpack(_: *anyopaque, data: []const u8) !pc.Saved {
+        const list = try a.create(std.ArrayList(u32));
+        errdefer a.destroy(list);
+        list.* = .empty;
+        try list.resize(a, data.len / 4);
+        @memcpy(std.mem.sliceAsBytes(list.items), data);
+        return list;
+    }
+    fn create(ms: u32) !*RoomRig {
+        const x = try a.create(RoomRig);
+        x.* = .{ .cfg = undefined, .target = .{ .gpa = a }, .core = undefined, .store = undefined,
+            .tier = .{ .gpa = a, .codec = .{ .ctx = x, .pack = pack, .unpack = unpack } },
+            .host = undefined, .decoder = undefined };
+        x.cfg = try lanes.Config.init(a, .{ .exact_width = 8, .hidden_rows = true }, 8, 7);
+        x.core = lanes.Engine.init(a, &x.cfg, x.target.backend(), x.clock.clock());
+        x.store = pc.Store.init(a, .{ .ptr = &x.target, .vtable = &.{ .bytes = bytes, .save = save, .restore = restore, .drop = drop } }, .{ .min_gap = 4, .min_prompt = 0 }, 1 << 20);
+        x.store.setTier(x.tier.tier(), 0);
+        x.host = LaneHost.init(a, std.testing.io, &x.core, .{ .lanes = 4 });
+        x.host.cache = &x.store;
+        x.host.configure(.{ .room_wait_ms = ms });
+        x.host.share.p = 1;
+        x.host.interleave_ns = 0;
+        x.decoder = try lanes.Stream.init(a, .{ .id = "resident", .prompt = &.{ 2, 7, 1, 8 }, .max_new = 1000 });
+        try x.core.addStream(&x.decoder);
+        _ = try x.tier.put(key[0..8], 8, std.mem.sliceAsBytes(key[0..8]), 0, 0, false);
+        x.tier.begin_error = error.ContextFull;
+        return x;
+    }
+    fn destroy(x: *RoomRig) void {
+        x.host.closeAll();
+        x.host.stop();
+        x.core.discard(&x.decoder);
+        x.decoder.deinit(a);
+        x.store.deinit();
+        x.tier.deinit();
+        x.core.deinit();
+        x.target.deinit();
+        x.cfg.deinit(a);
+        a.destroy(x);
+    }
+    fn submit(x: *RoomRig, id: Id, req: *const Request, out: *Reply) !void {
+        try x.host.engine().submit(id, req, out.sink());
+    }
+    fn retry(x: *RoomRig) void {
+        if (x.host.queued.items.len > 0) x.host.queued.items[0].room_retry_at = 0;
+    }
+};
+
+test "restore room refusal then room restores exact tokens without double reservation" {
+    const x = try RoomRig.create(30_000);
+    defer x.destroy();
+    var b: RoomRig.Reply = .{};
+    defer b.deinit();
+    var c: RoomRig.Reply = .{};
+    defer c.deinit();
+    const req: Request = .{ .prompt = &RoomRig.key, .max_tokens = 4, .history_len = 14 };
+    try x.submit(1, &req, &b);
+    try x.submit(2, &req, &c);
+    x.host.admitBatch();
+    try std.testing.expectEqual(@as(usize, 2), x.host.queued.items.len);
+    try std.testing.expectEqual(@as(u64, 1), x.host.host_counts.restore_room_waits);
+    try std.testing.expect(!x.host.queued.items[0].tried_disk);
+    try std.testing.expectEqual(@as(usize, 0), x.store.restoring.items.len);
+    const since = x.host.queued.items[0].room_since;
+    x.retry();
+    x.host.admitBatch();
+    try std.testing.expectEqual(since, x.host.queued.items[0].room_since);
+    try std.testing.expectEqual(@as(u64, 1), x.host.host_counts.restore_room_waits);
+    // Decoders continue during refusal.
+    const before = x.decoder.context.items.len;
+    _ = x.host.runIteration();
+    try std.testing.expect(x.decoder.context.items.len > before);
+    x.tier.begin_error = null;
+    x.retry();
+    x.host.admitBatch(); // whole-pass mode parks one per decoder round
+    x.host.admitBatch();
+    try std.testing.expectEqual(@as(usize, 2), x.host.loading.items.len);
+    try std.testing.expectEqual(@as(usize, 1), x.store.restoring.items.len);
+    try std.testing.expectEqual(@as(u64, 1), x.store.stats.restores_shared);
+    for (0..100) |_| {
+        if (b.done != null and c.done != null) break;
+        _ = x.host.runIteration();
+    }
+    try std.testing.expectEqual(@as(?Reason, .length), b.done);
+    try std.testing.expectEqual(@as(?Reason, .length), c.done);
+    try std.testing.expectEqual(@as(?u32, 8), b.cached);
+    try std.testing.expectEqual(@as(?u32, 14), c.cached); // first request already kept the longer prefix
+    try std.testing.expectEqualSlices(u32, b.tokens.items, c.tokens.items);
+    var history: std.ArrayList(u32) = .empty;
+    defer history.deinit(RoomRig.a);
+    try history.appendSlice(RoomRig.a, &RoomRig.key);
+    for (b.tokens.items) |token| {
+        try std.testing.expectEqual(lanes.fake.next(history.items, null, history.items.len), token);
+        try history.append(RoomRig.a, token);
+    }
+    try std.testing.expectEqual(@as(u64, 0), x.host.host_counts.restore_room_expiries);
+}
+
+test "restore room expiry is once only under decode debt and full wait then unblocks second request" {
+    const x = try RoomRig.create(1);
+    defer x.destroy();
+    var b: RoomRig.Reply = .{}; defer b.deinit();
+    var c: RoomRig.Reply = .{}; defer c.deinit();
+    const req: Request = .{ .prompt = &RoomRig.key, .max_tokens = 1 };
+    const other: Request = .{ .prompt = &.{ 8, 2, 8, 4 }, .max_tokens = 1 };
+    try x.submit(1, &req, &b);
+    try x.submit(2, &other, &c);
+    x.host.admitBatch();
+    const job = x.host.queued.items[0];
+    job.room_since = std.Io.Clock.awake.now(x.host.io).toNanoseconds() - 2 * std.time.ns_per_ms;
+    x.host.full_wait = 1;
+    x.host.share.debt_ns = 1000;
+    try std.testing.expect(!x.host.admitOne());
+    try std.testing.expect(job.tried_disk);
+    try std.testing.expect(job.room_since == null);
+    try std.testing.expect(!x.host.admitOne());
+    try std.testing.expectEqual(@as(u64, 1), x.host.host_counts.restore_room_expiries);
+    x.host.full_wait = null;
+    x.host.share.debt_ns = 0;
+    for (0..30) |_| { if (b.done != null and c.done != null) break; _ = x.host.runIteration(); }
+    try std.testing.expectEqual(@as(?Reason, .length), b.done);
+    try std.testing.expectEqual(@as(?Reason, .length), c.done);
+    try std.testing.expectEqual(@as(?u32, 0), b.cached);
+    try std.testing.expectEqual(@as(u64, 0), x.store.stats.restores_begun);
+}
+
+test "restore room cancellation releases front and never cancels an unstarted restore" {
+    const x = try RoomRig.create(30_000);
+    defer x.destroy();
+    var b: RoomRig.Reply = .{}; defer b.deinit();
+    var c: RoomRig.Reply = .{}; defer c.deinit();
+    const req: Request = .{ .prompt = &RoomRig.key, .max_tokens = 1 };
+    const other: Request = .{ .prompt = &.{ 8, 2, 8, 4 }, .max_tokens = 1 };
+    try x.submit(1, &req, &b);
+    try x.submit(2, &other, &c);
+    x.host.admitBatch();
+    x.host.engine().cancel(1);
+    x.host.takeCancels();
+    try std.testing.expectEqual(@as(?Reason, .cancelled), b.done);
+    for (0..30) |_| { if (c.done != null) break; _ = x.host.runIteration(); }
+    try std.testing.expectEqual(@as(?Reason, .length), c.done);
+    try std.testing.expectEqual(@as(u64, 0), x.store.stats.restores_cancelled);
+    try std.testing.expectEqual(@as(u64, 0), x.host.host_counts.restore_room_expiries);
+}
+
+test "restore room flag off no resident and non-room errors preserve immediate fallback" {
+    for (0..4) |mode| {
+        const x = try RoomRig.create(if (mode == 0) 0 else 30_000);
+        defer x.destroy();
+        var b: RoomRig.Reply = .{}; defer b.deinit();
+        if (mode == 1) x.core.discard(&x.decoder);
+        if (mode == 2) x.tier.begin_error = error.PointMissing;
+        if (mode == 3) x.host.kv_parts = .{ .ctx = x, .read = struct {
+            fn read(_: *anyopaque, out: *lanes.kv_parts.Stats) void { out.* = .{}; }
+        }.read };
+        const req: Request = .{ .prompt = &RoomRig.key, .max_tokens = 1 };
+        try x.submit(1, &req, &b);
+        for (0..30) |_| { if (b.done != null) break; _ = x.host.runIteration(); }
+        try std.testing.expectEqual(@as(?Reason, .length), b.done);
+        try std.testing.expectEqual(@as(?u32, 0), b.cached);
+        try std.testing.expectEqual(@as(u64, 0), x.host.host_counts.restore_room_waits);
+        try std.testing.expectEqual(@as(u64, 0), x.host.host_counts.restore_room_expiries);
+    }
+}
+
+test "restore room waits for suspended fill then falls back when no resident can release room" {
+    const x = try RoomRig.create(30_000);
+    defer x.destroy();
+    x.core.discard(&x.decoder);
+    x.target.prefill_chunks = 4;
+    x.core.backend = x.target.stepped();
+    var resident: RoomRig.Reply = .{}; defer resident.deinit();
+    var waiting: RoomRig.Reply = .{}; defer waiting.deinit();
+    const rows: [1024]u32 = @splat(8);
+    const fill: Request = .{ .prompt = &rows, .max_tokens = 1 };
+    const req: Request = .{ .prompt = &RoomRig.key, .max_tokens = 1 };
+    try x.submit(1, &fill, &resident);
+    try std.testing.expect(x.host.admitOne());
+    x.host.fillAt(x.host.admitted.items[0]);
+    try std.testing.expectEqual(@as(usize, 0), x.core.activeCount());
+    try std.testing.expectEqual(@as(usize, 1), x.host.residentCount(null));
+    try x.submit(2, &req, &waiting);
+    try std.testing.expect(!x.host.admitOne());
+    try std.testing.expectEqual(@as(u64, 1), x.host.host_counts.restore_room_waits);
+    x.host.engine().cancel(1);
+    x.host.takeCancels();
+    try std.testing.expectEqual(@as(usize, 0), x.host.residentCount(null));
+    // No timer wait now: impossible placement cannot leave an idle host stalled.
+    try std.testing.expect(x.host.admitOne());
+    try std.testing.expectEqual(@as(usize, 0), x.host.queued.items.len);
+    for (0..30) |_| { if (waiting.done != null) break; _ = x.host.runIteration(); }
+    try std.testing.expectEqual(@as(?Reason, .length), waiting.done);
+    try std.testing.expectEqual(@as(?u32, 0), waiting.cached);
+    try std.testing.expectEqual(@as(u64, 0), x.host.host_counts.restore_room_expiries);
+}
+
+test "prefill slice parks decode only with terminal custody and cancellation" {
+    for ([_]bool{ false, true }) |cancel_fill| {
+        const gpa = std.testing.allocator;
+        var cfg = try lanes.Config.init(gpa, .{ .exact_width = 8, .hidden_rows = true }, 8, 7);
+        defer cfg.deinit(gpa);
+        var target: lanes.fake.Fake = .{ .gpa = gpa };
+        defer target.deinit();
+        var clock: lanes.fake.FixedClock = .{};
+        var core = lanes.Engine.init(gpa, &cfg, target.stepped(), clock.clock());
+        defer core.deinit();
+        var host = LaneHost.init(gpa, std.testing.io, &core, .{ .lanes = 3 });
+        defer host.stop();
+        const Watch = struct {
+            host: *LaneHost,
+            target: *lanes.fake.Fake,
+            cancel_fill: bool,
+            parks: usize = 0,
+            release_at: usize = 0,
+            good: bool = true,
+            tokens: [2]std.ArrayList(u32) = @splat(.empty),
+            done: usize = 0,
+            fn event(ctx: *anyopaque, id: Id, ev: *const Event) void {
+                const w: *@This() = @ptrCast(@alignCast(ctx));
+                switch (ev.*) {
+                    .tokens => |ts| if (id <= 2) {
+                        w.tokens[id - 1].appendSlice(std.testing.allocator, ts) catch unreachable;
+                    },
+                    .finished => w.done += 1,
+                    else => {},
+                }
+            }
+            fn park(ctx: *anyopaque, _: *lanes.Stream) void {
+                const w: *@This() = @ptrCast(@alignCast(ctx));
+                if (w.parks == 0) w.release_at = w.target.release_calls;
+                w.good = w.good and w.target.release_calls == w.release_at;
+                w.good = w.good and w.host.queued.items.len == 1;
+                w.parks += 1;
+                if (w.cancel_fill and w.parks == 2) w.host.engine().cancel(2);
+            }
+        };
+        var watch: Watch = .{ .host = &host, .target = &target, .cancel_fill = cancel_fill };
+        defer for (&watch.tokens) |*ts| ts.deinit(gpa);
+        const prompt_a = [_]u32{ 2, 7, 1, 8 };
+        const prompt_b: [1024]u32 = @splat(5);
+        const req_a: Request = .{ .prompt = &prompt_a, .max_tokens = 3 };
+        const req_b: Request = .{ .prompt = &prompt_b, .max_tokens = 5 };
+        const req_c: Request = .{ .prompt = &prompt_a, .max_tokens = 1 };
+        try host.engine().submit(1, &req_a, .{ .ctx = &watch, .event = Watch.event });
+        host.admitBatch();
+        host.runFills(); // decoder is resident, but no round has run
+        try host.engine().submit(2, &req_b, .{ .ctx = &watch, .event = Watch.event });
+        host.admitBatch();
+        try host.engine().submit(3, &req_c, .{ .ctx = &watch, .event = Watch.event });
+        target.prefill_slices = 5;
+        target.slice_hook = Watch.park;
+        target.slice_ctx = &watch;
+        const filling = host.admitted.items[1];
+        host.fillAt(filling); // one chunk, with four possible parks
+        try std.testing.expect(watch.good);
+        try std.testing.expectEqual(@as(usize, if (cancel_fill) 2 else 4), watch.parks);
+        try std.testing.expect(!core.hold_finished);
+        try std.testing.expectEqual(@as(usize, 1), host.queued.items.len);
+        target.prefill_slices = 0;
+        target.slice_hook = null;
+        var rounds: usize = 0;
+        while (watch.done < 3 and rounds < 100) : (rounds += 1) _ = host.runIteration();
+        try std.testing.expectEqual(@as(usize, 3), watch.done);
+        for ([_]*const Request{ &req_a, &req_b }, &watch.tokens, 0..) |req, *ts, i| {
+            if (i == 1 and cancel_fill) {
+                try std.testing.expectEqual(@as(usize, 0), ts.items.len);
+                continue;
+            }
+            var history: std.ArrayList(u32) = .empty;
+            defer history.deinit(gpa);
+            try history.appendSlice(gpa, req.prompt);
+            try std.testing.expectEqual(req.max_tokens, ts.items.len);
+            for (ts.items) |token| {
+                try std.testing.expectEqual(lanes.fake.next(history.items, req.sampling, history.items.len), token);
+                try history.append(gpa, token);
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 0), target.lanes.count());
+    }
+}
+
+test "prefill slice fatal peer fences decode and leaves cleanup to the owner" {
+    const Probe = struct { fn failed(_: *anyopaque) bool { return true; } };
+    var byte: u8 = 0;
+    var h: LaneHost = undefined;
+    h.peer_monitor = null;
+    h.device_probe = .{ .ctx = &byte, .failed = Probe.failed };
+    try std.testing.expect(!LaneHost.sliceWanted(&h));
+    try std.testing.expectError(error.PeerDown, LaneHost.sliceBetween(&h));
 }

@@ -163,7 +163,9 @@ pub fn allocate(e: *Engine, plans: []Plan) !void {
     const a = e.arena.allocator();
     const fixed = try a.alloc(u32, plans.len);
     const probs = try a.alloc([]const f64, plans.len);
-    for (plans, fixed, probs) |p, *fx, *pr| {
+    const raw = try a.alloc([]const f64, plans.len);
+    @memset(raw, &.{});
+    for (plans, fixed, probs, raw) |p, *fx, *pr, *rw| {
         const n = p.count();
         if (p.kind == .forced or n == 0) {
             fx.* = 1 + @as(u32, @intCast(if (p.kind == .forced) n else 0));
@@ -173,21 +175,28 @@ pub fn allocate(e: *Engine, plans: []Plan) !void {
             pr.* = try alloc.chainProbabilities(a, &.{e.cfg.copy_rate}, n);
         } else {
             fx.* = 1;
-            pr.* = try nodeChances(e, p.stream, n);
+            var from_head = false;
+            pr.* = try chancesFrom(e, p.stream, n, &from_head);
+            if (from_head and calEligible(e, p)) {
+                rw.* = pr.*;
+                if (!e.cfg.adaptive_learning) pr.* = try calibrated(a, rw.*, p.stream.calScale());
+            }
         }
     }
     const learner = try e.learningController();
     const counts = if (learner) |model| block: {
         const inputs = try a.alloc(adaptive.Input, plans.len);
-        for (inputs, plans, fixed, probs) |*input, p, fx, pr| input.* = .{
+        for (inputs, plans, fixed, probs, raw) |*input, p, fx, pr, rw| input.* = .{
             .key = @intFromPtr(p.stream), .context = p.stream.cache_len, .fixed = fx,
             .survivals = pr, .source = if (p.kind == .copy) .copy else .head,
             .sampled = if (p.stream.sampling) |sampling| sampling.temperature > 0 else false,
             .warm = p.stream.rounds > 1,
+            .survival_scale = if (rw.len > 0) p.stream.calScale() else null,
         };
         break :block try model.allocate(a, inputs, &e.cfg.shared_costs, e.rule.overheadMs(plans.len), e.cfg.batch_rows);
     } else try alloc.allocate(a, fixed, probs, &e.cfg.shared_costs, e.rule.overheadMs(plans.len), @max(plans.len, e.cfg.batch_rows));
-    for (plans, probs, counts) |*p, chances, c| {
+    for (plans, probs, counts, raw) |*p, chances, c, rw| {
+        if (e.cfg.draft_cal > 0) p.stream.predict(if (rw.len > 0) rw[0..c] else &.{});
         if (p.kind == .head) p.stream.granted = c;
         if (chances.len == 0 or c == chances.len) continue;
         if (c == 0) {
@@ -215,14 +224,39 @@ pub fn allocate(e: *Engine, plans: []Plan) !void {
 
 /// The head's chance for each held draft, else chain chances from the stream's per-depth acceptance.
 pub fn nodeChances(e: *Engine, s: *Stream, n: usize) ![]const f64 {
+    var from_head = false;
+    return chancesFrom(e, s, n, &from_head);
+}
+
+fn chancesFrom(e: *Engine, s: *Stream, n: usize, from_head: *bool) ![]const f64 {
+    from_head.* = false;
     const a = e.arena.allocator();
     if (e.cfg.node_probabilities) {
         if (e.backend.vtable.probabilities) |chances| {
             const out = try a.alloc(f64, n);
-            if (try chances(e.backend.ptr, s, out)) return out;
+            if (try chances(e.backend.ptr, s, out)) {
+                from_head.* = true;
+                return out;
+            }
         }
     }
     return alloc.chainProbabilities(a, try e.rule.rates(who(s)), n);
+}
+
+/// Cumulative chances scaled by a survival: the i-th (1-based) lands only if i drafts each survive.
+pub fn calibrated(a: std.mem.Allocator, chances: []const f64, scale: f64) ![]const f64 {
+    const out = try a.alloc(f64, chances.len);
+    var factor: f64 = 1.0;
+    for (out, chances) |*o, c| {
+        factor *= scale;
+        o.* = c * factor;
+    }
+    return out;
+}
+
+
+fn calEligible(e: *const Engine, p: Plan) bool {
+    return e.cfg.draft_cal > 0 and p.kind == .head and p.parents == null and p.stream.grammar == null and p.masks.len == 0 and p.grammar_from == 0 and p.branch_from == 0;
 }
 
 /// Walk a stream's planned drafts through its grammar, mask its rows and grow a lone chain with forced text.

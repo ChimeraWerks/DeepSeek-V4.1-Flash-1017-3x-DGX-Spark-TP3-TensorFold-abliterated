@@ -1834,20 +1834,108 @@ const LoopOut = struct {
     }
 };
 
+const LoopListener = struct {
+    fd: ?std.c.fd_t,
+    port: u16,
+
+    fn open(port: u16) !LoopListener {
+        const c = std.c;
+        const fd = c.socket(c.AF.INET, c.SOCK.STREAM, 0);
+        if (fd < 0) return error.SocketFailed;
+        errdefer _ = c.close(fd);
+        var address: c.sockaddr.in = .{ .port = std.mem.nativeToBig(u16, port), .addr = @bitCast([4]u8{ 127, 0, 0, 1 }) };
+        if (c.bind(fd, @ptrCast(&address), @sizeOf(c.sockaddr.in)) != 0) return error.BindFailed;
+        var len: c.socklen_t = @sizeOf(c.sockaddr.in);
+        if (c.getsockname(fd, @ptrCast(&address), &len) != 0) return error.BindFailed;
+        if (c.listen(fd, 1) != 0) return error.ListenFailed;
+        return .{ .fd = fd, .port = std.mem.bigToNative(u16, address.port) };
+    }
+
+    fn accept(s: LoopListener) !link.Link {
+        const c = std.c;
+        var fds = [_]c.pollfd{.{ .fd = s.fd.?, .events = c.POLL.IN, .revents = 0 }};
+        if (c.poll(&fds, 1, 10000) <= 0) return error.AcceptFailed;
+        const fd = c.accept(s.fd.?, null, null);
+        if (fd < 0) return error.AcceptFailed;
+        const one: c_int = 1;
+        _ = c.setsockopt(fd, c.IPPROTO.TCP, std.posix.TCP.NODELAY, std.mem.asBytes(&one), @sizeOf(c_int));
+        return .{ .fd = fd };
+    }
+
+    fn close(s: *LoopListener) void {
+        if (s.fd) |fd| _ = std.c.close(fd);
+        s.fd = null;
+    }
+};
+
+/// The connection and its worker share one lifetime, including assertion failures.
+const LoopPair = struct {
+    peer: *LoopPeer,
+    thread: ?std.Thread,
+    leader: ?link.Link,
+
+    fn start(config: LoopPeer, port: u16) !LoopPair {
+        var listener = try LoopListener.open(port);
+        defer listener.close();
+        const gpa = testing.allocator;
+        const peer = try gpa.create(LoopPeer);
+        errdefer gpa.destroy(peer);
+        peer.* = config;
+        peer.port = listener.port;
+        const thread = try std.Thread.spawn(.{}, LoopPeer.run, .{peer});
+        const leader = listener.accept() catch |err| {
+            listener.close();
+            thread.join();
+            if (peer.fol) |f| f.deinit();
+            peer.dev.deinit();
+            return err;
+        };
+        return .{ .peer = peer, .thread = thread, .leader = leader };
+    }
+
+    fn join(p: *LoopPair) void {
+        if (p.thread) |thread| thread.join();
+        p.thread = null;
+    }
+
+    fn closeAndJoin(p: *LoopPair) void {
+        if (p.leader) |*l| {
+            _ = std.c.shutdown(l.fd, std.c.SHUT.RDWR);
+            l.close();
+        }
+        p.leader = null;
+        p.join();
+    }
+
+    fn deinit(p: *LoopPair) void {
+        p.closeAndJoin();
+        if (p.peer.fol) |f| f.deinit();
+        p.peer.dev.deinit();
+        testing.allocator.destroy(p.peer);
+    }
+};
+
+test "loopback fixture closes and joins a blocked peer before returning" {
+    var pair = try LoopPair.start(.{ .port = 0, .cfg = sharded, .settings = .{}, .dev = .{ .gpa = testing.allocator } }, 0);
+    defer pair.deinit();
+    pair.closeAndJoin();
+    try testing.expect(pair.thread == null);
+    try testing.expectEqual(@as(?anyerror, error.PeerDown), pair.peer.err);
+}
+
+test "loopback fixture refuses an occupied port before starting a peer" {
+    var listener = try LoopListener.open(0);
+    defer listener.close();
+    try testing.expectError(error.BindFailed, LoopPair.start(.{ .port = 0, .cfg = sharded, .settings = .{}, .dev = .{ .gpa = testing.allocator } }, listener.port));
+}
+
 test "over a loopback link: hello, layouts, parts and checks; each transfer asks the follower's side (shard_xfer) before finishing; a failed local copy finishes failed" {
     const gpa = testing.allocator;
-    var b: [2]u8 = undefined;
-    testing.io.random(&b);
-    const port = 30000 + std.mem.readInt(u16, &b, .little) % 20000;
-    const peer = try gpa.create(LoopPeer);
-    defer gpa.destroy(peer);
     const settings: Settings = .{ .twins = false, .check_rounds = 2, .stats_ms = 1000 };
-    peer.* = .{ .port = port, .cfg = sharded, .settings = settings, .dev = .{ .gpa = gpa }, .owner_rounds = 42 };
-    defer peer.dev.deinit();
-    defer if (peer.fol) |f| f.deinit();
-    const th = try std.Thread.spawn(.{}, LoopPeer.run, .{peer});
-    var l = try link.Link.listen(.{ 127, 0, 0, 1 }, port);
-    defer l.close();
+    var pair = try LoopPair.start(.{ .port = 0, .cfg = sharded, .settings = settings, .dev = .{ .gpa = gpa }, .owner_rounds = 42 }, 0);
+    defer pair.deinit();
+    const peer = pair.peer;
+    const l = pair.leader.?;
     var out: LoopOut = .{ .l = l };
     var dev0: FakeDev = .{ .gpa = gpa };
     defer dev0.deinit();
@@ -1896,7 +1984,7 @@ test "over a loopback link: hello, layouts, parts and checks; each transfer asks
     try testing.expectEqual(kv.counts.plans, st.rank[0].plans);
     try testing.expectEqual(@as(u64, 0), st.rank[0].transfers_failed);
     try l.send(&.{}); // done
-    th.join();
+    pair.join();
     try testing.expectEqual(@as(?anyerror, null), peer.err);
     const fol = peer.fol.?;
     try testing.expectEqualSlices(u8, &kv.planner.digest(), &fol.planner.?.digest());
@@ -1907,17 +1995,10 @@ test "over a loopback link: hello, layouts, parts and checks; each transfer asks
 
 test "over a loopback link: a follower started with other shard switches is refused at hello, naming the field" {
     const gpa = testing.allocator;
-    var b: [2]u8 = undefined;
-    testing.io.random(&b);
-    const port = 30000 + std.mem.readInt(u16, &b, .little) % 20000;
-    const peer = try gpa.create(LoopPeer);
-    defer gpa.destroy(peer);
-    peer.* = .{ .port = port, .cfg = sharded, .settings = .{ .twins = false }, .dev = .{ .gpa = gpa } };
-    defer peer.dev.deinit();
-    defer if (peer.fol) |f| f.deinit();
-    const th = try std.Thread.spawn(.{}, LoopPeer.run, .{peer});
-    var l = try link.Link.listen(.{ 127, 0, 0, 1 }, port);
-    defer l.close();
+    var pair = try LoopPair.start(.{ .port = 0, .cfg = sharded, .settings = .{ .twins = false }, .dev = .{ .gpa = gpa } }, 0);
+    defer pair.deinit();
+    const peer = pair.peer;
+    const l = pair.leader.?;
     var out: LoopOut = .{ .l = l };
     var dev0: FakeDev = .{ .gpa = gpa };
     defer dev0.deinit();
@@ -1929,25 +2010,17 @@ test "over a loopback link: a follower started with other shard switches is refu
     try kv.lead(.{ .ctx = &out, .rw = LoopOut.rw }, &links, null, 78, shardExchange(0, 2, sharded, .{}));
     try testing.expectError(error.FingerprintMismatch, kv.start());
     try testing.expectEqual(@as(u16, @intFromEnum(fingerprint.Field.features)), kv.leader.?.broken.?.field);
-    th.join();
+    pair.join();
     try testing.expectEqual(@as(?anyerror, error.FingerprintMismatch), peer.err);
 }
 
 test "over a loopback link: with a fingerprint that does not carry the switches, shard_layout's carry/twins refuse the start" {
     const gpa = testing.allocator;
-    var b: [2]u8 = undefined;
-    testing.io.random(&b);
-    const port = 30000 + std.mem.readInt(u16, &b, .little) % 20000;
-    const peer = try gpa.create(LoopPeer);
-    defer gpa.destroy(peer);
-    // the follower runs with twins off, but its hello carries rank 0's exchange (as the spill side's full fingerprint
-    // would, without these switches): the layout reply is what catches it
-    peer.* = .{ .port = port, .cfg = sharded, .settings = .{ .twins = false }, .dev = .{ .gpa = gpa }, .fx = shardExchange(1, 2, sharded, .{}) };
-    defer peer.dev.deinit();
-    defer if (peer.fol) |f| f.deinit();
-    const th = try std.Thread.spawn(.{}, LoopPeer.run, .{peer});
-    var l = try link.Link.listen(.{ 127, 0, 0, 1 }, port);
-    defer l.close();
+    // The hello deliberately omits the follower's switches; shard_layout catches them.
+    var pair = try LoopPair.start(.{ .port = 0, .cfg = sharded, .settings = .{ .twins = false }, .dev = .{ .gpa = gpa }, .fx = shardExchange(1, 2, sharded, .{}) }, 0);
+    defer pair.deinit();
+    const peer = pair.peer;
+    const l = pair.leader.?;
     var out: LoopOut = .{ .l = l };
     var dev0: FakeDev = .{ .gpa = gpa };
     defer dev0.deinit();
@@ -1960,7 +2033,7 @@ test "over a loopback link: with a fingerprint that does not carry the switches,
     try testing.expectError(error.ShardLayoutMismatch, kv.start());
     try testing.expect(kv.leader.?.broken == null); // (refused at the start, nothing posted after the ask)
     try l.send(&.{}); // done
-    th.join();
+    pair.join();
     try testing.expectEqual(@as(?anyerror, null), peer.err);
 }
 

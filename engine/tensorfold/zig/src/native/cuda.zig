@@ -529,6 +529,8 @@ fn openWith(comptime F: type, a: Allocator, gpa: Allocator, io: std.Io, o: api.O
             if (@hasField(@TypeOf(sn), "tail_window")) h.snap_vt.tail_window = sn.tail_window;
             if (@hasField(@TypeOf(sn), "continuation_hint")) h.snap_vt.continuation_hint = sn.continuation_hint;
             if (@hasField(@TypeOf(sn), "adaptive_hint")) h.snap_vt.adaptive_hint = sn.adaptive_hint;
+            if (@hasField(@TypeOf(sn), "drop_many")) h.snap_vt.drop_many = sn.drop_many;
+            if (@hasField(@TypeOf(sn), "first_hint")) h.snap_vt.first_hint = sn.first_hint;
             if (@hasField(@TypeOf(sn), "ghost_range")) h.snap_vt.ghost_range = sn.ghost_range;
             h.cache = api.prompt_cache.Store.init(gpa, .{ .ptr = sn.ptr, .vtable = &h.snap_vt }, .{ .exact_end = if (@hasField(@TypeOf(sn), "exact_end")) sn.exact_end else false }, want);
             // Native physical eligibility is required even without a disk tier.

@@ -19,7 +19,9 @@ const model = @import("model.zig");
 const round = @import("round.zig");
 const draft = @import("draft.zig");
 const sampling = @import("sampling.zig");
+const keyed_draft = @import("keyed_draft.zig");
 const penalty_pool = @import("penalty_pool.zig");
+const greedy_head = @import("decode_greedy_head.zig");
 const link = @import("link.zig");
 const graph_vote = @import("graph_vote.zig");
 const cuda = @import("cuda");
@@ -33,6 +35,7 @@ const pressure = @import("kv_pressure.zig");
 const move_budget = @import("kv_move_budget.zig");
 const idle_relocation = @import("idle_relocation.zig");
 const idle_protocol = @import("idle_protocol.zig");
+const cache_batch = @import("cache_batch.zig");
 
 const be = lanes.backend;
 const Model = model.Model;
@@ -64,7 +67,7 @@ pub var logits_sha = false;
 /// shard_xfer/shard_finish, the digest checks). Both on together share one rank_wire Leader (Lanes.rw, rank 0) and
 /// one Follower a follower (PairFollower): one Tracker sees every frame of the pair. Kind 11 is the
 /// coordinated RDMA idle boundary (not the old, untracked spill notes); all ranks need this version.
-pub const Kind = enum(u8) { fill_begin = 1, fill_chunk = 2, verify = 3, pass = 4, snap_save = 5, snap_restore = 6, snap_drop = 7, fill_images = 8, done = 9, rank_wire = 10, idle_move = 12, fill_resume = 13, graph_vote_agree = 15, rdma_idle = 11 };
+pub const Kind = enum(u8) { fill_begin = 1, fill_chunk = 2, verify = 3, pass = 4, snap_save = 5, snap_restore = 6, snap_drop = 7, fill_images = 8, done = 9, rank_wire = 10, idle_move = 12, fill_resume = 13, graph_vote_agree = 15, fill_slice = 18, rdma_idle = 11, snap_drop_many = cache_batch.kind, pass_keyed = 17 };
 
 // Shared with the real follower loop; reserved/unknown outer kinds fail closed.
 fn decodeOuterKind(raw: u8) !Kind {
@@ -83,6 +86,9 @@ fn decodeOuterKind(raw: u8) !Kind {
             12 => .idle_move,
             13 => .fill_resume,
             15 => .graph_vote_agree,
+            cache_batch.kind => .snap_drop_many,
+            17 => .pass_keyed,
+            18 => .fill_slice,
             else => return error.BadFrame,
         };
 }
@@ -96,6 +102,41 @@ test "outer follower decoder accepts fill_resume 13 and rejects reserved kinds" 
 
 comptime {
     std.debug.assert(@backingInt(Kind.rank_wire) == @import("rank_wire.zig").lanes_kind);
+}
+
+const SliceFrame = struct {
+    abort: bool = false,
+    lo: u32 = 0,
+    hi: u32 = 0,
+    args: model.SliceArgs = .{ .start = 0, .n = 0, .replay = 0 },
+    next_rows: u32 = 0,
+};
+fn putSlice(w: *Wire, gpa: std.mem.Allocator, f: SliceFrame) !void {
+    try w.int(gpa, u8, @intFromBool(f.abort));
+    if (f.abort) return;
+    if (f.hi <= f.lo or f.args.n == 0) return error.BadSlice;
+    try w.int(gpa, u32, f.lo);
+    try w.int(gpa, u32, f.hi);
+    try w.int(gpa, u64, f.args.start);
+    try w.int(gpa, u32, @intCast(f.args.n));
+    try w.int(gpa, u64, f.args.replay);
+    try w.int(gpa, u32, f.next_rows);
+}
+fn getSlice(r: *Reader) !SliceFrame {
+    const op = try r.int(u8);
+    if (op > 1) return error.BadFrame;
+    if (op == 1) {
+        if (r.rest().len != 0) return error.BadFrame;
+        return .{ .abort = true };
+    }
+    const f: SliceFrame = .{
+        .lo = try r.int(u32),
+        .hi = try r.int(u32),
+        .args = .{ .start = @intCast(try r.int(u64)), .n = try r.int(u32), .replay = @intCast(try r.int(u64)) },
+        .next_rows = try r.int(u32),
+    };
+    if (f.hi <= f.lo or f.args.n == 0 or r.rest().len != 0) return error.BadFrame;
+    return f;
 }
 
 /// A frame being written.
@@ -124,6 +165,35 @@ pub const Wire = struct {
         w.buf.deinit(gpa);
     }
 };
+
+/// Present only when startup word[6] bit24 agreed. Off is byte-for-byte legacy.
+fn writeGreedyHeadMode(w: *Wire, gpa: std.mem.Allocator, enabled: bool, use_head: bool) !void {
+    if (!enabled) {
+        if (use_head) return error.BadGreedyHeadMode;
+        return;
+    }
+    try w.int(gpa, u8, @intFromBool(use_head));
+}
+
+fn readGreedyHeadMode(r: *Reader, enabled: bool, unsupported: bool) !bool {
+    if (!enabled) return false;
+    const mode = try r.int(u8);
+    if (mode > 1 or (mode == 1 and unsupported)) return error.BadGreedyHeadMode;
+    return mode == 1;
+}
+
+/// Present only when startup word[6] bit25 agreed. Zero keeps full logits.
+fn writeSampleHeadCount(w: *Wire, gpa: std.mem.Allocator, enabled: bool, count: usize) !void {
+    if (count > 64 or (!enabled and count != 0)) return error.BadGreedyHeadMode;
+    if (enabled) try w.int(gpa, u8, @intCast(count));
+}
+
+fn readSampleHeadCount(r: *Reader, enabled: bool, unsupported: bool) !usize {
+    if (!enabled) return 0;
+    const count = try r.int(u8);
+    if (count > 64 or (unsupported and count != 0)) return error.BadGreedyHeadMode;
+    return count;
+}
 
 /// A verify frame's window: slot, extent, first position, absorb, ids; TF_DS_KV_SHARD (`sharded`) adds its extent's
 /// part (u8) and generation (u64), so a follower refuses a round for a reused extent. Off, the bytes are as ever.
@@ -450,6 +520,7 @@ pub const Snap = struct {
     last_use: u64 = 0, loss_reason: u8 = 0,
     continuation_at: u64 = 0, continuation_state: u64 = 0,
     adaptive_density: u32 = 0, adaptive_at: u64 = 0,
+    first_completed_at: u64 = 0,
 };
 
 /// Kept states this long or longer say so in the log when they go stale (their prompts then run again from 0).
@@ -523,6 +594,7 @@ pub const Lanes = struct {
     short_reuse: bool = false,
     continuation_donors: bool = false,
     adaptive_prefix: bool = false,
+    first_continuation: bool = false,
     relocate_max_bytes: usize = 0,
     sample_workspace: sampling.Workspace = .{},
     masked: []f32 = &.{}, // reused full-logit rows for grammar masks
@@ -557,6 +629,7 @@ pub const Lanes = struct {
         if (std.c.getenv("TF_KV_SHORT_REUSE")) |v| ln.short_reuse = std.mem.eql(u8, std.mem.span(v), "1");
         if (std.c.getenv("TF_KV_CONTINUATION_DONOR")) |v| ln.continuation_donors = std.mem.eql(u8, std.mem.span(v), "1");
         if (std.c.getenv("TF_CACHE_ADAPTIVE_PREFIX")) |v| ln.adaptive_prefix = std.mem.eql(u8, std.mem.span(v), "1");
+        ln.first_continuation = cache_batch.Flags.fromEnv().first_continuation;
             if (std.c.getenv("TF_KV_RELOCATE_MAX_BYTES")) |v| {
                 const n = std.fmt.parseInt(usize, std.mem.sliceTo(v, 0), 10) catch 0;
                 ln.relocate_max_bytes = @min(n, pressure.hard_copy_bytes);
@@ -599,6 +672,7 @@ pub const Lanes = struct {
         .first = firstFn, .first_masked = firstMaskedFn, .held = heldFn, .queue = queueFn, .read = readFn,
         .verify = verifyFn, .keep = keepFn, .draft = draftFn,
         .probabilities = probabilitiesFn, .release = releaseFn, .token_pool = tokenPoolFn,
+        .begin_timing = beginTimingFn, .timing_clean = timingCleanFn,
     };
     const vt_stepping: be.Backend.VTable = blk: {
         var v = vt_whole;
@@ -624,6 +698,8 @@ pub const Lanes = struct {
         const drafting = self.m.drafting();
         return .{
             .adaptive_learning = self.adaptive_learning,
+            .draft_cal = self.m.draft_settings.weight,
+            .first_draft_depth = self.m.draft_settings.first_depth,
             .exact_width = window_rows,
             .gpu_tokens = false,
             .mtp = drafting,
@@ -640,6 +716,44 @@ pub const Lanes = struct {
             .draft_probabilities = drafting,
             .draft_streams = drafting,
         };
+    }
+
+    test "graph telemetry timing covers both caches and resets only at round boundary" {
+        var m: model.Model = undefined;
+        m.graphs = round.Graphs.init(std.testing.allocator, 128);
+        m.pgraphs = draft.PassGraphs.init(std.testing.allocator, 128);
+        m.graphs.?.telemetry.on = true;
+        m.pgraphs.?.telemetry.on = true;
+        var ln: Lanes = .{ .gpa = std.testing.allocator, .m = &m, .peer = null };
+        const be_test = ln.backend();
+        be_test.beginTiming();
+        try std.testing.expect(be_test.timingClean());
+        m.graphs.?.telemetry.miss();
+        m.pgraphs.?.telemetry.hit();
+        try std.testing.expect(!be_test.timingClean());
+        be_test.beginTiming();
+        try std.testing.expect(be_test.timingClean());
+        m.pgraphs.?.telemetry.miss();
+        m.graphs.?.telemetry.hit();
+        try std.testing.expect(!be_test.timingClean());
+        be_test.beginTiming();
+        try std.testing.expect(be_test.timingClean());
+        m.graphs = null;
+        m.pgraphs = null;
+        be_test.beginTiming();
+        try std.testing.expect(be_test.timingClean());
+    }
+
+    fn beginTimingFn(ptr: *anyopaque) void {
+        const m = of(ptr).m;
+        if (m.graphs) |*g| g.telemetry.begin();
+        if (m.pgraphs) |*g| g.telemetry.begin();
+    }
+
+    fn timingCleanFn(ptr: *anyopaque) bool {
+        const m = of(ptr).m;
+        return (if (m.graphs) |*g| g.telemetry.timingClean() else true) and
+            (if (m.pgraphs) |*g| g.telemetry.timingClean() else true);
     }
 
     fn of(ptr: *anyopaque) *Lanes {
@@ -1239,6 +1353,34 @@ pub const Lanes = struct {
         }
     }
 
+    fn fillSliced(self: *Lanes, s: *lanes.Stream, seq: []const i32, args: model.SliceArgs) !bool {
+        const m = self.m;
+        var lo: usize = 0;
+        while (true) {
+            const hi = model.sliceHi(m.eng.c.layers, m.prefill.slice_layers, lo);
+            if (try self.begin(.fill_slice)) {
+                try putSlice(&self.wire, self.gpa, .{ .lo = @intCast(lo), .hi = @intCast(hi), .args = args, .next_rows = @intCast(m.next_engram_rows) });
+                try self.flush();
+            }
+            const end = try m.fillSlice(seq[0 .. args.start + args.n], args, lo, hi);
+            if (end != .more) return end == .head;
+            lo = hi;
+            const b = s.between.?;
+            if (b.wanted(b.ptr)) {
+                m.joinAhead(); // shared Engram hashes and reader pool, not just row arrays
+                try b.run(b.ptr);
+            }
+            if (s.isCancelled()) {
+                if (try self.begin(.fill_slice)) {
+                    try putSlice(&self.wire, self.gpa, .{ .abort = true });
+                    try self.flush();
+                }
+                m.dropChunk();
+                return error.Cancelled;
+            }
+        }
+    }
+
     fn prefillStepFn(ptr: *anyopaque, s: *lanes.Stream) anyerror!bool {
         const self = of(ptr);
         const m = self.m;
@@ -1257,20 +1399,22 @@ pub const Lanes = struct {
         if (start < len) {
             const n = model.prefill128.nextRows(len, start, replay, m.compute_rows, s.reuse.marks);
             if (m.prefill.ae) m.next_engram_rows = model.prefill128.nextRows(len, start + n, replay, m.compute_rows, s.reuse.marks);
-            if (try self.begin(.fill_chunk)) {
+            const sliced = useLayerSlices(self.prefill_yield, m.prefill.slice_layers, self.kv != null, s.between != null);
+            if (!sliced) if (try self.begin(.fill_chunk)) {
                 try self.wire.int(gpa, u64, start);
                 try self.wire.int(gpa, u32, @intCast(n));
                 try self.wire.int(gpa, u64, replay);
                 if (m.prefill.ae) try self.wire.int(gpa, u32, @intCast(m.next_engram_rows));
                 try self.flush();
-            }
+            };
             if (self.spill) |t| t.bump(f.base + start, f.base + start + n);
             const l = self.streams.getPtr(s).?;
             if (self.kv) |k| k.planner.setPartial(l.id, true);
             defer if (self.kv) |k| k.planner.setPartial(l.id, false);
-            f.head = m.fillChunk(seq.items[0 .. start + n], start, n, replay) catch |err| {
+            f.head = (if (sliced) self.fillSliced(s, seq.items, .{ .start = start, .n = n, .replay = replay }) else m.fillChunk(seq.items[0 .. start + n], start, n, replay)) catch |err| {
                 // the followers may be waiting in this chunk's collectives: a rank-local Engram fault ends the pair
-                if (round.endsPair(err)) m.pairFault(err);
+                if (round.endsPair(err) or m.rs.live) m.pairFault(err);
+                m.dropChunk();
                 return err;
             };
             start += n;
@@ -1383,10 +1527,17 @@ pub const Lanes = struct {
         try self.roundWins(windows, &ids, &wins);
         const words = maskWords(m.cfg.tokenVocab()); // TP3 pads the physical head to 129408, grammar sees 129280
         const masked = for (windows) |w| { if (w.masks.len > 0) break true; } else false;
+        const use_head = greedy_head.eligible(m.decode_greedy_head, m.two != null, windows);
+        const sample_head_count = greedy_head.sampleCount(m.decode_sample_head and m.cand != 0, m.two != null, m.vocab, windows);
+        var head_custody: greedy_head.Custody = .{};
+        errdefer head_custody.failed(m) catch unreachable;
         const t0 = m.now();
         if (try self.begin(.verify)) {
             try self.wire.int(gpa, u32, @intCast(windows.len));
+            try writeGreedyHeadMode(&self.wire, gpa, m.decode_greedy_head, use_head);
+            try writeSampleHeadCount(&self.wire, gpa, m.decode_sample_head, sample_head_count);
             for (wins[0..windows.len]) |w| try writeWin(&self.wire, gpa, w, self.kv != null);
+            head_custody.active = use_head or sample_head_count != 0; // BEFORE even a partial peer send
             try self.flush();
         }
         const t1 = m.now();
@@ -1423,7 +1574,14 @@ pub const Lanes = struct {
             self.sample_workspace.penalty_cache = null;
             if (active_pool) |p| p.finish(); // also on GPU/transport/sampling failure
         }
-        try m.verify(rows, self.built.absorb[0..windows.len]);
+        // Registered after worker cleanup: pair-end before any unwind/drain.
+        head_custody.active = use_head or sample_head_count != 0;
+        errdefer head_custody.failed(m) catch unreachable;
+        if (sample_head_count != 0)
+            try greedy_head.verifySample(m, rows, self.built.absorb[0..windows.len], sample_head_count)
+        else
+            try greedy_head.verify(m, rows, self.built.absorb[0..windows.len], use_head);
+        head_custody.active = false; // output and absorb are stream-fenced on every rank
         const t2 = m.now();
         // The windows without a grammar take the path they would take alone: every one greedy, the device's argmax (R
         // tokens back); else bounded candidates, or the logits for the host's draws. A grammar window reads only its own
@@ -1545,6 +1703,9 @@ pub const Lanes = struct {
         var q0: [max_streams]i64 = undefined;
         var slots: [max_streams]i64 = undefined;
         var depths: [max_streams]usize = undefined;
+        var seeds: [max_streams]u64 = @splat(0);
+        var temps: [max_streams]f64 = @splat(0);
+        var sampled = false;
         var asked: [max_streams]*Lane = undefined;
         var n: usize = 0;
         var steps: usize = 0;
@@ -1559,24 +1720,25 @@ pub const Lanes = struct {
             tokens[n] = token;
             q0[n] = @intCast(r.position - 1);
             slots[n] = @intCast(l.slot);
+            if (r.stream.sampling) |sm| if (r.stream.grammar == null and keyed_draft.eligible(sm, m.vocab)) {
+                seeds[n] = sm.seed;
+                temps[n] = sm.temperature;
+                sampled = true;
+            };
             depths[n] = @min(r.depth, block);
             asked[n] = l;
             steps = @max(steps, depths[n]);
             n += 1;
         }
         if (n == 0) return;
-        if (try self.begin(.pass)) {
-            try self.wire.int(gpa, u32, @intCast(n));
-            try self.wire.int(gpa, u32, @intCast(steps));
-            for (0..n) |i| {
-                try self.wire.int(gpa, i64, tokens[i]);
-                try self.wire.int(gpa, i64, q0[i]);
-                try self.wire.int(gpa, i64, slots[i]);
-            }
-            try self.flush();
+        const keyed = sampled and m.dr.?.nz != 0;
+        const keys: ?@import("draft.zig").Keyed = if (keyed) .{ .seeds = seeds[0..n], .temps = temps[0..n] } else null;
+        if (try self.begin(if (keyed) .pass_keyed else .pass)) {
+            try writePass(&self.wire, gpa, tokens[0..n], q0[0..n], slots[0..n], steps, keys);
+            try self.flush(); // the same frame goes to BOTH TP3 followers
         }
         const t0 = m.now();
-        try draftPass(m, tokens[0..n], q0[0..n], slots[0..n], steps);
+        try draftPass(m, tokens[0..n], q0[0..n], slots[0..n], steps, keys);
         if (self.prof) |*p| {
             p.pass += m.now() - t0;
             p.passes += 1;
@@ -1644,6 +1806,13 @@ pub const Lanes = struct {
         sn.continuation_state = core_state;
     }
 
+    pub fn snapFirstHintFn(ptr: *anyopaque, saved: *anyopaque) void {
+        const self = of(ptr);
+        const sn: *Snap = @ptrCast(@alignCast(saved));
+        if (self.first_continuation and !sn.stale and !sn.loading and sn.first_completed_at == 0)
+            sn.first_completed_at = self.kv_clock;
+    }
+
     pub fn snapAdaptiveHintFn(ptr: *anyopaque, saved: *anyopaque, density: u32) void {
         const self = of(ptr);
         const sn: *Snap = @ptrCast(@alignCast(saved));
@@ -1685,6 +1854,7 @@ pub const Lanes = struct {
                 .restores = sn.restores, .used = sn.last_use, .protected = sn == protected,
                 .loading = sn.loading, .continuation_at = sn.continuation_at,
                 .adaptive_density = sn.adaptive_density, .adaptive_at = sn.adaptive_at,
+                .first_completed_at = sn.first_completed_at,
             });
         };
         const idle = !loading and self.relocation_enabled and self.streams.count() == 0 and live.len == 0;
@@ -1692,6 +1862,8 @@ pub const Lanes = struct {
             .short_reuse = self.short_reuse, .short_clock = self.kv_clock,
             .continuation_donors = self.continuation_donors, .continuation_clock = self.kv_clock,
             .adaptive_prefix = self.adaptive_prefix, .short_return_rescue = self.adaptive_prefix,
+            .first_continuation = self.first_continuation,
+            .deadline_ns = if (self.first_continuation) t0 +| 2 * std.time.ns_per_ms else std.math.maxInt(u64),
         };
         if (idle and self.relocate_max_bytes > 0 and self.m.pool_cap >= 2 * model.chunk_rows) {
             const unit = try self.m.extentBytes(0, model.chunk_rows, model.chunk_rows);
@@ -1708,6 +1880,9 @@ pub const Lanes = struct {
                 p = (try pressure.plan(self.gpa, states.items, live, size, self.m.pool_cap, options)) orelse return null;
             }
         }
+        if (self.first_continuation) std.log.info("kv_first_continuation: event_ns={d} base={d} gate={s} evals={d} reject_proven={d} saved_rows={d} before_us={d} after_us={d}", .{
+            link.Link.monotonicNs(), p.base, @tagName(p.first.gate), p.first.evaluated, p.first.proven, p.first.saved, p.first.before_us, p.first.after_us,
+        });
         var copied: u64 = 0;
         if (p.move) |mv| {
             copied = try self.m.extentBytes(mv.from, mv.to, mv.len);
@@ -1942,6 +2117,85 @@ pub const Lanes = struct {
 
     pub fn snapRestoreFn(_: *anyopaque, _: ?*anyopaque, _: *anyopaque) anyerror!void {
         return error.BackendRestores; // the prompt pass restores, before its first chunk
+    }
+
+    /// Fatal on any uncertainty: the core must not uncharge partially freed state.
+    pub fn snapDropManyFn(ptr: *anyopaque, saved: []const *anyopaque) void {
+        const self = of(ptr);
+        self.dropMany(saved) catch |err| (Model.SpillDev{ .m = self.m }).failed(err);
+    }
+
+    const DropBatch = struct {
+        lanes_: *Lanes,
+        saved: []const *anyopaque,
+        step: u64,
+        deadline: u64,
+        sent: u64 = 0,
+        freed: u64 = 0,
+        confirmed: u64 = 0,
+        pub fn followerCount(b: *DropBatch) usize {
+            return if (b.lanes_.peer != null) b.lanes_.m.followers().len else 0;
+        }
+        pub fn send(b: *DropBatch, rank: usize) !void {
+            const peer = b.lanes_.m.followers()[rank] orelse return error.TransferFailed;
+            try peer.sendWithin(b.lanes_.wire.buf.items, b.deadline);
+        }
+        pub fn freeLocal(b: *DropBatch) !void {
+            b.sent = link.Link.monotonicNs();
+            for (b.saved) |p| {
+                const sn: *Snap = @ptrCast(@alignCast(p));
+                sn.buf.free(); // The existing synchronous cuMemFree custody contract.
+            }
+            b.freed = link.Link.monotonicNs();
+        }
+        pub fn receive(b: *DropBatch, rank: usize) !void {
+            const peer = b.lanes_.m.followers()[rank] orelse return error.TransferFailed;
+            var buf: [32]u8 = undefined;
+            try cache_batch.checkReceipt(try peer.recvBy(&buf, b.deadline), b.step, b.saved.len);
+        }
+        pub fn commit(b: *DropBatch) void {
+            b.confirmed = link.Link.monotonicNs();
+            for (b.saved) |p| {
+                const sn: *Snap = @ptrCast(@alignCast(p));
+                _ = b.lanes_.snaps.orderedRemove(std.mem.indexOfScalar(*Snap, b.lanes_.snaps.items, sn).?);
+                b.lanes_.gpa.destroy(sn);
+            }
+        }
+    };
+
+    fn dropMany(self: *Lanes, saved: []const *anyopaque) !void {
+        if (saved.len < 2 or saved.len > cache_batch.max_count) return error.BadDropBatch;
+        var ids: [cache_batch.max_count]u64 = undefined;
+        // Validate every pointer and dead state before custody, dispatch or free.
+        for (saved, 0..) |p, i| {
+            const sn: *Snap = @ptrCast(@alignCast(p));
+            if (std.mem.indexOfScalar(*Snap, self.snaps.items, sn) == null) return error.UnknownSnapshot;
+            if (!sn.stale or sn.loading) return error.BadDropBatch;
+            ids[i] = sn.id;
+        }
+        try cache_batch.validate(ids[0..saved.len]);
+        // These are existing spill/shard custody prerequisites, not asynchronous
+        // reclamation. They may exchange their own guarded metadata frames.
+        for (ids[0..saved.len]) |id| {
+            if (self.spill) |t| {
+                t.dropSnap(id);
+                if (t.broken) |err| return err;
+            }
+            if (self.kv) |k| try k.drop(id);
+        }
+        const start = link.Link.monotonicNs();
+        const step = self.step;
+        const deadline = start +| 5 * std.time.ns_per_s;
+        if (try self.begin(.snap_drop_many)) {
+            try self.wire.int(self.gpa, u32, @intCast(saved.len));
+            for (ids[0..saved.len]) |id| try self.wire.int(self.gpa, u64, id);
+        }
+        var transaction: DropBatch = .{ .lanes_ = self, .saved = saved, .step = step, .deadline = deadline };
+        try cache_batch.release(&transaction);
+        std.log.info("checkpoint_drop_batch: count={d} followers={d} send_ns={d} local_free_ns={d} receipt_wait_ns={d} confirmed=true", .{
+            saved.len, transaction.followerCount(), transaction.sent -| start, transaction.freed -| transaction.sent, transaction.confirmed -| transaction.freed,
+        });
+        self.idleRdma();
     }
 
     pub fn snapDropFn(ptr: *anyopaque, saved: *anyopaque) void {
@@ -2211,8 +2465,8 @@ fn devTwin(ctx: *anyopaque, base: usize, on: bool, local: ?usize) anyerror!void 
 /// Rank 0 has already sent .pass: like prompt fill, a rank-local pair-ending
 /// fault must terminate before returning to request cleanup. Generic only for CPU tests;
 /// Model.pairFault is noreturn in production.
-fn draftPass(m: anytype, tokens: []const i64, q0: []const i64, slots: []const i64, steps: usize) !void {
-    m.pass(tokens, q0, slots, steps) catch |err| {
+fn draftPass(m: anytype, tokens: []const i64, q0: []const i64, slots: []const i64, steps: usize, keyed: ?@import("draft.zig").Keyed) !void {
+    m.pass(tokens, q0, slots, steps, keyed) catch |err| {
         if (round.endsPair(err)) return m.pairFault(err);
         return err;
     };
@@ -2228,7 +2482,8 @@ test "rank zero drafter qualification faults take pairFault before request clean
         passes: usize = 0,
         faults: usize = 0,
 
-        pub fn pass(m: *@This(), tokens: []const i64, q0: []const i64, slots: []const i64, steps: usize) !void {
+        pub fn pass(m: *@This(), tokens: []const i64, q0: []const i64, slots: []const i64, steps: usize, keyed: ?@import("draft.zig").Keyed) !void {
+            try std.testing.expect(keyed == null);
             m.passes += 1;
             try std.testing.expectEqual(@as(usize, 13), tokens.len);
             try std.testing.expectEqual(tokens.len, q0.len);
@@ -2266,7 +2521,7 @@ test "rank zero drafter qualification faults take pairFault before request clean
         // Thirteen five-row blocks represent the >=64-row eager drafter shape.
         // The failure is injected at the Model.pass boundary, not in a CUDA kernel.
         const tokens: [13]i64 = @splat(0);
-        const result = draftPass(&m, &tokens, &tokens, &tokens, 5);
+        const result = draftPass(&m, &tokens, &tokens, &tokens, 5, null);
         const fatal = if (injected) |err| err == error.RaggedMmaNumericalMismatch or err == error.PrefillQualificationFailed else false;
         if (fatal) {
             try std.testing.expectError(error.TestPairEnded, result);
@@ -2644,7 +2899,7 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
     while (true) {
         watch.busy.store(0, .release); // waiting for rank 0's next frame
         // with spill writes or restores pending, they progress while rank 0 sends nothing (2 ms polls)
-        if (move_state.pending == null) if (spill) |sd| while (sd.busy() and !try peer.readable(2 * std.time.ns_per_ms)) sd.service(std.time.ns_per_ms);
+        if (!m.rs.live and move_state.pending == null) if (spill) |sd| while (sd.busy() and !try peer.readable(2 * std.time.ns_per_ms)) sd.service(std.time.ns_per_ms);
         // the next primitive, polled for 20 ms before the read blocks (rank 0 sends it a fraction of a millisecond
         // after this rank's GPU goes idle in a decode; a sleeping thread would add its core's wake-up to every frame)
         var admission_deadline: u64 = 0;
@@ -2670,11 +2925,12 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
             if (move_state.pending == null) move_deadline = admission_deadline;
             if (spill) |sd| if (sd.side) |side| { side.operation_deadline = move_deadline; };
         }
-        if (move_state.pending == null and kind != .idle_move) if (spill) |sd| sd.service(std.time.ns_per_ms); // relocation does not service unrelated work
+        if (m.rs.live and kind != .fill_slice and kind != .verify and kind != .pass) return error.OpenPrefillChunk;
+        if (!m.rs.live and move_state.pending == null and kind != .idle_move and kind != .fill_slice) if (spill) |sd| sd.service(std.time.ns_per_ms); // relocation does not service unrelated work
         // a chunk's read-ahead of the next is done before anything but that chunk (a prompt's ids may change)
-        if (kind != .fill_chunk and kind != .snap_save and kind != .snap_restore and kind != .fill_images and kind != .rank_wire) {
+        if (kind != .fill_chunk and kind != .fill_slice and kind != .snap_save and kind != .snap_restore and kind != .fill_images and kind != .rank_wire) {
             if (kind != .idle_move) m.joinAhead();
-            m.fill_seq = &.{};
+            if (!m.rs.live) m.fill_seq = &.{};
         }
         switch (kind) {
             .rdma_idle => {
@@ -2749,6 +3005,20 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
                 if (kvf) |k| try k.fillBegin(slot, fill_base);
                 m.fill_seq = seqs[slot].items;
             },
+            .fill_slice => {
+                if (m.prefill.slice_layers == 0 or kvf != null) return error.BadFrame;
+                const sf = try getSlice(&r);
+                if (sf.abort) {
+                    if (!m.rs.live) return error.BadSlice;
+                    m.dropChunk();
+                    continue;
+                }
+                if (sf.args.start > seqs[slot].items.len or sf.args.n > seqs[slot].items.len - sf.args.start) return error.BadChunk;
+                m.fill_seq = seqs[slot].items;
+                m.next_engram_rows = sf.next_rows;
+                if (sf.lo == 0) if (spill) |sd| sd.bump(fill_base + sf.args.start, fill_base + sf.args.start + sf.args.n);
+                if (m.fillSlice(m.fill_seq[0 .. sf.args.start + sf.args.n], sf.args, sf.lo, sf.hi)) |_| {} else |err| try roundRefused(err);
+            },
             .fill_chunk => {
                 const start: usize = @intCast(try r.int(u64));
                 const n: usize = try r.int(u32);
@@ -2761,36 +3031,44 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
                 if (m.fillChunk(seqs[slot].items[0 .. start + n], start, n, replay)) |_| {} else |err| try roundRefused(err);
             },
             .verify => {
+                // New-format parse failures can strand a leader already in a
+                // collective. This inner errdefer precedes every outer teardown.
+                var head_custody: greedy_head.Custody = .{ .active = m.decode_greedy_head or m.decode_sample_head };
+                errdefer head_custody.failed(m) catch unreachable;
                 const nw = try r.int(u32);
                 if (nw == 0 or nw > max_streams) return error.BadFrame;
+                const use_head = try readGreedyHeadMode(&r, m.decode_greedy_head, m.two != null);
+                const sample_head_count = try readSampleHeadCount(&r, m.decode_sample_head, m.two != null or use_head);
                 var wins: [max_streams]Win = undefined;
                 for (0..nw) |k| {
                     wins[k] = try readWin(&r, gpa, &win_ids[k], kvf != null);
                     // TF_DS_KV_SHARD: a round naming a reused extent (its part or generation not the planner's) fails closed
                     if (kvf) |kf| try kf.checkWin(wins[k].slot, wins[k].base, wins[k].end, @intCast(wins[k].part), wins[k].gen);
                 }
+                if ((m.decode_greedy_head or m.decode_sample_head) and r.at != r.b.len) return error.BadFrame;
                 const rows = try built.build(gpa, &seqs, wins[0..nw]);
                 if (spill) |sd| for (wins[0..nw]) |w| sd.bump(w.base + w.start, w.base + w.start + w.ids.len);
-                m.verify(rows, built.absorb[0..nw]) catch |err| try roundRefused(err);
+                head_custody.active = use_head or sample_head_count != 0; // baseline execution keeps its old error policy
+                const verified = if (sample_head_count != 0)
+                    greedy_head.verifySample(m, rows, built.absorb[0..nw], sample_head_count)
+                else
+                    greedy_head.verify(m, rows, built.absorb[0..nw], use_head);
+                verified catch |err| {
+                    if (use_head or sample_head_count != 0) return err; // inner custody pair-ends before outer defers
+                    try roundRefused(err);
+                };
+                head_custody.active = false;
                 if (m.prof) {
                     follow_prof.rounds += 1;
                     follow_prof.enqueue += m.t_enqueue;
                     follow_prof.forward += m.t_forward;
                 }
             },
-            .pass => {
-                const n = try r.int(u32);
-                const steps = try r.int(u32);
-                if (n == 0 or n > max_streams) return error.BadFrame;
-                var tokens: [max_streams]i64 = undefined;
-                var q0: [max_streams]i64 = undefined;
-                var slots: [max_streams]i64 = undefined;
-                for (0..n) |i| {
-                    tokens[i] = try r.int(i64);
-                    q0[i] = try r.int(i64);
-                    slots[i] = try r.int(i64);
-                }
-                m.pass(tokens[0..n], q0[0..n], slots[0..n], steps) catch |err| try roundRefused(err);
+            .pass, .pass_keyed => {
+                const keyed = kind == .pass_keyed;
+                const frame = try readPass(&r, keyed, m.dr != null and m.dr.?.nz != 0);
+                m.pass(frame.tokens[0..frame.n], frame.q0[0..frame.n], frame.slots[0..frame.n], frame.steps,
+                    if (keyed) .{ .seeds = frame.seeds[0..frame.n], .temps = frame.temps[0..frame.n] } else null) catch |err| try roundRefused(err);
             },
             .fill_images => {
                 const count = try r.int(u32);
@@ -2846,6 +3124,18 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
                     var b = kv.value;
                     b.free();
                 }
+            },
+            .snap_drop_many => {
+                // Exact frame size/count/uniqueness and all IDs checked before any free.
+                const batch = try cache_batch.decode(r.rest());
+                for (batch.slice()) |id| if (!kept.contains(id)) return error.UnknownSnapshot;
+                for (batch.slice()) |id| {
+                    if (spill) |sd| sd.dropSnap(id);
+                    var b = kept.fetchRemove(id).?.value;
+                    b.free();
+                }
+                const ack = cache_batch.receipt(step - 1, batch.count);
+                try peer.sendWithin(&ack, admission_deadline);
             },
             // one rank_wire Follower a rank, for the spill tier's and the KV parts' frames alike
             .rank_wire => try (pf orelse return error.SpillNotStarted).onFrame(peer, r.rest()), // (rank 0 runs the spill tier)
@@ -2925,6 +3215,7 @@ test "prefix growth relocates instead of overwriting a retained neighbour" {
     var a: Snap = .{ .id = 1, .at = 6144, .base = 0, .buf = undefined };
     var b: Snap = .{ .id = 2, .at = 6144, .base = 6144, .buf = undefined };
     var m: Model = undefined;
+    m.rs = .{};
     m.pool_cap = 3300000;
     var l: Lanes = undefined;
     l.gpa = std.testing.allocator;
@@ -2946,6 +3237,7 @@ test "placement keeps restore source until genuine pool pressure requires cold f
     var a: Snap = .{ .id = 1, .at = 6144, .base = 0, .buf = undefined };
     var b: Snap = .{ .id = 2, .at = 6144, .base = 6144, .buf = undefined };
     var m: Model = undefined;
+    m.rs = .{};
     m.pool_cap = 16384;
     var l: Lanes = undefined;
     l.gpa = std.testing.allocator;
@@ -2966,6 +3258,7 @@ test "placement keeps restore source until genuine pool pressure requires cold f
 
 test "full prompt snapshots are exact-length only inside bounded replay by default" {
     var m: Model = undefined;
+    m.rs = .{};
     m.cfg.window = 128;
     var sn: Snap = .{ .id = 1, .at = 8191, .base = 0, .buf = undefined, .complete = true };
     var l: Lanes = undefined;
@@ -2991,6 +3284,7 @@ test "full prompt snapshots are exact-length only inside bounded replay by defau
 
 test "opt-in short continuation requires a live aligned fully decoded prefix" {
     var m: Model = undefined;
+    m.rs = .{};
     m.cfg.window = 128;
     var sn: Snap = .{ .id = 1, .at = 9126, .base = 0, .buf = undefined, .decoded = true };
     var l: Lanes = undefined;
@@ -3047,6 +3341,7 @@ test "a short shared sibling cannot overwrite the main conversation's longer pre
     var common: Snap = .{ .id = 1, .at = 8192, .base = 0, .buf = undefined };
     var main: Snap = .{ .id = 2, .at = 98304, .base = 0, .end = 131072, .buf = undefined };
     var m: Model = undefined;
+    m.rs = .{};
     m.pool_cap = 524288;
     var l: Lanes = undefined;
     l.gpa = std.testing.allocator;
@@ -3081,6 +3376,7 @@ test "soft reservations yield to packing before any kept prefix is evicted" {
 test "pool pressure cannot evict a retained prefix whose rows remain owned by a live stream" {
     var snap: Snap = .{ .id = 1, .at = 8192, .base = 0, .end = 16384, .buf = undefined };
     var m: Model = undefined;
+    m.rs = .{};
     m.pool_cap = 16384;
     var l: Lanes = undefined;
     l.gpa = std.testing.allocator;
@@ -3148,6 +3444,7 @@ test "K2a retained union agrees with independent bitmap oracle in 10000 interval
 test "a restore's destination is held back from placement, never a victim and never usable until installed" {
     const c = model.chunk_rows;
     var m: Model = undefined;
+    m.rs = .{};
     m.pool_cap = 16 * c;
     m.cfg.window = 128;
     const gpa = std.testing.allocator;
@@ -3183,6 +3480,7 @@ test "a restore's destination is held back from placement, never a victim and ne
 test "pool pressure uses X3 learned placement without bypassing snapshot custody" {
     const c = model.chunk_rows;
     var m: Model = undefined;
+    m.rs = .{};
     m.io = std.testing.io;
     m.pool_cap = 82 * c;
     var ln: Lanes = .{ .gpa = std.testing.allocator, .m = &m, .peer = null,
@@ -3202,6 +3500,7 @@ test "pool pressure uses X3 learned placement without bypassing snapshot custody
 test "a restore's destination holds the waiting prompt's room past its rows while that fits clear of the others" {
     const c = model.chunk_rows;
     var m: Model = undefined;
+    m.rs = .{};
     m.pool_cap = 64 * c;
     m.cfg.window = 128;
     const gpa = std.testing.allocator;
@@ -3283,10 +3582,17 @@ fn testStream(id: []const u8, saved: ?*Snap) lanes.Stream {
     s.id = id;
     s.reuse = .{ .saved = if (saved) |sn| @ptrCast(sn) else null };
     s.reuse_failed = false;
+    s.images = &.{};
+    s.finished = false;
     return s;
 }
 
 fn testLanes(m: *Model) Lanes {
+    // CPU fixture has no RDMA rings or read-ahead thread. Uninitialized
+    // optionals can otherwise send releaseFn's idle parking down a GPU path.
+    m.ring = null;
+    m.rdma_rings = null;
+    m.ahead = null;
     m.pool_cap = 64 * model.chunk_rows;
     m.cfg.window = 0;
     m.io = std.testing.io;
@@ -3302,6 +3608,7 @@ test "TF_DS_KV_SHARD lanes: part-local placement, a kept state resumed in place,
     const c = model.chunk_rows;
     const gpa = std.testing.allocator;
     var m: Model = undefined;
+    m.rs = .{};
     var ln = testLanes(&m);
     defer ln.snaps.deinit(gpa);
     defer ln.streams.deinit(gpa);
@@ -3354,6 +3661,7 @@ test "TF_DS_KV_SHARD lanes: a live move rewrites the moved Lane and the Snaps in
     const c = model.chunk_rows;
     const gpa = std.testing.allocator;
     var m: Model = undefined;
+    m.rs = .{};
     var ln = testLanes(&m);
     defer ln.snaps.deinit(gpa);
     defer ln.streams.deinit(gpa);
@@ -3400,6 +3708,7 @@ test "TF_DS_KV_SHARD lanes: a round's windows reach the follower with part and g
     const c = model.chunk_rows;
     const gpa = std.testing.allocator;
     var m: Model = undefined;
+    m.rs = .{};
     m.dr = null;
     var ln = testLanes(&m);
     defer ln.snaps.deinit(gpa);
@@ -3465,6 +3774,7 @@ test "TF_DS_KV_SHARD lanes: a prompt pass failing after its placement (prefillFn
     const c = model.chunk_rows;
     const gpa = std.testing.allocator;
     var m: Model = undefined;
+    m.rs = .{};
     var ln = testLanes(&m);
     defer ln.snaps.deinit(gpa);
     defer ln.streams.deinit(gpa);
@@ -3851,4 +4161,374 @@ test "structured output: masked TP3 rows exclude padding and preserve keyed draw
     var with = w;
     with.masks = bits;
     try std.testing.expect(!masksFit(with, maskWords(logical)));
+}
+
+test "cache batch outer opcode does not collide with RDMA idle or graph vote" {
+    try std.testing.expectEqual(Kind.snap_drop_many, try decodeOuterKind(cache_batch.kind));
+    try std.testing.expectEqual(Kind.rdma_idle, try decodeOuterKind(11));
+    try std.testing.expectEqual(Kind.graph_vote_agree, try decodeOuterKind(15));
+}
+test "cache batch first hint is metadata only and ignores disabled stale loading or repeated state" {
+    var ln: Lanes = .{ .gpa = std.testing.allocator, .m = undefined, .peer = null, .kv_clock = 100 };
+    var sn: Snap = .{ .id = 1, .at = 8192, .base = 0, .buf = undefined };
+    Lanes.snapFirstHintFn(&ln, &sn);
+    try std.testing.expectEqual(@as(u64, 0), sn.first_completed_at);
+    ln.first_continuation = true;
+    sn.stale = true;
+    Lanes.snapFirstHintFn(&ln, &sn);
+    sn.stale = false;
+    sn.loading = true;
+    Lanes.snapFirstHintFn(&ln, &sn);
+    try std.testing.expectEqual(@as(u64, 0), sn.first_completed_at);
+    sn.loading = false;
+    Lanes.snapFirstHintFn(&ln, &sn);
+    ln.kv_clock = 101;
+    Lanes.snapFirstHintFn(&ln, &sn);
+    try std.testing.expectEqual(@as(u64, 100), sn.first_completed_at);
+    try std.testing.expectEqual(@as(u64, 0), sn.restores);
+}
+
+const CacheBatchLoopback = struct {
+    heads: [2]link.Link,
+    followers: [2]link.Link,
+    frame: []const u8,
+    count: usize,
+    held: usize = 16,
+    released: [3]usize = .{ 0, 0, 0 },
+    received: usize = 0,
+    deadline: u64,
+    pub fn followerCount(_: *CacheBatchLoopback) usize { return 2; }
+    pub fn send(t: *CacheBatchLoopback, rank: usize) !void {
+        try std.testing.expectEqual(@as(usize, 16), t.held);
+        try t.heads[rank].sendWithin(t.frame, t.deadline);
+    }
+    pub fn freeLocal(t: *CacheBatchLoopback) !void {
+        t.released[0] = t.count;
+        for (t.followers, 0..) |peer, rank| {
+            var buf: [256]u8 = undefined;
+            var r: Reader = .{ .b = try peer.recvBy(&buf, t.deadline) };
+            try std.testing.expectEqual(Kind.snap_drop_many, try decodeOuterKind(try r.int(u8)));
+            const step = try r.int(u64);
+            try std.testing.expectEqual(@as(u64, 42), step);
+            const batch = try cache_batch.decode(r.rest());
+            try std.testing.expectEqual(t.count, batch.count);
+            for (batch.slice(), 0..) |id, i| try std.testing.expectEqual(@as(u64, i + 1), id);
+            t.released[rank + 1] = batch.count;
+            const ack = cache_batch.receipt(step, batch.count);
+            try peer.sendWithin(&ack, t.deadline);
+        }
+    }
+    pub fn receive(t: *CacheBatchLoopback, rank: usize) !void {
+        try std.testing.expectEqual(@as(usize, 16), t.held);
+        var buf: [32]u8 = undefined;
+        try cache_batch.checkReceipt(try t.heads[rank].recvBy(&buf, t.deadline), 42, t.count);
+        t.received += 1;
+    }
+    pub fn commit(t: *CacheBatchLoopback) void {
+        std.debug.assert(t.received == 2);
+        t.held -= t.count;
+    }
+};
+test "cache batch TP3 drop frame and receipts traverse two independent follower links" {
+    var sockets: [2][2]std.c.fd_t = undefined;
+    try std.testing.expect(std.c.socketpair(std.c.AF.UNIX, std.c.SOCK.STREAM, 0, &sockets[0]) == 0);
+    defer for (sockets[0]) |fd| { _ = std.c.close(fd); };
+    try std.testing.expect(std.c.socketpair(std.c.AF.UNIX, std.c.SOCK.STREAM, 0, &sockets[1]) == 0);
+    defer for (sockets[1]) |fd| { _ = std.c.close(fd); };
+    for ([_]usize{ 2, 16 }) |count| {
+        var wire: Wire = .{};
+        defer wire.deinit(std.testing.allocator);
+        try wire.begin(std.testing.allocator, .snap_drop_many, 42);
+        try wire.int(std.testing.allocator, u32, @intCast(count));
+        for (0..count) |i| try wire.int(std.testing.allocator, u64, i + 1);
+        var t: CacheBatchLoopback = .{
+            .heads = .{ .{ .fd = sockets[0][0] }, .{ .fd = sockets[1][0] } },
+            .followers = .{ .{ .fd = sockets[0][1] }, .{ .fd = sockets[1][1] } },
+            .frame = wire.buf.items, .count = count,
+            .deadline = link.Link.monotonicNs() + 5 * std.time.ns_per_s,
+        };
+        try cache_batch.release(&t);
+        try std.testing.expectEqualSlices(usize, &.{ count, count, count }, &t.released);
+        try std.testing.expectEqual(16 - count, t.held);
+    }
+}
+
+// pass_keyed uses 17 (16 is reserved for the concurrent cache-batch port). Outer 14 stays reserved for the nested vote protocol.
+fn writePass(w: *Wire, gpa: std.mem.Allocator, tokens: []const i64, q0: []const i64, slots: []const i64, steps: usize, keyed: ?@import("draft.zig").Keyed) !void {
+    try w.int(gpa, u32, @intCast(tokens.len));
+    try w.int(gpa, u32, @intCast(steps));
+    for (tokens, q0, slots, 0..) |token, pos, slot, i| {
+        try w.int(gpa, i64, token);
+        try w.int(gpa, i64, pos);
+        try w.int(gpa, i64, slot);
+        if (keyed) |k| {
+            try w.int(gpa, u64, k.seeds[i]);
+            try w.int(gpa, u64, @bitCast(k.temps[i]));
+        }
+    }
+}
+
+const PassFrame = struct {
+    n: usize,
+    steps: usize,
+    tokens: [max_streams]i64 = undefined,
+    q0: [max_streams]i64 = undefined,
+    slots: [max_streams]i64 = undefined,
+    seeds: [max_streams]u64 = undefined,
+    temps: [max_streams]f64 = undefined,
+};
+
+fn readPass(r: *Reader, keyed: bool, enabled: bool) !PassFrame {
+    if (keyed and !enabled) return error.KeyedDraftOff;
+    var f: PassFrame = .{ .n = try r.int(u32), .steps = try r.int(u32) };
+    if (f.n == 0 or f.n > max_streams or f.steps == 0 or f.steps > @import("draft.zig").max_block) return error.BadFrame;
+    for (0..f.n) |i| {
+        f.tokens[i] = try r.int(i64);
+        f.q0[i] = try r.int(i64);
+        f.slots[i] = try r.int(i64);
+        if (keyed) {
+            f.seeds[i] = try r.int(u64);
+            f.temps[i] = @bitCast(try r.int(u64));
+            if (!std.math.isFinite(f.temps[i]) or f.temps[i] < 0) return error.BadFrame;
+            _ = try keyed_draft.firstPosition(f.q0[i]);
+        }
+    }
+    return f;
+}
+
+test "keyed draft frame round trip through both TP3 follower links and off bytes" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    var m: Model = undefined;
+    m.world = 3;
+    m.rank = 0;
+    // flush uses Model.followers (the TP3 fan), not a single TP2 peer.
+    m.fan = .{};
+    defer m.fan.close();
+    var peers: [2]link.Link = undefined;
+    for (&peers, 0..) |*peer, i| {
+        var pair: [2]std.c.fd_t = undefined;
+        try std.testing.expect(std.c.socketpair(std.c.AF.UNIX, std.c.SOCK.STREAM, 0, &pair) == 0);
+        m.fan.links[i] = .{ .fd = pair[0] };
+        peer.* = .{ .fd = pair[1] };
+    }
+    defer for (&peers) |*peer| peer.close();
+    var ln: Lanes = .{ .gpa = a, .m = &m, .peer = m.fan.links[0] };
+    defer ln.wire.deinit(a);
+    const tokens = [_]i64{ 11, 29 };
+    const q0 = [_]i64{ 100, 2000 };
+    const slots = [_]i64{ 0, 7 };
+    const seeds = [_]u64{ 0xffffffffffffffff, 4242 };
+    const temps = [_]f64{ 0.7, 0 };
+    for ([_]bool{ false, true }) |keyed| {
+        try ln.wire.begin(a, if (keyed) .pass_keyed else .pass, 31);
+        try writePass(&ln.wire, a, &tokens, &q0, &slots, 5, if (keyed) .{ .seeds = &seeds, .temps = &temps } else null);
+        if (!keyed) {
+            var legacy: Wire = .{};
+            defer legacy.deinit(a);
+            try legacy.begin(a, .pass, 31);
+            try legacy.int(a, u32, 2);
+            try legacy.int(a, u32, 5);
+            for (tokens, q0, slots) |t, p, slot| {
+                try legacy.int(a, i64, t);
+                try legacy.int(a, i64, p);
+                try legacy.int(a, i64, slot);
+            }
+            try std.testing.expectEqualSlices(u8, legacy.buf.items, ln.wire.buf.items);
+        }
+        try ln.flush();
+        for (&peers) |*peer| {
+            var buf: [512]u8 = undefined;
+            const bytes = try peer.recv(&buf);
+            var r: Reader = .{ .b = bytes };
+            const kind = try decodeOuterKind(try r.int(u8));
+            try std.testing.expectEqual(if (keyed) Kind.pass_keyed else Kind.pass, kind);
+            try std.testing.expectEqual(@as(u64, 31), try r.int(u64));
+            if (keyed) {
+                var disabled_reader = r;
+                try std.testing.expectError(error.KeyedDraftOff, readPass(&disabled_reader, true, false));
+                try std.testing.expectEqual(r.at, disabled_reader.at);
+            }
+            const f = try readPass(&r, keyed, true);
+            try std.testing.expectEqual(@as(usize, 2), f.n);
+            try std.testing.expectEqual(@as(usize, 5), f.steps);
+            try std.testing.expectEqualSlices(i64, &tokens, f.tokens[0..f.n]);
+            try std.testing.expectEqualSlices(i64, &q0, f.q0[0..f.n]);
+            try std.testing.expectEqualSlices(i64, &slots, f.slots[0..f.n]);
+            if (keyed) {
+                try std.testing.expectEqualSlices(u64, &seeds, f.seeds[0..f.n]);
+                try std.testing.expectEqualSlices(f64, &temps, f.temps[0..f.n]);
+            }
+            try std.testing.expectEqual(r.b.len, r.at);
+        }
+    }
+}
+
+test "decode greedy head actual conditional verify wire preserves off bytes and round trips modes" {
+    const a = std.testing.allocator;
+    const win: Win = .{ .slot = 0, .base = 0, .end = 2048, .start = 0, .absorb = false, .ids = &.{ 7, 8 } };
+    var old: Wire = .{};
+    defer old.deinit(a);
+    try old.int(a, u32, 1);
+    try writeWin(&old, a, win, false);
+    for ([_]bool{ false, true }) |on| for ([_]bool{ false, true }) |mode| {
+        var wire: Wire = .{};
+        defer wire.deinit(a);
+        try wire.int(a, u32, 1);
+        if (!on and mode) {
+            try std.testing.expectError(error.BadGreedyHeadMode, writeGreedyHeadMode(&wire, a, on, mode));
+            continue;
+        }
+        try writeGreedyHeadMode(&wire, a, on, mode);
+        try writeWin(&wire, a, win, false);
+        if (!on) try std.testing.expectEqualSlices(u8, old.buf.items, wire.buf.items);
+        try std.testing.expectEqual(old.buf.items.len + @intFromBool(on), wire.buf.items.len);
+        var reader: Reader = .{ .b = wire.buf.items };
+        try std.testing.expectEqual(@as(u32, 1), try reader.int(u32));
+        try std.testing.expectEqual(mode, try readGreedyHeadMode(&reader, on, false));
+        var ids: std.ArrayList(i32) = .empty;
+        defer ids.deinit(a);
+        const got = try readWin(&reader, a, &ids, false);
+        try std.testing.expectEqualSlices(i32, win.ids, got.ids);
+        try std.testing.expectEqual(wire.buf.items.len, reader.at);
+    };
+}
+
+test "decode greedy head actual follower mode and truncated payload refuse before collective" {
+    const a = std.testing.allocator;
+    var reader: Reader = .{ .b = &.{} };
+    try std.testing.expectError(error.ShortFrame, readGreedyHeadMode(&reader, true, false));
+    try std.testing.expect(!try readGreedyHeadMode(&reader, false, false));
+    try std.testing.expectEqual(@as(usize, 0), reader.at);
+    for ([_]u8{ 2, 127, 255 }) |mode| {
+        reader = .{ .b = &.{mode} };
+        try std.testing.expectError(error.BadGreedyHeadMode, readGreedyHeadMode(&reader, true, false));
+    }
+    reader = .{ .b = &.{1} };
+    try std.testing.expectError(error.BadGreedyHeadMode, readGreedyHeadMode(&reader, true, true));
+    reader = .{ .b = &.{0} };
+    try std.testing.expect(!try readGreedyHeadMode(&reader, true, true));
+    var wire: Wire = .{};
+    defer wire.deinit(a);
+    try writeGreedyHeadMode(&wire, a, true, true);
+    try writeWin(&wire, a, .{ .slot = 0, .base = 0, .end = 2048, .start = 0, .absorb = false, .ids = &.{7} }, false);
+    for (1..wire.buf.items.len) |len| {
+        reader = .{ .b = wire.buf.items[0..len] };
+        try std.testing.expect(try readGreedyHeadMode(&reader, true, false));
+        var ids: std.ArrayList(i32) = .empty;
+        defer ids.deinit(a);
+        try std.testing.expectError(error.ShortFrame, readWin(&reader, a, &ids, false));
+    }
+}
+
+test "decode greedy head actual custody and verify seams end links before cleanup without drain" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const Fake = struct {
+        fan: @import("prompt2d.zig").Fan = .{},
+        failed: bool = false,
+        cleanup: bool = false,
+        inject: bool = true,
+        calls: usize = 0,
+        pub fn verifyHead(m: *@This(), _: void, _: []const bool, _: bool) !void {
+            m.calls += 1;
+            if (m.inject) return error.Injected;
+        }
+        pub fn pairFault(m: *@This(), _: anyerror) !void {
+            try std.testing.expect(!m.cleanup);
+            m.failed = true;
+            m.fan.close();
+            return error.TestPairEnded; // production exits 75, never returns
+        }
+    };
+    for (0..5) |stage| {
+        var m: Fake = .{};
+        defer m.fan.close();
+        var pair: [2]std.c.fd_t = undefined;
+        try std.testing.expect(std.c.socketpair(std.c.AF.UNIX, std.c.SOCK.STREAM, 0, &pair) == 0);
+        m.fan.links[0] = .{ .fd = pair[0] };
+        var peer: link.Link = .{ .fd = pair[1] };
+        defer peer.close();
+        // Shared production Custody covers partial send, parser and build errors;
+        // shared verify covers kernel/gather/merge/final-fence errors on either rank.
+        if (stage < 3) {
+            const custody: greedy_head.Custody = .{ .active = true };
+            try std.testing.expectError(error.TestPairEnded, custody.failed(&m));
+        } else if (stage == 3) {
+            try std.testing.expectError(error.TestPairEnded, greedy_head.verify(&m, {}, &.{}, true));
+        } else {
+            try std.testing.expectError(error.Injected, greedy_head.verify(&m, {}, &.{}, false));
+        }
+        const fatal = stage != 4;
+        try std.testing.expectEqual(fatal, m.failed);
+        try std.testing.expectEqual(fatal, peer.peerGone());
+        try std.testing.expectEqual(fatal, FollowerWatch.shouldExit(1, 1 + std.time.ns_per_s, peer.peerGone(), std.time.ns_per_s));
+        m.cleanup = true; // only after the pair-fault boundary (no driver/drain exists)
+    }
+    var m: Fake = .{ .inject = false };
+    try greedy_head.verify(&m, {}, &.{}, true);
+    try std.testing.expect(!m.failed);
+    try (greedy_head.Custody{}).failed(&m);
+    try std.testing.expect(!m.failed);
+}
+
+test "decode greedy head sampled wire is absent when off and validates every count" {
+    const a = std.testing.allocator;
+    var w: Wire = .{};
+    defer w.deinit(a);
+    try writeSampleHeadCount(&w, a, false, 0);
+    try std.testing.expectEqual(@as(usize, 0), w.buf.items.len);
+    try std.testing.expectError(error.BadGreedyHeadMode, writeSampleHeadCount(&w, a, false, 1));
+    for (0..65) |count| {
+        w.buf.clearRetainingCapacity();
+        try writeSampleHeadCount(&w, a, true, count);
+        var r: Reader = .{ .b = w.buf.items };
+        try std.testing.expectEqual(count, try readSampleHeadCount(&r, true, false));
+        try std.testing.expectEqual(@as(usize, 1), r.at);
+    }
+    var bad: Reader = .{ .b = &.{65} };
+    try std.testing.expectError(error.BadGreedyHeadMode, readSampleHeadCount(&bad, true, false));
+    var conflict: Reader = .{ .b = &.{28} };
+    try std.testing.expectError(error.BadGreedyHeadMode, readSampleHeadCount(&conflict, true, true));
+    var short: Reader = .{ .b = &.{} };
+    try std.testing.expectError(error.ShortFrame, readSampleHeadCount(&short, true, false));
+    try std.testing.expectEqual(@as(usize, 0), try readSampleHeadCount(&short, false, false));
+}
+
+test "prefill slice frame round trip is identical for both TP3 followers and abort" {
+    const gpa = std.testing.allocator;
+    var w: Wire = .{};
+    defer w.deinit(gpa);
+    const frames = [_]SliceFrame{
+        .{ .lo = 0, .hi = 5, .args = .{ .start = 8192, .n = 8192, .replay = 32768 }, .next_rows = 8064 },
+        .{ .lo = 5, .hi = 10, .args = .{ .start = 8192, .n = 8192, .replay = 32768 }, .next_rows = 8064 },
+        .{ .abort = true },
+    };
+    for (frames, 0..) |frame, step| {
+        try w.begin(gpa, .fill_slice, step);
+        try putSlice(&w, gpa, frame);
+        for (0..2) |_| {
+            var reader: Reader = .{ .b = w.buf.items };
+            try std.testing.expectEqual(Kind.fill_slice, try decodeOuterKind(try reader.int(u8)));
+            try std.testing.expectEqual(@as(u64, step), try reader.int(u64));
+            try std.testing.expectEqualDeep(frame, try getSlice(&reader));
+        }
+        try w.int(gpa, u8, 1);
+        var bad: Reader = .{ .b = w.buf.items[9..] };
+        try std.testing.expectError(error.BadFrame, getSlice(&bad));
+    }
+    try std.testing.expectEqual(@as(u8, 18), @backingInt(Kind.fill_slice));
+    try std.testing.expectEqual(@as(u8, 13), @backingInt(Kind.fill_resume));
+    var bad_op: Reader = .{ .b = &.{2} };
+    try std.testing.expectError(error.BadFrame, getSlice(&bad_op));
+}
+
+fn useLayerSlices(yielded: bool, per: usize, sharded: bool, callback: bool) bool {
+    return yielded and per > 0 and !sharded and callback;
+}
+test "prefill slice off and unsupported scheduler paths keep whole chunk protocol" {
+    try std.testing.expect(useLayerSlices(true, 5, false, true));
+    try std.testing.expect(!useLayerSlices(true, 0, false, true));
+    try std.testing.expect(!useLayerSlices(false, 5, false, true));
+    try std.testing.expect(!useLayerSlices(true, 5, true, true));
+    try std.testing.expect(!useLayerSlices(true, 5, false, false));
 }

@@ -16,6 +16,12 @@ pub const Share = struct {
         const owed = @as(f64, @floatFromInt(@max(0, ns))) * (1 - s.p) / s.p;
         s.debt_ns +|= @intFromFloat(@min(owed, @as(f64, @floatFromInt(std.math.maxInt(i64) / 2))));
     }
+    /// A long chunk's nested decode parks are excluded from fill debt and pay it.
+    pub fn sliced(s: *Share, total_ns: i64, decode_ns: i64, decoding: bool) void {
+        const park = @min(@max(0, total_ns), @max(0, decode_ns));
+        s.stepped(@max(0, total_ns) - park, decoding);
+        s.rounded(park);
+    }
     pub fn rounded(s: *Share, ns: i64) void { s.debt_ns = @max(0, s.debt_ns - @max(0, ns)); }
 };
 test "stepped prefill share saturation and invalid configuration" {
@@ -45,5 +51,20 @@ test "one debt account includes fill restore and pump occupancy" {
     s.rounded(90);
     try std.testing.expectEqual(@as(i64, 0), s.debt_ns);
     s.stepped(100, false); // paused decoders do not earn future debt
+    try std.testing.expectEqual(@as(i64, 0), s.debt_ns);
+}
+
+test "prefill slice decode occupancy pays debt instead of counting as fill" {
+    var s: Share = .{ .p = 0.5 };
+    s.sliced(1000, 200, true);
+    try std.testing.expectEqual(@as(i64, 600), s.debt_ns);
+    s = .{ .p = 0.5 };
+    s.sliced(1000, 0, true);
+    try std.testing.expectEqual(@as(i64, 1000), s.debt_ns);
+    s = .{ .p = 0.5 };
+    s.sliced(1000, 2000, true);
+    try std.testing.expectEqual(@as(i64, 0), s.debt_ns);
+    s = .{};
+    s.sliced(1000, 200, true);
     try std.testing.expectEqual(@as(i64, 0), s.debt_ns);
 }

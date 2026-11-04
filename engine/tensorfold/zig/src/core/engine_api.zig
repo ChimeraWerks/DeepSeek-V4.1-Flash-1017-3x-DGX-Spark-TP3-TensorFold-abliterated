@@ -220,8 +220,16 @@ pub const Spill = struct {
     load_ms: u32 = 40,
     /// TF_SPILL_LOAD_WAIT_MS: how long a request waits parked on a restore before it is admitted without it.
     load_wait_ms: u32 = 30_000,
+    /// TF_SPILL_ROOM_WAIT_MS: bounded nonsharded restore-start room wait (0 preserves immediate fallback).
+    room_wait_ms: u32 = 0,
+
     /// TF_SPILL_FLUSH_MS: a clean shutdown's bound for draining writes.
     flush_ms: u32 = 60_000,
+
+    /// Shared by the CLI and every rank's runtime agreement. Invalid values leave the feature off.
+    pub fn roomWaitMs(raw: ?[]const u8) u32 {
+        return std.fmt.parseInt(u32, std.mem.trim(u8, raw orelse return 0, " "), 10) catch 0;
+    }
 
     /// The disk tier is on.
     pub fn enabled(s: Spill) bool {
@@ -263,6 +271,8 @@ pub const CacheStats = struct {
     restore_blocks_done: u64 = 0,
     restore_blocks_total: u64 = 0,
     restored_tokens: u64 = 0,
+    restore_room_waits: u64 = 0,
+    restore_room_expiries: u64 = 0,
     restore_waits: u64 = 0,
     restore_wait_timeouts: u64 = 0,
     restore_wait_ns: u64 = 0,
@@ -306,6 +316,8 @@ pub const CacheStats = struct {
         .restore_blocks_done = "Blocks the restores in flight have copied so far.",
         .restore_blocks_total = "Blocks the restores in flight copy in all.",
         .restored_tokens = "Prompt tokens restored from disk.",
+        .restore_room_waits = "Requests waiting for nonsharded restore-start room.",
+        .restore_room_expiries = "Restore-start room waits expired at TF_SPILL_ROOM_WAIT_MS.",
         .restore_waits = "Requests parked on a disk restore.",
         .restore_wait_timeouts = "Requests admitted without their disk restore after TF_SPILL_LOAD_WAIT_MS.",
         .restore_wait_ns = "Nanoseconds requests waited for disk restores.",

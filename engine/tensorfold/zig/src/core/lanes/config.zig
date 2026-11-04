@@ -12,6 +12,9 @@ pub const default_prior = [_]f64{ 0.85, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.5, 0.
 
 /// What a backend reports about its loaded model: the attributes the Python engine reads at setup.
 pub const Model = struct {
+    draft_cal: f64 = 0.0, // per-stream survival weight; 0 preserves the existing allocator
+    first_draft_depth: bool = false, // use the full head depth after a prompt
+    cal_log: u32 = 0,
     adaptive_learning: bool = false, // 1.2.2xTF opt-in
     exact_width: u32 = 1, // the widest window that reproduces one-token steps bit for bit
     first_copy_rows: u32 = 0, // a lone stream's first copy window (0: the exact width)
@@ -36,6 +39,9 @@ pub const Model = struct {
 };
 
 pub const Config = struct {
+    draft_cal: f64 = 0.0, // per-stream survival weight; 0 preserves the existing allocator
+    first_draft_depth: bool = false, // use the full head depth after a prompt
+    cal_log: u32 = 0,
     adaptive_learning: bool = false,
     family_width: u32,
     max_copy: u32,
@@ -68,6 +74,7 @@ pub const Config = struct {
     k: Constants = .{},
 
     pub fn init(gpa: Allocator, m: Model, max_rows: u32, max_draft: u32) !Config {
+        if (!std.math.isFinite(m.draft_cal) or m.draft_cal < 0 or m.draft_cal > 1) return error.BadDraftCal;
         if (max_rows < 1) return error.BadMaxRows;
         if (m.adaptive_learning and (m.batch_rows > 48 or m.max_streams > 16 or m.head_trees)) return error.BadAdaptiveShape;
         const width: u32 = @max(1, @min(@max(m.exact_width, 1), max_rows));
@@ -100,6 +107,9 @@ pub const Config = struct {
         errdefer gpa.free(depth_prior);
         return .{
             .adaptive_learning = m.adaptive_learning,
+            .draft_cal = m.draft_cal,
+            .first_draft_depth = m.first_draft_depth,
+            .cal_log = m.cal_log,
             .family_width = width,
             .max_copy = max_copy,
             .first_copy = first_copy,

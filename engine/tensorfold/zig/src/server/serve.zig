@@ -80,6 +80,17 @@ fn env(s: Setup, name: []const u8) ?[]const u8 {
     return m.get(name);
 }
 
+/// Exact opt-in, read only by the HTTP owner. No token selection or follower protocol changes.
+fn streamToolCalls(value: ?[]const u8) bool {
+    return if (value) |v| std.mem.eql(u8, v, "1") else false;
+}
+
+test "DSML tool streaming is default off and only exact 1 enables it" {
+    try std.testing.expect(!streamToolCalls(null));
+    for ([_][]const u8{ "", "0", "true", "yes", "01", " 1" }) |v| try std.testing.expect(!streamToolCalls(v));
+    try std.testing.expect(streamToolCalls("1"));
+}
+
 /// Serves until a stop signal; the process exit status.
 pub fn run(gpa: Allocator, io: std.Io, args: cli.Args, s: Setup) u8 {
     var arena: std.heap.ArenaAllocator = .init(gpa);
@@ -127,6 +138,7 @@ pub fn run(gpa: Allocator, io: std.Io, args: cli.Args, s: Setup) u8 {
         .use_drafts = !args.no_drafts,
         .seed_salt = salt,
         .request_log = env(s, "TENSORFOLD_REQUEST_LOG"),
+        .stream_tool_calls = streamToolCalls(env(s, "TF_STREAM_TOOL_CALLS")),
         .dashboard = args.dashboard,
         .compact_at = if (args.compact_auto) .{ .auto = {} } else if (args.compact_fraction) |f| .{ .fraction = f } else null,
         .compact_keep = args.compact_keep,

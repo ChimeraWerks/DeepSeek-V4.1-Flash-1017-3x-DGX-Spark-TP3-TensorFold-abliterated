@@ -35,12 +35,17 @@ fn mix(x0: u64) u64 {
     return x ^ (x >> 31);
 }
 
-/// exact_sampling.uniform: a (0, 1) double from a splitmix64 hash of (seed, position, token id).
-pub fn uniform(seed: u64, position: u64, id: u64) f64 {
+/// The splitmix64 chain of (seed, position, token id): the bits uniform() takes its double from (the CUDA port
+/// tf_ds_keyed_noise_kernel repeats it).
+pub fn keyBits(seed: u64, position: u64, id: u64) u64 {
     var x = mix(seed +% 0x9E3779B97F4A7C15);
     x = mix(x ^ (position *% 0xD1B54A32D192ED03));
-    x = mix(x ^ id);
-    return @as(f64, @floatFromInt(x >> 11)) * 0x1p-53 + 0x1p-54;
+    return mix(x ^ id);
+}
+
+/// exact_sampling.uniform: a (0, 1) double from a splitmix64 hash of (seed, position, token id).
+pub fn uniform(seed: u64, position: u64, id: u64) f64 {
+    return @as(f64, @floatFromInt(keyBits(seed, position, id) >> 11)) * 0x1p-53 + 0x1p-54;
 }
 
 /// numpy's pairwise sum of a contiguous float64 row (umath pairwise_sum, under its 128-element block).
@@ -159,6 +164,23 @@ test "splitmix64 draws as exact_sampling.uniform makes them" {
     try std.testing.expectEqual(@as(u64, 0x3fe8cd8867d6a69c), @as(u64, @bitCast(uniform(101, 2229, 2581))));
     try std.testing.expectEqual(@as(u64, 0x3fd08f785f86da1b), @as(u64, @bitCast(uniform(404, 59, 129279))));
     try std.testing.expectEqual(@as(u64, 0x3fc9ff45ea7ce2be), @as(u64, @bitCast(uniform(0, 0, 0))));
+}
+
+test "keyed draws pin the bits the CUDA noise kernel must reproduce" {
+    // (seed, position, id) -> keyBits, the bits of uniform and the Gumbel draw -log(-log(u)) (libm: to 1e-13)
+    const Case = struct { seed: u64, position: u64, id: u64, key: u64, uniform_bits: u64, gumbel: f64 };
+    const cases = [_]Case{
+        .{ .seed = 101, .position = 2229, .id = 2581, .key = 0xc66c433eb534db7d, .uniform_bits = 0x3fe8cd8867d6a69c, .gumbel = 1.3673673033878002 },
+        .{ .seed = 404, .position = 59, .id = 129279, .key = 0x423de17e1b6869c5, .uniform_bits = 0x3fd08f785f86da1b, .gumbel = -0.30148655447310424 },
+        .{ .seed = 0, .position = 0, .id = 0, .key = 0x33fe8bd4f9c57863, .uniform_bits = 0x3fc9ff45ea7ce2be, .gumbel = -0.4662735186548661 },
+        .{ .seed = 0x7fffffffffffffff, .position = 1048575, .id = 129279, .key = 0x434ffaa90bb2ee6d, .uniform_bits = 0x3fd0d3feaa42ecbb, .gumbel = -0.2895548427148701 },
+    };
+    for (cases) |c| {
+        try std.testing.expectEqual(c.key, keyBits(c.seed, c.position, c.id));
+        const u = uniform(c.seed, c.position, c.id);
+        try std.testing.expectEqual(c.uniform_bits, @as(u64, @bitCast(u)));
+        try std.testing.expectApproxEqAbs(c.gumbel, -log(-log(u)), 1e-13);
+    }
 }
 
 test "numpy's pairwise sum" {

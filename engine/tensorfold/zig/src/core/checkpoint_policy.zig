@@ -43,6 +43,7 @@ pub const Request = struct {
 };
 
 pub const Event = struct {
+    event_ns: u64 = 0, // Recorded now, not when the buffered log is flushed.
     kind: Kind = .request,
     reason: Reason = .none,
     role: Role = .unknown,
@@ -115,7 +116,9 @@ pub const State = struct {
             s.event_count -= 1;
             s.overwritten +|= 1;
         }
-        s.events[(s.event_start + s.event_count) % trace_capacity] = e;
+        var captured = e;
+        captured.event_ns = now();
+        s.events[(s.event_start + s.event_count) % trace_capacity] = captured;
         s.event_count += 1;
     }
 
