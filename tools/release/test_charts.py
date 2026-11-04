@@ -33,6 +33,19 @@ def test_quality_chart_matches_quality_csv():
     found = labels(charts.quality())
     assert {"90.5%", "97.5%", "88.7%", "88.0%", "97", "of 250"} <= found
 
+def test_scorecard_lists_every_speed():
+    found = labels(charts.scorecard(SUMMARY))
+    assert f"{max(r['prefillTps'] for r in SUMMARY['prefill']):,.0f}" in found
+    for r in SUMMARY["decode"]:
+        if r["promptType"] != "structured" and r["concurrency"] in charts.LOADS:
+            assert charts.tps(r["aggregateDecodeTps"]) in found
+
+def test_scorecard_decode_matches_the_readme_tables():
+    readme = (charts.ROOT / "README.md").read_text()
+    for r in SUMMARY["decode"]:
+        if r["promptType"] != "structured" and r["concurrency"] in (1, 2, 4, 8, 16):
+            assert charts.tps(r["aggregateDecodeTps"]) in readme
+
 def test_committed_charts_are_current():
     for name, svg in charts.build().items():
         assert (charts.OUT / name).read_text() == svg, name

@@ -1,15 +1,43 @@
+# DeepSeek V4.1 Flash, uncensored, on 3× DGX Spark: 3,833 tok/s prefill, 126 tok/s code
+
+**Uncensored DeepSeek V4.1 Flash on three DGX Sparks, with the full engine, API and benchmarks: reads prompts at up to
+3,833 tok/s, writes code at 126 tok/s, serves 263 tok/s across 16 requests, and refused 0 of 100 harmful prompts.**
+
 <p align="center">
-  <img src="docs/assets/hero.jpg" width="100%" alt="A glowing orange-red mesh whale rising over dark reflective water among soft bokeh lights. DeepSeek V4.1 Flash, abliterated, 3x DGX Spark, 3.84 bpw EXL3: 3,833 tok/s prefill, 126 tok/s code, 1M context, 90.5% GPQA Diamond" />
+  <img src="docs/assets/scorecard.svg" width="100%" alt="DeepSeek V4.1 Flash abliterated on 3x DGX Spark, TP3, 3.84 bpw EXL3, with a glowing mesh whale. Headline: 3,833 tok/s prefill. Line charts and tables of combined decode tok/s at C1, C2, C4, C8, C12 and C16. Thinking off, greedy, temperature 0: code 125.7, 168.7, 192.1, 219.4, 249.7, 253.9; prose 84.3, 112.4, 165.8, 234.4, 248.9, 262.6. Thinking on, non-greedy, temperature 0.7: code 86.4, 122.3, 147.3, 176.4, 192.5, 211.5; prose 68.6, 94.7, 135.3, 174.5, 197.4, 216.8." />
 </p>
 
-<h1 align="center">DeepSeek V4.1 Flash on 3× DGX Spark</h1>
+## Why you should care
+
+- **Fast on three small desktop machines.** It reads a 128K-token prompt in 35 seconds and holds that speed from 8K to
+  128K. One user gets 126 tok/s on code, and 16 requests at once share up to 263 tok/s.
+- **Uncensored, with the quality kept.** It refused 0 of 100 HarmBench prompts, yet scores 97.5% on AIME 2025 and 90.5%
+  on GPQA-Diamond. It is also the closest to the official model of the 8 packs we scored, closer even than the unedited
+  3.5 bpw quant.
+- **Ready for agents.** You get `/v1/chat/completions`, `/v1/responses` and `/v1/messages`, tool calls, a 1M-token
+  context setting, 16 streams and JSON schemas enforced as the model writes. A [paste-in prompt](#set-up-with-your-coding-agent)
+  lets your coding agent do the setup.
+- **Everything is here to check.** The engine source, deploy scripts, API and raw benchmark data are all in this repo,
+  and the public source rebuilds to the same code we run in production.
+
+## At a glance
+
+| | v1.1, measured 2–3 November 2026 |
+| --- | --- |
+| Prefill | **3,560** tok/s at 4K, **3,708** at 8K, **3,811** at 16K, **3,833** at 32K, **3,800** at 64K, **3,721** at 128K; cold prompts, one request |
+| Time to first token | 1.3 s at 4K, 2.4 s at 8K, 4.5 s at 16K, 8.7 s at 32K, 17.4 s at 64K, 35.4 s at 128K |
+| Decode, thinking off | Code **126 / 169 / 192 / 219 / 254** tok/s and prose **84 / 112 / 166 / 234 / 263** tok/s at 1 / 2 / 4 / 8 / 16 requests, combined |
+| Decode, thinking on | Code 86 / 122 / 147 / 176 / 211 tok/s and prose 69 / 95 / 135 / 174 / 217 tok/s at 1 / 2 / 4 / 8 / 16 requests, combined |
+| Fidelity | Mean KL **0.0784** and 92.0% top-1 agreement with official DeepSeek-V4.1-Flash-1017 logits |
+| Quality | **97.5%** AIME 2025; **90.5%** GPQA-Diamond (1,434 of 1,584); 88.7% IFEval; 88.0% LiveCodeBench v6; 88.0% MMLU-Pro (500-item subset) |
+| Refusals | 0 of 100 HarmBench prompts refused (98 answered, 2 partial); 0 of 250 XSTest safe prompts fully refused |
+| Capacity | 1,048,576-token context configured (largest measured prompt 131,090); 8M-token KV pool, 16 streams, 256 GiB NVMe spill |
+| Model | MoE, 384 routed experts, top-6, 1 shared, 40 layers, MLA, DSpark MTP drafter, Engram; `1bae0e1` |
+| Weights | 3.84 bpw EXL3 composition plus [mrfakename](https://huggingface.co/mrfakename/DeepSeek-V4.1-Flash-1017-abliterated)'s rank-2 refusal-removal edit, re-encoded at 6 bits |
+| Engine | TensorFold `dsv41`, `14803a3` for these numbers, with the LakyFx 1.2.8 prefill port and our TP3 work; v1.2 runs `678ea1b` |
 
 <p align="center">
-  <b>Abliterated · 3.84 bpw EXL3 · TP3 · OpenAI-compatible API</b><br/>
-  <a href="https://huggingface.co/ChimeraWerks/DeepSeek-V4.1-Flash-1017-EXL3-3.84bpw-abliterated"><b>🤗 Weights on Hugging Face</b></a>
-</p>
-
-<p align="center">
+  <a href="https://huggingface.co/ChimeraWerks/DeepSeek-V4.1-Flash-1017-EXL3-3.84bpw-abliterated"><b>🤗 Weights on Hugging Face</b></a><br/>
   <a href="#prefill">Prefill</a> ·
   <a href="#decode">Decode</a> ·
   <a href="#fidelity-and-quality">Fidelity</a> ·
@@ -19,10 +47,6 @@
   <a href="#what-this-build-adds">What this build adds</a> ·
   <a href="#credits">Credits</a>
 </p>
-
-Uncensored **[DeepSeek-V4.1-Flash-1017](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017)**, split across
-three DGX Sparks. Here: the TensorFold engine with our TP3 work, deploy scripts, the API and every benchmark below.
-Weights: **[Hugging Face](https://huggingface.co/ChimeraWerks/DeepSeek-V4.1-Flash-1017-EXL3-3.84bpw-abliterated)**.
 
 ## Current release: v1.2
 
@@ -39,20 +63,6 @@ Spot checks on engine `591d9dc`, 4 November 2026:
 
 The previous production engine is `8f4faf6`, an unreleased build between v1.1 and v1.2. These are quick regression
 checks against that engine, so the decode figures are not comparable with the [decode tables](#decode).
-
-## At a glance
-
-| | v1.1, measured 2–3 November 2026 |
-| --- | --- |
-| Prefill | **3,560–3,833 tok/s** from 4K to 128K tokens; a 128K-token prompt in 35 s |
-| Decode | 126 tok/s single-stream code, 84 prose; up to 263 tok/s aggregate at 16 streams |
-| Fidelity | Mean KL **0.0784** and 92.0% top-1 agreement with official DeepSeek-V4.1-Flash-1017 logits |
-| Quality | **97.5%** AIME 2025; **90.5%** GPQA-Diamond (1,434 of 1,584); 88.7% IFEval; 88.0% LiveCodeBench v6; 88.0% MMLU-Pro (500-item subset) |
-| Refusals | 0 of 100 HarmBench prompts refused (98 answered, 2 partial); 0 of 250 XSTest safe prompts fully refused |
-| Capacity | 1,048,576-token context configured (largest measured prompt 131,090); 8M-token KV pool, 16 streams, 256 GiB NVMe spill |
-| Model | MoE, 384 routed experts, top-6, 1 shared, 40 layers, MLA, DSpark MTP drafter, Engram; `1bae0e1` |
-| Weights | 3.84 bpw EXL3 composition plus [mrfakename](https://huggingface.co/mrfakename/DeepSeek-V4.1-Flash-1017-abliterated)'s rank-2 refusal-removal edit, re-encoded at 6 bits |
-| Engine | TensorFold `dsv41`, `14803a3` for these numbers, with the LakyFx 1.2.8 prefill port and our TP3 work; v1.2 runs `678ea1b` |
 
 ## Prefill
 
