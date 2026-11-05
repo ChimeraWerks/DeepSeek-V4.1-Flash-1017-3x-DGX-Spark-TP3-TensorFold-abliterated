@@ -2,12 +2,12 @@
 
 Results are grouped by runtime and date. Compare runs with matched settings.
 
-## v1.2 — 2026-11-04
+## v1.2 — 2026-11-05
 
-The [v1.2 numeric summary](v1.2/summary.json) combines cold prefill and the 755-item standard quality set measured
-4 November 2026 with a near-empty-pool decode rerun measured 5 November. Both used the production engine `678ea1b` on
-three DGX Spark GB10 systems in TP3, an 8M-token KV pool, 16 streams, all CPU cores, GPUs capped at 2,350 MHz and
-performance cores capped at 3,600 MHz. The summary retains the source hashes and all per-stream timings.
+The [v1.2 numeric summary](v1.2/summary.json) records cold prefill, the 755-item standard quality set and a
+near-empty-pool decode, all measured 5 November 2026 on the production engine `30a9647` on three DGX Spark GB10
+systems in TP3, an 8M-token KV pool, 16 streams, all CPU cores, GPUs capped at 2,350 MHz and performance cores capped
+at 3,600 MHz. The summary retains the source hashes and all per-stream timings.
 
 ### Decode
 
@@ -17,29 +17,29 @@ prompts and zero failed streams across all 48 points. Greedy has thinking off an
 
 | Prompt, greedy | C1 | C2 | C4 | C6 | C8 | C10 | C12 | C16 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Prose | 83.85 | 114.17 | 161.01 | 204.47 | 225.81 | 235.94 | 241.54 | 264.71 |
-| Code | 125.21 | 169.56 | 192.88 | 209.02 | 216.83 | 238.01 | 246.87 | 251.53 |
-| Structured | 152.61 | 255.39 | 383.71 | 449.26 | 504.64 | 443.04 | 496.97 | 478.46 |
+| Prose | 81.96 | 111.15 | 161.36 | 210.65 | 219.17 | 239.03 | 251.73 | 270.27 |
+| Code | 124.37 | 167.23 | 191.85 | 214.28 | 219.95 | 238.38 | 245.21 | 253.40 |
+| Structured | 154.89 | 261.29 | 389.72 | 449.87 | 443.14 | 460.66 | 500.52 | 502.05 |
 
 | Prompt, thinking | C1 | C2 | C4 | C6 | C8 | C10 | C12 | C16 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Prose | 68.04 | 94.13 | 134.13 | 158.09 | 171.94 | 186.99 | 201.37 | 211.91 |
-| Code | 82.21 | 120.32 | 142.26 | 164.55 | 177.64 | 184.00 | 194.42 | 210.28 |
-| Structured | 142.36 | 175.45 | 233.83 | 249.50 | 266.85 | 283.07 | 300.14 | 314.35 |
+| Prose | 68.11 | 94.63 | 130.93 | 161.74 | 173.29 | 187.73 | 196.45 | 215.39 |
+| Code | 82.03 | 119.26 | 141.91 | 165.10 | 175.10 | 182.19 | 196.31 | 211.29 |
+| Structured | 141.53 | 179.62 | 239.88 | 272.96 | 261.64 | 281.40 | 305.44 | 313.27 |
 
 ### Prefill and standard quality set
 
-Cold prompts, zero cached tokens, one request at a time. The collector subtracts 171.54 ms of request overhead from
+Cold prompts, zero cached tokens, one request at a time. The collector subtracts 167.76 ms of request overhead from
 TTFT-derived prefill throughput. Three samples through 32K, two at 64K and 128K.
 
 | Target | Prompt tokens | Samples | Prefill tok/s | TTFT (s) |
 |---|---:|---:|---:|---:|
-| 4K | 4,115 | 3 | 3499.51 | 1.347 |
-| 8K | 8,211 | 3 | 3670.90 | 2.408 |
-| 16K | 16,404 | 3 | 3728.34 | 4.571 |
-| 32K | 32,786 | 3 | 3756.60 | 8.899 |
-| 64K | 65,556 | 2 | 3721.75 | 17.786 |
-| 128K | 131,090 | 2 | 3669.89 | 35.892 |
+| 4K | 4,114 | 3 | 3468.36 | 1.354 |
+| 8K | 8,213 | 3 | 3619.69 | 2.437 |
+| 16K | 16,406 | 3 | 3727.40 | 4.569 |
+| 32K | 32,792 | 3 | 3734.15 | 8.949 |
+| 64K | 65,554 | 2 | 3732.20 | 17.732 |
+| 128K | 131,094 | 2 | 3649.26 | 36.091 |
 
 The standard 755-item set scored **97.1%** (720 passed): arithmetic, reasoning and tracking each 100%, GSM8K 96.5%,
 MMLU 94.4% and QA 92.0%. The AIME 2025, GPQA-Diamond, IFEval, LiveCodeBench and MMLU-Pro results below are separate
@@ -237,7 +237,7 @@ screen. Every arm: [refusal.csv](v1/refusal.csv).
 
 ## Run a comparison
 
-Use the historical sparkDash revision and version for v1 comparisons. Record the collector revision for new runs. Start with the [lifecycle scripts](../docs/reproduction.md), then match modes, prompt categories, stream counts and output budgets. Match engine `cebcf1e` for v1; runs on `7d5b4d8`, `14803a3` or `678ea1b` are separate measurements.
+Use the historical sparkDash revision and version for v1 comparisons. Record the collector revision for new runs. Start with the [lifecycle scripts](../docs/reproduction.md), then match modes, prompt categories, stream counts and output budgets. Match engine `cebcf1e` for v1; runs on `7d5b4d8`, `14803a3`, `678ea1b` or `30a9647` are separate measurements.
 
 Record weight identity, engine/API/collector versions, settings, topology, clocks and affinity. Stop unrelated traffic, warm the engine and apply the cooldown gate before each section. Keep prompts, actual token counts, cache state, timing boundaries and errors in private run records. Publish numeric summaries without credentials or host details.
 

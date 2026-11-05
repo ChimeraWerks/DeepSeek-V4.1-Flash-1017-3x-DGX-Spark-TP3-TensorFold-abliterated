@@ -18,19 +18,19 @@ tags:
 - tensor-parallelism
 ---
 
-# DeepSeek V4.1 Flash on 3× DGX Spark: 3,757 tok/s prefill, 125 tok/s code
+# DeepSeek V4.1 Flash on 3× DGX Spark: 3,734 tok/s prefill, 124 tok/s code
 
-**Abliterated 3.84 bpw EXL3 weights on three small desktop machines: up to 3,757 tok/s reading prompts,
-125 tok/s writing code and 265 tok/s shared across 16 requests.**
+**Abliterated 3.84 bpw EXL3 weights on three small desktop machines: up to 3,734 tok/s reading prompts,
+124 tok/s writing code and 270 tok/s shared across 16 requests.**
 
 <p align="center">
-  <img src="assets/scorecard.png" width="100%" alt="DeepSeek V4.1 Flash abliterated on 3x DGX Spark, TP3, 3.84 bpw EXL3. Headline: 3,757 tok/s prefill. Combined decode tok/s at C1, C2, C4, C8, C12 and C16. Thinking off code: 125.2, 169.6, 192.9, 216.8, 246.9, 251.5; prose: 83.9, 114.2, 161.0, 225.8, 241.5, 264.7. Thinking on code: 82.2, 120.3, 142.3, 177.6, 194.4, 210.3; prose: 68.0, 94.1, 134.1, 171.9, 201.4, 211.9." />
+  <img src="assets/scorecard.png" width="100%" alt="DeepSeek V4.1 Flash abliterated on 3x DGX Spark, TP3, 3.84 bpw EXL3. Headline: 3,734 tok/s prefill. Combined decode tok/s at C1, C2, C4, C8, C12 and C16. Thinking off code: 124.4, 167.2, 191.9, 220.0, 245.2, 253.4; prose: 82.0, 111.2, 161.4, 219.2, 251.7, 270.3. Thinking on code: 82.0, 119.3, 141.9, 175.1, 196.3, 211.3; prose: 68.1, 94.6, 130.9, 173.3, 196.5, 215.4." />
 </p>
 
 ## Why you should care
 
-- **Fast, on three DGX Sparks.** A 128K-token prompt reaches its first token in 36 seconds. One request gets 125 tok/s
-  on code; 16 requests together reach 265 tok/s on prose.
+- **Fast, on three DGX Sparks.** A 128K-token prompt reaches its first token in 36 seconds. One request gets 124 tok/s
+  on code; 16 requests together reach 270 tok/s on prose.
 - **Uncensored without losing quality.** These weights refused 0 of 100 HarmBench prompts, score 97.5% on AIME 2025
   and 90.5% on GPQA-Diamond, and have the lowest KL to the official model of the eight packs we scored.
 - **Ready for agents.** The [serving recipe](https://github.com/ChimeraWerks/DeepSeek-V4.1-Flash-1017-3x-DGX-Spark-TP3-TensorFold-abliterated)
@@ -40,12 +40,12 @@ tags:
 
 ## At a glance
 
-| | v1.2, measured 4–5 November 2026 |
+| | v1.2, measured 5 November 2026 |
 | --- | --- |
-| Prefill | **3,500 / 3,671 / 3,728 / 3,757 / 3,722 / 3,670** tok/s at 4K / 8K / 16K / 32K / 64K / 128K; cold prompts |
-| Time to first token | 1.35 / 2.41 / 4.57 / 8.90 / 17.79 / 35.89 s at 4K / 8K / 16K / 32K / 64K / 128K |
-| Decode, thinking off | Code **125.2 / 169.6 / 192.9 / 216.8 / 246.9 / 251.5** tok/s; prose **83.9 / 114.2 / 161.0 / 225.8 / 241.5 / 264.7** tok/s at C1 / C2 / C4 / C8 / C12 / C16, combined |
-| Decode, thinking on | Code **82.2 / 120.3 / 142.3 / 177.6 / 194.4 / 210.3** tok/s; prose **68.0 / 94.1 / 134.1 / 171.9 / 201.4 / 211.9** tok/s at C1 / C2 / C4 / C8 / C12 / C16, combined |
+| Prefill | **3,468 / 3,620 / 3,727 / 3,734 / 3,732 / 3,649** tok/s at 4K / 8K / 16K / 32K / 64K / 128K; cold prompts |
+| Time to first token | 1.35 / 2.44 / 4.57 / 8.95 / 17.73 / 36.09 s at 4K / 8K / 16K / 32K / 64K / 128K |
+| Decode, thinking off | Code **124.4 / 167.2 / 191.9 / 220.0 / 245.2 / 253.4** tok/s; prose **82.0 / 111.2 / 161.4 / 219.2 / 251.7 / 270.3** tok/s at C1 / C2 / C4 / C8 / C12 / C16, combined |
+| Decode, thinking on | Code **82.0 / 119.3 / 141.9 / 175.1 / 196.3 / 211.3** tok/s; prose **68.1 / 94.6 / 130.9 / 173.3 / 196.5 / 215.4** tok/s at C1 / C2 / C4 / C8 / C12 / C16, combined |
 | Fidelity | Mean KL **0.0784** and 92.0% top-1 agreement with official DeepSeek-V4.1-Flash-1017 logits |
 | Quality | **97.1%** on the 755-item standard set; **97.5%** AIME 2025; **90.5%** GPQA-Diamond (1,434 of 1,584); 88.7% IFEval; 88.0% LiveCodeBench v6; 88.0% MMLU-Pro (500-item subset) |
 | Refusals | 0 of 100 HarmBench prompts refused (98 answered, 2 partial); 0 of 250 XSTest safe prompts fully refused |
@@ -54,29 +54,31 @@ tags:
 | Edit | [mrfakename](https://huggingface.co/mrfakename/DeepSeek-V4.1-Flash-1017-abliterated)'s rank-2 refusal-removal edit, applied in FP32 and re-encoded at 6 bits |
 | Size | About 274 GB: 35 safetensors shards |
 
-The current production recipe runs engine `678ea1b`, native profile `v1.2`, prefill layer slices and the serving API
-with native Messages routes. It keeps the same weights as v1.1. See the [changelog](https://github.com/ChimeraWerks/DeepSeek-V4.1-Flash-1017-3x-DGX-Spark-TP3-TensorFold-abliterated/blob/main/CHANGELOG.md).
+The current production recipe runs engine `30a9647`, native profile `v1.2`, prefill layer slices and the serving API
+with native Messages routes. It keeps the same weights as v1.1. Long chat histories use far less memory when building a
+prompt, and a returning chat keeps its saved state while it waits in line, so it no longer recomputes from zero. See the
+[changelog](https://github.com/ChimeraWerks/DeepSeek-V4.1-Flash-1017-3x-DGX-Spark-TP3-TensorFold-abliterated/blob/main/CHANGELOG.md).
 
 ## Speed
 
-Measured 4–5 November 2026 on production engine `678ea1b` with [sparkDash](https://github.com/MiaAI-Lab/sparkDash).
+Measured 5 November 2026 on production engine `30a9647` with [sparkDash](https://github.com/MiaAI-Lab/sparkDash).
 All CPU cores, GPUs capped at 2,350 MHz and performance cores capped at 3,600 MHz.
 
-<p align="center"><img src="assets/chart-prefill.png" width="100%" alt="Two line charts against prompt length from 4K to 128K tokens. Prefill tok/s: 3,500, 3,671, 3,728, 3,757, 3,722 and 3,670. Time to first token: 1.35, 2.41, 4.57, 8.90, 17.79 and 35.89 seconds" /></p>
+<p align="center"><img src="assets/chart-prefill.png" width="100%" alt="Two line charts against prompt length from 4K to 128K tokens. Prefill tok/s: 3,468, 3,620, 3,727, 3,734, 3,732 and 3,649. Time to first token: 1.35, 2.44, 4.57, 8.95, 17.73 and 36.09 seconds" /></p>
 
 | Context | Prompt tokens | Time to first token | Prefill tok/s |
 | ---: | ---: | ---: | ---: |
-| 4K | 4,115 | 1.35 s | 3,500 |
-| 8K | 8,211 | 2.41 s | 3,671 |
-| 16K | 16,404 | 4.57 s | 3,728 |
-| 32K | 32,786 | 8.90 s | **3,757** |
-| 64K | 65,556 | 17.79 s | 3,722 |
-| 128K | 131,090 | 35.89 s | 3,670 |
+| 4K | 4,114 | 1.35 s | 3,468 |
+| 8K | 8,213 | 2.44 s | 3,620 |
+| 16K | 16,406 | 4.57 s | 3,727 |
+| 32K | 32,792 | 8.95 s | **3,734** |
+| 64K | 65,554 | 17.73 s | 3,732 |
+| 128K | 131,094 | 36.09 s | 3,649 |
 
 Cold prompts, zero cached tokens, one request at a time; tok/s comes from time to first token with the collector's
-171.54 ms request overhead subtracted.
+167.76 ms request overhead subtracted.
 
-<p align="center"><img src="assets/chart-decode.png" width="100%" alt="Two line charts of combined decode tok/s against requests at once. Greedy, prose and code: C1 84 and 125, C2 114 and 170, C4 161 and 193, C8 226 and 217, C12 242 and 247, C16 265 and 252. Thinking, prose and code: C1 68 and 82, C2 94 and 120, C4 134 and 142, C8 172 and 178, C12 201 and 194, C16 212 and 210" /></p>
+<p align="center"><img src="assets/chart-decode.png" width="100%" alt="Two line charts of combined decode tok/s against requests at once. Greedy, prose and code: C1 82 and 124, C2 111 and 167, C4 161 and 192, C8 219 and 220, C12 252 and 245, C16 270 and 253. Thinking, prose and code: C1 68 and 82, C2 95 and 119, C4 131 and 142, C8 173 and 175, C12 196 and 196, C16 215 and 211" /></p>
 
 Near-empty KV pool, short cached prompts, 400 output tokens per request, one run per point. Greedy is temperature 0
 with thinking off; thinking is temperature 0.7 with thinking on. All 354 decode streams completed. Every point and
@@ -86,12 +88,12 @@ per-stream timing: [v1.2 benchmarks](https://github.com/ChimeraWerks/DeepSeek-V4
 
 | Requests at once | Prose, greedy | Code, greedy | Prose, thinking | Code, thinking |
 | ---: | ---: | ---: | ---: | ---: |
-| 1 | 83.9 | 125.2 | 68.0 | 82.2 |
-| 2 | 58.7 | 85.5 | 47.3 | 60.2 |
-| 4 | 41.4 | 49.3 | 34.7 | 37.6 |
-| 8 | 29.1 | 29.2 | 22.3 | 24.1 |
-| 12 | 20.8 | 22.0 | 17.2 | 17.9 |
-| 16 | 17.3 | 17.0 | 13.6 | 14.5 |
+| 1 | 82.0 | 124.4 | 68.1 | 82.0 |
+| 2 | 57.2 | 85.1 | 47.8 | 59.6 |
+| 4 | 41.0 | 49.0 | 33.8 | 37.7 |
+| 8 | 28.1 | 29.5 | 22.6 | 24.5 |
+| 12 | 21.7 | 22.0 | 16.8 | 17.9 |
+| 16 | 17.5 | 17.2 | 14.0 | 14.7 |
 
 ## Fidelity
 
@@ -109,7 +111,7 @@ multilingual, long-context, safety and pretraining text.
 
 ## Quality and refusals
 
-The production engine scored **97.1%** (720 of 755) on the standard set measured 4 November 2026. Arithmetic, reasoning
+The production engine scored **97.1%** (720 of 755) on the standard set measured 5 November 2026. Arithmetic, reasoning
 and tracking each reached 100%; GSM8K scored 96.5%, MMLU 94.4% and QA 92.0%. The task evaluations below measure the same
 weights on their own suites.
 

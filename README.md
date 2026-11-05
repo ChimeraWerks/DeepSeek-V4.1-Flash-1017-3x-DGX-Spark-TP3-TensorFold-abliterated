@@ -1,16 +1,16 @@
-# DeepSeek V4.1 Flash, uncensored, on 3× DGX Spark: 3,757 tok/s prefill, 125 tok/s code
+# DeepSeek V4.1 Flash, uncensored, on 3× DGX Spark: 3,734 tok/s prefill, 124 tok/s code
 
 **Uncensored DeepSeek V4.1 Flash on three DGX Sparks, with the full engine, API and benchmarks: reads prompts at up to
-3,757 tok/s, writes code at 125 tok/s, serves 265 tok/s across 16 requests, and refused 0 of 100 harmful prompts.**
+3,734 tok/s, writes code at 124 tok/s, serves 270 tok/s across 16 requests, and refused 0 of 100 harmful prompts.**
 
 <p align="center">
-  <img src="docs/assets/scorecard.svg" width="100%" alt="DeepSeek V4.1 Flash abliterated on 3x DGX Spark, TP3, 3.84 bpw EXL3, with a glowing mesh whale. Headline: 3,757 tok/s prefill. Line charts and tables of combined decode tok/s at C1, C2, C4, C8, C12 and C16. Thinking off, greedy, temperature 0: code 125.2, 169.6, 192.9, 216.8, 246.9, 251.5; prose 83.9, 114.2, 161.0, 225.8, 241.5, 264.7. Thinking on, non-greedy, temperature 0.7: code 82.2, 120.3, 142.3, 177.6, 194.4, 210.3; prose 68.0, 94.1, 134.1, 171.9, 201.4, 211.9." />
+  <img src="docs/assets/scorecard.svg" width="100%" alt="DeepSeek V4.1 Flash abliterated on 3x DGX Spark, TP3, 3.84 bpw EXL3, with a glowing mesh whale. Headline: 3,734 tok/s prefill. Line charts and tables of combined decode tok/s at C1, C2, C4, C8, C12 and C16. Thinking off, greedy, temperature 0: code 124.4, 167.2, 191.9, 220.0, 245.2, 253.4; prose 82.0, 111.2, 161.4, 219.2, 251.7, 270.3. Thinking on, non-greedy, temperature 0.7: code 82.0, 119.3, 141.9, 175.1, 196.3, 211.3; prose 68.1, 94.6, 130.9, 173.3, 196.5, 215.4." />
 </p>
 
 ## Why you should care
 
-- **Fast on three small desktop machines.** It reads a 128K-token prompt in 36 seconds and holds 3,670–3,757 tok/s
-  from 8K to 128K. One user gets 125 tok/s on code, and 16 requests at once share up to 265 tok/s.
+- **Fast on three small desktop machines.** It reads a 128K-token prompt in 36 seconds and holds 3,620–3,734 tok/s
+  from 8K to 128K. One user gets 124 tok/s on code, and 16 requests at once share up to 270 tok/s.
 - **Uncensored, with the quality kept.** It refused 0 of 100 HarmBench prompts, yet scores 97.5% on AIME 2025 and 90.5%
   on GPQA-Diamond. It is also the closest to the official model of the 8 packs we scored, closer even than the unedited
   3.5 bpw quant.
@@ -22,19 +22,19 @@
 
 ## At a glance
 
-| | v1.2, measured 4–5 November 2026 |
+| | v1.2, measured 5 November 2026 |
 | --- | --- |
-| Prefill | **3,500 / 3,671 / 3,728 / 3,757 / 3,722 / 3,670** tok/s at 4K / 8K / 16K / 32K / 64K / 128K; cold prompts, one request |
-| Time to first token | 1.35 / 2.41 / 4.57 / 8.90 / 17.79 / 35.89 s at 4K / 8K / 16K / 32K / 64K / 128K |
-| Decode, thinking off | Code **125.2 / 169.6 / 192.9 / 216.8 / 246.9 / 251.5** tok/s; prose **83.9 / 114.2 / 161.0 / 225.8 / 241.5 / 264.7** tok/s at C1 / C2 / C4 / C8 / C12 / C16, combined |
-| Decode, thinking on | Code **82.2 / 120.3 / 142.3 / 177.6 / 194.4 / 210.3** tok/s; prose **68.0 / 94.1 / 134.1 / 171.9 / 201.4 / 211.9** tok/s at C1 / C2 / C4 / C8 / C12 / C16, combined |
+| Prefill | **3,468 / 3,620 / 3,727 / 3,734 / 3,732 / 3,649** tok/s at 4K / 8K / 16K / 32K / 64K / 128K; cold prompts, one request |
+| Time to first token | 1.35 / 2.44 / 4.57 / 8.95 / 17.73 / 36.09 s at 4K / 8K / 16K / 32K / 64K / 128K |
+| Decode, thinking off | Code **124.4 / 167.2 / 191.9 / 220.0 / 245.2 / 253.4** tok/s; prose **82.0 / 111.2 / 161.4 / 219.2 / 251.7 / 270.3** tok/s at C1 / C2 / C4 / C8 / C12 / C16, combined |
+| Decode, thinking on | Code **82.0 / 119.3 / 141.9 / 175.1 / 196.3 / 211.3** tok/s; prose **68.1 / 94.6 / 130.9 / 173.3 / 196.5 / 215.4** tok/s at C1 / C2 / C4 / C8 / C12 / C16, combined |
 | Fidelity | Mean KL **0.0784** and 92.0% top-1 agreement with official DeepSeek-V4.1-Flash-1017 logits |
 | Quality | **97.1%** on the 755-item standard set; **97.5%** AIME 2025; **90.5%** GPQA-Diamond (1,434 of 1,584); 88.7% IFEval; 88.0% LiveCodeBench v6; 88.0% MMLU-Pro (500-item subset) |
 | Refusals | 0 of 100 HarmBench prompts refused (98 answered, 2 partial); 0 of 250 XSTest safe prompts fully refused |
 | Capacity | 1,048,576-token context configured (largest measured prompt 131,090); 8M-token KV pool, 16 streams, 256 GiB NVMe spill |
 | Model | MoE, 384 routed experts, top-6, 1 shared, 40 layers, MLA, DSpark MTP drafter, Engram; `1bae0e1` |
 | Weights | 3.84 bpw EXL3 composition plus [mrfakename](https://huggingface.co/mrfakename/DeepSeek-V4.1-Flash-1017-abliterated)'s rank-2 refusal-removal edit, re-encoded at 6 bits |
-| Engine | TensorFold `dsv41`, production engine `678ea1b` for these numbers, with the LakyFx 1.2.8 prefill port and our TP3 work |
+| Engine | TensorFold `dsv41`, production engine `30a9647` for these numbers, with the LakyFx 1.2.8 prefill port and our TP3 work |
 
 <p align="center">
   <a href="https://huggingface.co/ChimeraWerks/DeepSeek-V4.1-Flash-1017-EXL3-3.84bpw-abliterated"><b>🤗 Weights on Hugging Face</b></a><br/>
@@ -50,32 +50,34 @@
 
 ## Current release: v1.2
 
-v1.2 runs in production on engine `678ea1b`, native profile `v1.2`, and the same weights as v1.1. The 4–5 November suite
+v1.2 runs in production on engine `30a9647`, native profile `v1.2`, and the same weights as v1.1. The 5 November suite
 measured prefill, decode and the 755-item standard quality set on this engine. The [v1.2 benchmark record](benchmarks/v1.2/summary.json)
 keeps all 48 decode points, six cold-prefill points, per-stream timing and the source hashes.
 
 This release adds prefill layer slices so active requests decode between long-prompt chunks, matches more
 [`deepseek-recipe`](https://github.com/deepseek-ai/deepseek-recipe) prompt and tool behavior, exposes native Messages routes,
-and expires finished vision jobs. See the [changelog](CHANGELOG.md) for the fixes and build verification.
+and expires finished vision jobs. Long chat histories now use far less memory when building a prompt, and a returning chat
+keeps its saved state while it waits in line, so it no longer recomputes from zero. See the [changelog](CHANGELOG.md) for
+the fixes and build verification.
 
 ## Prefill
 
-Prefill holds 3,670–3,757 tok/s from 8K through 128K tokens, with every prompt row split across the three GB10s.
+Prefill holds 3,620–3,734 tok/s from 8K through 128K tokens, with every prompt row split across the three GB10s.
 
-<p align="center"><img src="docs/assets/chart-prefill.svg" width="100%" alt="Two line charts against prompt length from 4K to 128K tokens. Prefill tok/s: 3,500, 3,671, 3,728, 3,757, 3,722 and 3,670. Time to first token: 1.35, 2.41, 4.57, 8.90, 17.79 and 35.89 seconds" /></p>
+<p align="center"><img src="docs/assets/chart-prefill.svg" width="100%" alt="Two line charts against prompt length from 4K to 128K tokens. Prefill tok/s: 3,468, 3,620, 3,727, 3,734, 3,732 and 3,649. Time to first token: 1.35, 2.44, 4.57, 8.95, 17.73 and 36.09 seconds" /></p>
 
 | Context | Prompt tokens | Time to first token | Prefill tok/s | Per Spark |
 | ---: | ---: | ---: | ---: | ---: |
-| 4K | 4,115 | 1.35 s | **3,500** | 1,167 |
-| 8K | 8,211 | 2.41 s | **3,671** | 1,224 |
-| 16K | 16,404 | 4.57 s | **3,728** | 1,243 |
-| 32K | 32,786 | 8.90 s | **3,757** | 1,252 |
-| 64K | 65,556 | 17.79 s | **3,722** | 1,241 |
-| 128K | 131,090 | 35.89 s | **3,670** | 1,223 |
+| 4K | 4,114 | 1.35 s | **3,468** | 1,156 |
+| 8K | 8,213 | 2.44 s | **3,620** | 1,207 |
+| 16K | 16,406 | 4.57 s | **3,727** | 1,242 |
+| 32K | 32,792 | 8.95 s | **3,734** | 1,245 |
+| 64K | 65,554 | 17.73 s | **3,732** | 1,244 |
+| 128K | 131,094 | 36.09 s | **3,649** | 1,216 |
 
-Measured 4 November 2026 on engine `678ea1b` with [sparkDash](https://github.com/MiaAI-Lab/sparkDash): cold prompts,
+Measured 5 November 2026 on engine `30a9647` with [sparkDash](https://github.com/MiaAI-Lab/sparkDash): cold prompts,
 zero cached tokens, one request at a time, three samples through 32K and two at 64K and 128K. tok/s comes from time to
-first token with the collector's 171.54 ms request overhead subtracted. All CPU cores, performance cores capped at
+first token with the collector's 167.76 ms request overhead subtracted. All CPU cores, performance cores capped at
 3,600 MHz and GPUs capped at 2,350 MHz. [Every measured point](benchmarks/v1.2/summary.json).
 
 ### How prefill got here
@@ -141,9 +143,9 @@ Data: [development.csv](benchmarks/dev/development.csv).
 
 ## Decode
 
-<p align="center"><img src="docs/assets/chart-decode.svg" width="100%" alt="Two line charts of combined decode tok/s against requests at once. Greedy, prose and code: C1 84 and 125, C2 114 and 170, C4 161 and 193, C8 226 and 217, C12 242 and 247, C16 265 and 252. Thinking, prose and code: C1 68 and 82, C2 94 and 120, C4 134 and 142, C8 172 and 178, C12 201 and 194, C16 212 and 210" /></p>
+<p align="center"><img src="docs/assets/chart-decode.svg" width="100%" alt="Two line charts of combined decode tok/s against requests at once. Greedy, prose and code: C1 82 and 124, C2 111 and 167, C4 161 and 192, C8 219 and 220, C12 252 and 245, C16 270 and 253. Thinking, prose and code: C1 68 and 82, C2 95 and 119, C4 131 and 142, C8 173 and 175, C12 196 and 196, C16 215 and 211" /></p>
 
-Measured 5 November 2026 on engine `678ea1b` with a near-empty KV pool: 400 output tokens per request, one run per point,
+Measured 5 November 2026 on engine `30a9647` with a near-empty KV pool: 400 output tokens per request, one run per point,
 timed at the engine on short cached prompts. Greedy is temperature 0 with thinking off; thinking is temperature 0.7 with
 thinking on. All 354 decode streams completed with no failures.
 
@@ -154,23 +156,23 @@ thinking on. All 354 decode streams completed with no failures.
 
 | Requests at once | Greedy aggregate | Greedy per request | Thinking aggregate | Thinking per request |
 | ---: | ---: | ---: | ---: | ---: |
-| 1 | 83.9 | 83.9 | 68.0 | 68.0 |
-| 2 | 114.2 | 58.7 | 94.1 | 47.3 |
-| 4 | 161.0 | 41.4 | 134.1 | 34.7 |
-| 8 | 225.8 | 29.1 | 171.9 | 22.3 |
-| 12 | 241.5 | 20.8 | 201.4 | 17.2 |
-| 16 | 264.7 | 17.3 | 211.9 | 13.6 |
+| 1 | 82.0 | 82.0 | 68.1 | 68.1 |
+| 2 | 111.2 | 57.2 | 94.6 | 47.8 |
+| 4 | 161.4 | 41.0 | 130.9 | 33.8 |
+| 8 | 219.2 | 28.1 | 173.3 | 22.6 |
+| 12 | 251.7 | 21.7 | 196.5 | 16.8 |
+| 16 | 270.3 | 17.5 | 215.4 | 14.0 |
 
 **Code (tok/s):**
 
 | Requests at once | Greedy aggregate | Greedy per request | Thinking aggregate | Thinking per request |
 | ---: | ---: | ---: | ---: | ---: |
-| 1 | 125.2 | 125.2 | 82.2 | 82.2 |
-| 2 | 169.6 | 85.5 | 120.3 | 60.2 |
-| 4 | 192.9 | 49.3 | 142.3 | 37.6 |
-| 8 | 216.8 | 29.2 | 177.6 | 24.1 |
-| 12 | 246.9 | 22.0 | 194.4 | 17.9 |
-| 16 | 251.5 | 17.0 | 210.3 | 14.5 |
+| 1 | 124.4 | 124.4 | 82.0 | 82.0 |
+| 2 | 167.2 | 85.1 | 119.3 | 59.6 |
+| 4 | 191.9 | 49.0 | 141.9 | 37.7 |
+| 8 | 220.0 | 29.5 | 175.1 | 24.5 |
+| 12 | 245.2 | 22.0 | 196.3 | 17.9 |
+| 16 | 253.4 | 17.2 | 211.3 | 14.7 |
 
 C6, C10, structured prompts and every per-stream timing: [v1.2 benchmark record](benchmarks/v1.2/summary.json).
 
@@ -448,7 +450,7 @@ Measured on the Sparks and left out because they lost speed or headroom ([develo
 
 ```
 scripts/          prep-sparks, preflight, prepare, start, smoke-test, status, stop
-engine/           TensorFold dsv41 source at 678ea1b, build script and kernel inputs
+engine/           TensorFold dsv41 source at 30a9647, build script and kernel inputs
 serving/          OpenAI-compatible serving API
 tools/            Spark host prep, cluster deployer, rank preparation and release checks
 release/          manifest, native profiles, weight provenance, build hashes

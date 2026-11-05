@@ -427,7 +427,7 @@ def scorecard(summary):
          text(432, 306, "tok/s prefill", 44, W_INK, weight=800, extra=' letter-spacing="-0.8"')]
     for x, title, tag, mode in ((30, "Thinking off", "Greedy · temperature 0", "greedy"), (710, "Thinking on", "Non-greedy · temperature 0.7", "think")):
         p.append(decode_panel(x, 380, title, tag, {(k, c): v for (m, k, c), v in rates.items() if m == mode}))
-    p.append(text(700, 1122, "Combined tok/s across all requests · 400 output tokens each · engine 678ea1b · measured 4–5 November 2026",
+    p.append(text(700, 1122, "Combined tok/s across all requests · 400 output tokens each · engine 30a9647 · measured 5 November 2026",
                   17, W_MUTED, "middle"))
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}" height="{h}" font-family="{FONT}">
 {SCORE_DEFS}

@@ -2,14 +2,14 @@
   "schema_version": 1,
   "release": "v1.2",
   "date": "2026-11-05",
-  "prefill_quality_date_eastern": "2026-11-04",
+  "prefill_quality_date_eastern": "2026-11-05",
   "decode_date_eastern": "2026-11-05",
   "sources": {
-    "decode_summary_sha256": "cb6c6c08a9e112348c9bb03fa75bd6ed975768f9d06259fb2ed968ccc5a482c5",
-    "prefill_quality_summary_sha256": "9985f1f8eb22f4a27f55b61b21ed282509052681b524f58c785399359755dbe1"
+    "decode_summary_sha256": "9d9a7876d4eba14c3da848d11f52e4fdb6977af92586dcf94ecef0be5951ea63",
+    "prefill_quality_summary_sha256": "9d9a7876d4eba14c3da848d11f52e4fdb6977af92586dcf94ecef0be5951ea63"
   },
   "runtime": {
-    "engine_commit": "678ea1b",
+    "engine_commit": "30a9647",
     "pool_tokens": 8000000,
     "streams": 16,
     "graph_cap": 128,
@@ -32,10 +32,10 @@
       "promptType": "prose",
       "mode": "greedy",
       "concurrency": 1,
-      "aggregateDecodeTps": 83.85,
-      "meanDecodeTps": 83.85,
-      "medianDecodeTps": 83.85,
-      "meanTtftMs": 46.26,
+      "aggregateDecodeTps": 81.96,
+      "meanDecodeTps": 81.96,
+      "medianDecodeTps": 81.96,
+      "meanTtftMs": 45.01,
       "streamsOk": 1,
       "streamsFailed": 0,
       "totalCompletionTokens": 400,
@@ -47,10 +47,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 83.85,
+          "decodeTps": 81.96,
           "prefillTokens": 32,
-          "ttftMs": 46.26,
-          "totalMs": 4818.22,
+          "ttftMs": 45.01,
+          "totalMs": 4925.25,
           "error": null
         }
       ]
@@ -59,10 +59,10 @@
       "promptType": "prose",
       "mode": "greedy",
       "concurrency": 2,
-      "aggregateDecodeTps": 114.17,
-      "meanDecodeTps": 58.65,
-      "medianDecodeTps": 58.65,
-      "meanTtftMs": 45.28,
+      "aggregateDecodeTps": 111.15,
+      "meanDecodeTps": 57.24,
+      "medianDecodeTps": 57.24,
+      "meanTtftMs": 39.15,
       "streamsOk": 2,
       "streamsFailed": 0,
       "totalCompletionTokens": 800,
@@ -74,10 +74,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 60.21,
+          "decodeTps": 58.89,
           "prefillTokens": 39,
-          "ttftMs": 45.44,
-          "totalMs": 6694.57,
+          "ttftMs": 39.23,
+          "totalMs": 6834.86,
           "error": null
         },
         {
@@ -85,10 +85,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 57.08,
+          "decodeTps": 55.58,
           "prefillTokens": 39,
-          "ttftMs": 45.12,
-          "totalMs": 7046.22,
+          "ttftMs": 39.07,
+          "totalMs": 7230.44,
           "error": null
         }
       ]
@@ -97,10 +97,10 @@
       "promptType": "prose",
       "mode": "greedy",
       "concurrency": 4,
-      "aggregateDecodeTps": 161.01,
-      "meanDecodeTps": 41.4,
-      "medianDecodeTps": 41.39,
-      "meanTtftMs": 41.38,
+      "aggregateDecodeTps": 161.36,
+      "meanDecodeTps": 41.04,
+      "medianDecodeTps": 40.71,
+      "meanTtftMs": 34.26,
       "streamsOk": 4,
       "streamsFailed": 0,
       "totalCompletionTokens": 1600,
@@ -112,10 +112,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 41.3,
+          "decodeTps": 40.34,
           "prefillTokens": 39,
-          "ttftMs": 10.69,
-          "totalMs": 9698.69,
+          "ttftMs": 16.95,
+          "totalMs": 9931.55,
           "error": null
         },
         {
@@ -123,10 +123,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 42.4,
+          "decodeTps": 40.92,
           "prefillTokens": 39,
-          "ttftMs": 51.76,
-          "totalMs": 9486.82,
+          "ttftMs": 16.21,
+          "totalMs": 9788.27,
           "error": null
         },
         {
@@ -134,10 +134,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 40.42,
+          "decodeTps": 42.41,
           "prefillTokens": 39,
-          "ttftMs": 51.62,
-          "totalMs": 9933.5,
+          "ttftMs": 52.06,
+          "totalMs": 9485.14,
           "error": null
         },
         {
@@ -145,10 +145,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 41.48,
+          "decodeTps": 40.49,
           "prefillTokens": 39,
-          "ttftMs": 51.46,
-          "totalMs": 9710.92,
+          "ttftMs": 51.83,
+          "totalMs": 9933.66,
           "error": null
         }
       ]
@@ -157,10 +157,10 @@
       "promptType": "prose",
       "mode": "greedy",
       "concurrency": 6,
-      "aggregateDecodeTps": 204.47,
-      "meanDecodeTps": 35.14,
-      "medianDecodeTps": 34.95,
-      "meanTtftMs": 46.89,
+      "aggregateDecodeTps": 210.65,
+      "meanDecodeTps": 36.28,
+      "medianDecodeTps": 36.3,
+      "meanTtftMs": 30.28,
       "streamsOk": 6,
       "streamsFailed": 0,
       "totalCompletionTokens": 2400,
@@ -172,10 +172,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 34.89,
+          "decodeTps": 37.04,
           "prefillTokens": 39,
-          "ttftMs": 12.61,
-          "totalMs": 11473.92,
+          "ttftMs": 30.73,
+          "totalMs": 10849.82,
           "error": null
         },
         {
@@ -183,10 +183,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 34.2,
+          "decodeTps": 35.87,
           "prefillTokens": 39,
-          "ttftMs": 54.06,
-          "totalMs": 11733.68,
+          "ttftMs": 30.47,
+          "totalMs": 11162.46,
           "error": null
         },
         {
@@ -194,10 +194,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 35.01,
+          "decodeTps": 37.05,
           "prefillTokens": 39,
-          "ttftMs": 53.87,
-          "totalMs": 11489.18,
+          "ttftMs": 30.27,
+          "totalMs": 10845.41,
           "error": null
         },
         {
@@ -205,10 +205,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 36.53,
+          "decodeTps": 35.11,
           "prefillTokens": 39,
-          "ttftMs": 53.72,
-          "totalMs": 10994.5,
+          "ttftMs": 30.17,
+          "totalMs": 11405.21,
           "error": null
         },
         {
@@ -216,10 +216,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 34.66,
+          "decodeTps": 36.06,
           "prefillTokens": 39,
-          "ttftMs": 53.59,
-          "totalMs": 11587.35,
+          "ttftMs": 30.12,
+          "totalMs": 11115.55,
           "error": null
         },
         {
@@ -227,10 +227,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 35.54,
+          "decodeTps": 36.53,
           "prefillTokens": 39,
-          "ttftMs": 53.46,
-          "totalMs": 11301.75,
+          "ttftMs": 29.95,
+          "totalMs": 10969.16,
           "error": null
         }
       ]
@@ -239,10 +239,10 @@
       "promptType": "prose",
       "mode": "greedy",
       "concurrency": 8,
-      "aggregateDecodeTps": 225.81,
-      "meanDecodeTps": 29.1,
-      "medianDecodeTps": 28.66,
-      "meanTtftMs": 37.71,
+      "aggregateDecodeTps": 219.17,
+      "meanDecodeTps": 28.07,
+      "medianDecodeTps": 27.59,
+      "meanTtftMs": 41.63,
       "streamsOk": 8,
       "streamsFailed": 0,
       "totalCompletionTokens": 3200,
@@ -254,10 +254,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 28.23,
+          "decodeTps": 27.59,
           "prefillTokens": 39,
-          "ttftMs": 11,
-          "totalMs": 14150.82,
+          "ttftMs": 32.18,
+          "totalMs": 14520.64,
           "error": null
         },
         {
@@ -265,10 +265,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 28.59,
+          "decodeTps": 27.4,
           "prefillTokens": 39,
-          "ttftMs": 36.01,
-          "totalMs": 14011.79,
+          "ttftMs": 32.03,
+          "totalMs": 14613.07,
           "error": null
         },
         {
@@ -276,10 +276,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 28.73,
+          "decodeTps": 29.12,
           "prefillTokens": 39,
-          "ttftMs": 35.94,
-          "totalMs": 13942.74,
+          "ttftMs": 31.94,
+          "totalMs": 13753.93,
           "error": null
         },
         {
@@ -287,10 +287,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 28.35,
+          "decodeTps": 27.48,
           "prefillTokens": 39,
-          "ttftMs": 35.88,
-          "totalMs": 14121.15,
+          "ttftMs": 31.88,
+          "totalMs": 14556.07,
           "error": null
         },
         {
@@ -298,10 +298,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 28.46,
+          "decodeTps": 27.59,
           "prefillTokens": 39,
-          "ttftMs": 35.83,
-          "totalMs": 14071,
+          "ttftMs": 31.87,
+          "totalMs": 14522.85,
           "error": null
         },
         {
@@ -309,10 +309,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 30.26,
+          "decodeTps": 27.4,
           "prefillTokens": 39,
-          "ttftMs": 35.8,
-          "totalMs": 13243.05,
+          "ttftMs": 31.76,
+          "totalMs": 14609.39,
           "error": null
         },
         {
@@ -320,10 +320,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 30.77,
+          "decodeTps": 29.53,
           "prefillTokens": 39,
-          "ttftMs": 75.55,
-          "totalMs": 13065.49,
+          "ttftMs": 70.73,
+          "totalMs": 13583.8,
           "error": null
         },
         {
@@ -331,10 +331,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 29.39,
+          "decodeTps": 28.42,
           "prefillTokens": 39,
-          "ttftMs": 35.65,
-          "totalMs": 13632.71,
+          "ttftMs": 70.64,
+          "totalMs": 14127.6,
           "error": null
         }
       ]
@@ -343,10 +343,10 @@
       "promptType": "prose",
       "mode": "greedy",
       "concurrency": 10,
-      "aggregateDecodeTps": 235.94,
-      "meanDecodeTps": 24.24,
-      "medianDecodeTps": 24.08,
-      "meanTtftMs": 36.86,
+      "aggregateDecodeTps": 239.03,
+      "meanDecodeTps": 24.71,
+      "medianDecodeTps": 24.41,
+      "meanTtftMs": 38.78,
       "streamsOk": 10,
       "streamsFailed": 0,
       "totalCompletionTokens": 4000,
@@ -358,10 +358,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 24.02,
+          "decodeTps": 24.53,
           "prefillTokens": 39,
-          "ttftMs": 9.82,
-          "totalMs": 16642.13,
+          "ttftMs": 24.42,
+          "totalMs": 16312.11,
           "error": null
         },
         {
@@ -369,10 +369,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 24.3,
+          "decodeTps": 26.97,
           "prefillTokens": 39,
-          "ttftMs": 46.97,
-          "totalMs": 16484.63,
+          "ttftMs": 48.77,
+          "totalMs": 14855.27,
           "error": null
         },
         {
@@ -380,10 +380,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 24.14,
+          "decodeTps": 24.18,
           "prefillTokens": 39,
-          "ttftMs": 26.42,
-          "totalMs": 16571.76,
+          "ttftMs": 24.31,
+          "totalMs": 16548.96,
           "error": null
         },
         {
@@ -391,10 +391,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 23.62,
+          "decodeTps": 23.99,
           "prefillTokens": 39,
-          "ttftMs": 26.36,
-          "totalMs": 16936.73,
+          "ttftMs": 48.64,
+          "totalMs": 16701.46,
           "error": null
         },
         {
@@ -402,10 +402,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 23.96,
+          "decodeTps": 24.39,
           "prefillTokens": 39,
-          "ttftMs": 26.29,
-          "totalMs": 16700.42,
+          "ttftMs": 23.99,
+          "totalMs": 16430.96,
           "error": null
         },
         {
@@ -413,10 +413,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 23.75,
+          "decodeTps": 24.43,
           "prefillTokens": 39,
-          "ttftMs": 46.65,
-          "totalMs": 16865.9,
+          "ttftMs": 48.56,
+          "totalMs": 16433.92,
           "error": null
         },
         {
@@ -424,10 +424,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 24.9,
+          "decodeTps": 25.03,
           "prefillTokens": 39,
-          "ttftMs": 46.59,
-          "totalMs": 16090.53,
+          "ttftMs": 23.9,
+          "totalMs": 15978.92,
           "error": null
         },
         {
@@ -435,10 +435,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 24.6,
+          "decodeTps": 23.99,
           "prefillTokens": 39,
-          "ttftMs": 46.53,
-          "totalMs": 16282.82,
+          "ttftMs": 48.47,
+          "totalMs": 16686.35,
           "error": null
         },
         {
@@ -446,10 +446,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 25.13,
+          "decodeTps": 25.65,
           "prefillTokens": 39,
-          "ttftMs": 46.47,
-          "totalMs": 15936.02,
+          "ttftMs": 48.42,
+          "totalMs": 15618.07,
           "error": null
         },
         {
@@ -457,10 +457,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 23.99,
+          "decodeTps": 23.94,
           "prefillTokens": 39,
-          "ttftMs": 46.47,
-          "totalMs": 16707.93,
+          "ttftMs": 48.35,
+          "totalMs": 16719.26,
           "error": null
         }
       ]
@@ -469,10 +469,10 @@
       "promptType": "prose",
       "mode": "greedy",
       "concurrency": 12,
-      "aggregateDecodeTps": 241.54,
-      "meanDecodeTps": 20.75,
-      "medianDecodeTps": 20.45,
-      "meanTtftMs": 46.57,
+      "aggregateDecodeTps": 251.73,
+      "meanDecodeTps": 21.74,
+      "medianDecodeTps": 21.53,
+      "meanTtftMs": 45.11,
       "streamsOk": 12,
       "streamsFailed": 0,
       "totalCompletionTokens": 4800,
@@ -484,10 +484,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 21.92,
+          "decodeTps": 21.64,
           "prefillTokens": 39,
-          "ttftMs": 14.61,
-          "totalMs": 18228.83,
+          "ttftMs": 18.69,
+          "totalMs": 18479.53,
           "error": null
         },
         {
@@ -495,10 +495,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 20.88,
+          "decodeTps": 21.76,
           "prefillTokens": 39,
-          "ttftMs": 28.62,
-          "totalMs": 19160.3,
+          "ttftMs": 18.53,
+          "totalMs": 18364.54,
           "error": null
         },
         {
@@ -506,10 +506,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 20.31,
+          "decodeTps": 22.52,
           "prefillTokens": 39,
-          "ttftMs": 28.55,
-          "totalMs": 19780.05,
+          "ttftMs": 32.64,
+          "totalMs": 17767.56,
           "error": null
         },
         {
@@ -517,10 +517,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 20.31,
+          "decodeTps": 22.38,
           "prefillTokens": 39,
-          "ttftMs": 28.49,
-          "totalMs": 19736.64,
+          "ttftMs": 32.6,
+          "totalMs": 17886.64,
           "error": null
         },
         {
@@ -528,10 +528,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 20.16,
+          "decodeTps": 21.17,
           "prefillTokens": 39,
-          "ttftMs": 43.53,
-          "totalMs": 19836.65,
+          "ttftMs": 32.56,
+          "totalMs": 18886.32,
           "error": null
         },
         {
@@ -539,10 +539,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 20.19,
+          "decodeTps": 21.56,
           "prefillTokens": 39,
-          "ttftMs": 43.45,
-          "totalMs": 19833.56,
+          "ttftMs": 32.67,
+          "totalMs": 18556.23,
           "error": null
         },
         {
@@ -550,10 +550,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 20.47,
+          "decodeTps": 21.45,
           "prefillTokens": 39,
-          "ttftMs": 28.39,
-          "totalMs": 19544.25,
+          "ttftMs": 48.62,
+          "totalMs": 18685.21,
           "error": null
         },
         {
@@ -561,10 +561,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 21.81,
+          "decodeTps": 21.36,
           "prefillTokens": 39,
-          "ttftMs": 43.3,
-          "totalMs": 18343.01,
+          "ttftMs": 48.57,
+          "totalMs": 18734.62,
           "error": null
         },
         {
@@ -572,10 +572,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 21.37,
+          "decodeTps": 23.28,
           "prefillTokens": 39,
-          "ttftMs": 43.38,
-          "totalMs": 18724.83,
+          "ttftMs": 48.67,
+          "totalMs": 17204.54,
           "error": null
         },
         {
@@ -583,10 +583,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 20.82,
+          "decodeTps": 21.25,
           "prefillTokens": 39,
-          "ttftMs": 85.53,
-          "totalMs": 19261,
+          "ttftMs": 48.47,
+          "totalMs": 18842.36,
           "error": null
         },
         {
@@ -594,10 +594,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 20.44,
+          "decodeTps": 21.5,
           "prefillTokens": 39,
-          "ttftMs": 85.5,
-          "totalMs": 19629.36,
+          "ttftMs": 89.66,
+          "totalMs": 18687.89,
           "error": null
         },
         {
@@ -605,10 +605,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 20.37,
+          "decodeTps": 21.06,
           "prefillTokens": 39,
-          "ttftMs": 85.44,
-          "totalMs": 19711.76,
+          "ttftMs": 89.58,
+          "totalMs": 19052.33,
           "error": null
         }
       ]
@@ -617,10 +617,10 @@
       "promptType": "prose",
       "mode": "greedy",
       "concurrency": 16,
-      "aggregateDecodeTps": 264.71,
-      "meanDecodeTps": 17.33,
-      "medianDecodeTps": 17.23,
-      "meanTtftMs": 52.02,
+      "aggregateDecodeTps": 270.27,
+      "meanDecodeTps": 17.48,
+      "medianDecodeTps": 17.34,
+      "meanTtftMs": 53.97,
       "streamsOk": 16,
       "streamsFailed": 0,
       "totalCompletionTokens": 6400,
@@ -632,10 +632,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.94,
+          "decodeTps": 18.11,
           "prefillTokens": 39,
-          "ttftMs": 21.56,
-          "totalMs": 22274.63,
+          "ttftMs": 13.12,
+          "totalMs": 22056.29,
           "error": null
         },
         {
@@ -643,10 +643,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.67,
+          "decodeTps": 18.07,
           "prefillTokens": 39,
-          "ttftMs": 21.38,
-          "totalMs": 22635.53,
+          "ttftMs": 52.71,
+          "totalMs": 22155.61,
           "error": null
         },
         {
@@ -654,10 +654,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.7,
+          "decodeTps": 17.03,
           "prefillTokens": 39,
-          "ttftMs": 21.53,
-          "totalMs": 23946.57,
+          "ttftMs": 28.2,
+          "totalMs": 23491.09,
           "error": null
         },
         {
@@ -665,10 +665,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.67,
+          "decodeTps": 17.52,
           "prefillTokens": 39,
-          "ttftMs": 44.3,
-          "totalMs": 24028.22,
+          "ttftMs": 28.36,
+          "totalMs": 22826.55,
           "error": null
         },
         {
@@ -676,10 +676,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.8,
+          "decodeTps": 16.92,
           "prefillTokens": 39,
-          "ttftMs": 44.26,
-          "totalMs": 23811.39,
+          "ttftMs": 52.44,
+          "totalMs": 23633.38,
           "error": null
         },
         {
@@ -687,10 +687,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.56,
+          "decodeTps": 16.94,
           "prefillTokens": 39,
-          "ttftMs": 44.27,
-          "totalMs": 24150.25,
+          "ttftMs": 28.01,
+          "totalMs": 23630.32,
           "error": null
         },
         {
@@ -698,10 +698,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.22,
+          "decodeTps": 17.61,
           "prefillTokens": 39,
-          "ttftMs": 44.21,
-          "totalMs": 23242.7,
+          "ttftMs": 52.28,
+          "totalMs": 22727.75,
           "error": null
         },
         {
@@ -709,10 +709,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 18.07,
+          "decodeTps": 18.23,
           "prefillTokens": 39,
-          "ttftMs": 44.06,
-          "totalMs": 22143.21,
+          "ttftMs": 52.19,
+          "totalMs": 21961.21,
           "error": null
         },
         {
@@ -720,10 +720,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 18.53,
+          "decodeTps": 17.37,
           "prefillTokens": 39,
-          "ttftMs": 43.98,
-          "totalMs": 21596.49,
+          "ttftMs": 52.1,
+          "totalMs": 23047.23,
           "error": null
         },
         {
@@ -731,10 +731,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.16,
+          "decodeTps": 17.31,
           "prefillTokens": 39,
-          "ttftMs": 65.93,
-          "totalMs": 23335.81,
+          "ttftMs": 52.19,
+          "totalMs": 23125.81,
           "error": null
         },
         {
@@ -742,10 +742,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.61,
+          "decodeTps": 17.2,
           "prefillTokens": 39,
-          "ttftMs": 65.9,
-          "totalMs": 22742.07,
+          "ttftMs": 75.74,
+          "totalMs": 23290.49,
           "error": null
         },
         {
@@ -753,10 +753,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.24,
+          "decodeTps": 17.27,
           "prefillTokens": 39,
-          "ttftMs": 65.89,
-          "totalMs": 23245.16,
+          "ttftMs": 75.46,
+          "totalMs": 23193.6,
           "error": null
         },
         {
@@ -764,10 +764,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.73,
+          "decodeTps": 17.47,
           "prefillTokens": 39,
-          "ttftMs": 65.85,
-          "totalMs": 23949.98,
+          "ttftMs": 75.32,
+          "totalMs": 22936.69,
           "error": null
         },
         {
@@ -775,10 +775,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.79,
+          "decodeTps": 17.07,
           "prefillTokens": 39,
-          "ttftMs": 65.78,
-          "totalMs": 22500.79,
+          "ttftMs": 75.22,
+          "totalMs": 23486.63,
           "error": null
         },
         {
@@ -786,10 +786,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.74,
+          "decodeTps": 18.53,
           "prefillTokens": 39,
-          "ttftMs": 107.8,
-          "totalMs": 22637.61,
+          "ttftMs": 75.14,
+          "totalMs": 21620.02,
           "error": null
         },
         {
@@ -797,10 +797,10 @@
           "cachedTokens": 39,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.92,
+          "decodeTps": 16.97,
           "prefillTokens": 39,
-          "ttftMs": 65.64,
-          "totalMs": 23664.65,
+          "ttftMs": 75.04,
+          "totalMs": 23604.42,
           "error": null
         }
       ]
@@ -809,10 +809,10 @@
       "promptType": "code",
       "mode": "greedy",
       "concurrency": 1,
-      "aggregateDecodeTps": 125.21,
-      "meanDecodeTps": 125.21,
-      "medianDecodeTps": 125.21,
-      "meanTtftMs": 46.14,
+      "aggregateDecodeTps": 124.37,
+      "meanDecodeTps": 124.37,
+      "medianDecodeTps": 124.37,
+      "meanTtftMs": 44.6,
       "streamsOk": 1,
       "streamsFailed": 0,
       "totalCompletionTokens": 400,
@@ -824,10 +824,10 @@
           "cachedTokens": 59,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 125.21,
+          "decodeTps": 124.37,
           "prefillTokens": 59,
-          "ttftMs": 46.14,
-          "totalMs": 3241.92,
+          "ttftMs": 44.6,
+          "totalMs": 3261.76,
           "error": null
         }
       ]
@@ -836,10 +836,10 @@
       "promptType": "code",
       "mode": "greedy",
       "concurrency": 2,
-      "aggregateDecodeTps": 169.56,
-      "meanDecodeTps": 85.48,
-      "medianDecodeTps": 85.48,
-      "meanTtftMs": 46.3,
+      "aggregateDecodeTps": 167.23,
+      "meanDecodeTps": 85.1,
+      "medianDecodeTps": 85.1,
+      "meanTtftMs": 47.6,
       "streamsOk": 2,
       "streamsFailed": 0,
       "totalCompletionTokens": 800,
@@ -851,10 +851,10 @@
           "cachedTokens": 59,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 86.16,
+          "decodeTps": 86.57,
           "prefillTokens": 59,
-          "ttftMs": 46.34,
-          "totalMs": 4698.61,
+          "ttftMs": 47.68,
+          "totalMs": 4672.86,
           "error": null
         },
         {
@@ -862,10 +862,10 @@
           "cachedTokens": 59,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 84.79,
+          "decodeTps": 83.62,
           "prefillTokens": 59,
-          "ttftMs": 46.26,
-          "totalMs": 4763.32,
+          "ttftMs": 47.51,
+          "totalMs": 4831.01,
           "error": null
         }
       ]
@@ -874,10 +874,10 @@
       "promptType": "code",
       "mode": "greedy",
       "concurrency": 4,
-      "aggregateDecodeTps": 192.88,
-      "meanDecodeTps": 49.32,
-      "medianDecodeTps": 49.32,
-      "meanTtftMs": 47.27,
+      "aggregateDecodeTps": 191.85,
+      "meanDecodeTps": 48.98,
+      "medianDecodeTps": 49,
+      "meanTtftMs": 41.77,
       "streamsOk": 4,
       "streamsFailed": 0,
       "totalCompletionTokens": 1600,
@@ -889,10 +889,10 @@
           "cachedTokens": 59,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 49.32,
+          "decodeTps": 49.73,
           "prefillTokens": 59,
-          "ttftMs": 47.53,
-          "totalMs": 8169.29,
+          "ttftMs": 52.32,
+          "totalMs": 8097.22,
           "error": null
         },
         {
@@ -900,10 +900,10 @@
           "cachedTokens": 59,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 50.43,
+          "decodeTps": 49.48,
           "prefillTokens": 59,
-          "ttftMs": 47.32,
-          "totalMs": 7978.3,
+          "ttftMs": 11.14,
+          "totalMs": 8110.89,
           "error": null
         },
         {
@@ -911,10 +911,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 49.32,
+          "decodeTps": 48.51,
           "prefillTokens": 65,
-          "ttftMs": 47.18,
-          "totalMs": 8170.57,
+          "ttftMs": 51.88,
+          "totalMs": 8293.89,
           "error": null
         },
         {
@@ -922,10 +922,10 @@
           "cachedTokens": 59,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 48.22,
+          "decodeTps": 48.2,
           "prefillTokens": 59,
-          "ttftMs": 47.03,
-          "totalMs": 8332.75,
+          "ttftMs": 51.73,
+          "totalMs": 8332.2,
           "error": null
         }
       ]
@@ -934,10 +934,10 @@
       "promptType": "code",
       "mode": "greedy",
       "concurrency": 6,
-      "aggregateDecodeTps": 209.02,
-      "meanDecodeTps": 35.99,
-      "medianDecodeTps": 35.7,
-      "meanTtftMs": 31.61,
+      "aggregateDecodeTps": 214.28,
+      "meanDecodeTps": 36.39,
+      "medianDecodeTps": 36.25,
+      "meanTtftMs": 33.37,
       "streamsOk": 6,
       "streamsFailed": 0,
       "totalCompletionTokens": 2400,
@@ -949,10 +949,10 @@
           "cachedTokens": 59,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 35.45,
+          "decodeTps": 36.13,
           "prefillTokens": 59,
-          "ttftMs": 32.15,
-          "totalMs": 11291.11,
+          "ttftMs": 33.93,
+          "totalMs": 11098.97,
           "error": null
         },
         {
@@ -960,10 +960,10 @@
           "cachedTokens": 59,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 36.73,
+          "decodeTps": 36.36,
           "prefillTokens": 59,
-          "ttftMs": 31.85,
-          "totalMs": 10916.77,
+          "ttftMs": 33.6,
+          "totalMs": 11027.32,
           "error": null
         },
         {
@@ -971,10 +971,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 35.7,
+          "decodeTps": 37.02,
           "prefillTokens": 65,
-          "ttftMs": 31.65,
-          "totalMs": 11230.99,
+          "ttftMs": 33.67,
+          "totalMs": 10848.97,
           "error": null
         },
         {
@@ -982,10 +982,10 @@
           "cachedTokens": 59,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 35.7,
+          "decodeTps": 36.13,
           "prefillTokens": 59,
-          "ttftMs": 31.45,
-          "totalMs": 11245.63,
+          "ttftMs": 33.16,
+          "totalMs": 11111.69,
           "error": null
         },
         {
@@ -993,10 +993,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 37.49,
+          "decodeTps": 37.01,
           "prefillTokens": 58,
-          "ttftMs": 31.34,
-          "totalMs": 10694.85,
+          "ttftMs": 33.02,
+          "totalMs": 10835.65,
           "error": null
         },
         {
@@ -1004,10 +1004,10 @@
           "cachedTokens": 61,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 34.84,
+          "decodeTps": 35.71,
           "prefillTokens": 61,
-          "ttftMs": 31.22,
-          "totalMs": 11497.52,
+          "ttftMs": 32.86,
+          "totalMs": 11216.38,
           "error": null
         }
       ]
@@ -1016,10 +1016,10 @@
       "promptType": "code",
       "mode": "greedy",
       "concurrency": 8,
-      "aggregateDecodeTps": 216.83,
-      "meanDecodeTps": 29.18,
-      "medianDecodeTps": 29.49,
-      "meanTtftMs": 37.66,
+      "aggregateDecodeTps": 219.95,
+      "meanDecodeTps": 29.48,
+      "medianDecodeTps": 29.57,
+      "meanTtftMs": 44.88,
       "streamsOk": 8,
       "streamsFailed": 0,
       "totalCompletionTokens": 3200,
@@ -1031,10 +1031,10 @@
           "cachedTokens": 59,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 29.36,
+          "decodeTps": 29.67,
           "prefillTokens": 59,
-          "ttftMs": 10.81,
-          "totalMs": 13613.13,
+          "ttftMs": 61.62,
+          "totalMs": 13523.05,
           "error": null
         },
         {
@@ -1042,10 +1042,10 @@
           "cachedTokens": 59,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 29.62,
+          "decodeTps": 30.37,
           "prefillTokens": 59,
-          "ttftMs": 35.72,
-          "totalMs": 13538.77,
+          "ttftMs": 61.41,
+          "totalMs": 13209.4,
           "error": null
         },
         {
@@ -1053,10 +1053,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 29.72,
+          "decodeTps": 29.36,
           "prefillTokens": 65,
-          "ttftMs": 77.51,
-          "totalMs": 13525.83,
+          "ttftMs": 16.54,
+          "totalMs": 13644.52,
           "error": null
         },
         {
@@ -1064,10 +1064,10 @@
           "cachedTokens": 59,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 28.93,
+          "decodeTps": 29.46,
           "prefillTokens": 59,
-          "ttftMs": 35.57,
-          "totalMs": 13847.16,
+          "ttftMs": 61.21,
+          "totalMs": 13628.95,
           "error": null
         },
         {
@@ -1075,10 +1075,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 30.38,
+          "decodeTps": 30.58,
           "prefillTokens": 58,
-          "ttftMs": 35.51,
-          "totalMs": 13183.15,
+          "ttftMs": 20.29,
+          "totalMs": 13084.02,
           "error": null
         },
         {
@@ -1086,10 +1086,10 @@
           "cachedTokens": 61,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 28.36,
+          "decodeTps": 28.73,
           "prefillTokens": 61,
-          "ttftMs": 35.46,
-          "totalMs": 14123.52,
+          "ttftMs": 61,
+          "totalMs": 13965.91,
           "error": null
         },
         {
@@ -1097,10 +1097,10 @@
           "cachedTokens": 56,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 27.15,
+          "decodeTps": 27.49,
           "prefillTokens": 56,
-          "ttftMs": 35.41,
-          "totalMs": 14742.78,
+          "ttftMs": 16.23,
+          "totalMs": 14537.69,
           "error": null
         },
         {
@@ -1108,10 +1108,10 @@
           "cachedTokens": 62,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 29.88,
+          "decodeTps": 30.15,
           "prefillTokens": 62,
-          "ttftMs": 35.31,
-          "totalMs": 13404.53,
+          "ttftMs": 60.77,
+          "totalMs": 13316.11,
           "error": null
         }
       ]
@@ -1120,10 +1120,10 @@
       "promptType": "code",
       "mode": "greedy",
       "concurrency": 10,
-      "aggregateDecodeTps": 238.01,
-      "meanDecodeTps": 25.48,
-      "medianDecodeTps": 25.55,
-      "meanTtftMs": 50.1,
+      "aggregateDecodeTps": 238.38,
+      "meanDecodeTps": 25.47,
+      "medianDecodeTps": 25.49,
+      "meanTtftMs": 44.52,
       "streamsOk": 10,
       "streamsFailed": 0,
       "totalCompletionTokens": 4000,
@@ -1135,10 +1135,10 @@
           "cachedTokens": 59,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 25.25,
+          "decodeTps": 26.11,
           "prefillTokens": 59,
-          "ttftMs": 33.7,
-          "totalMs": 15849.43,
+          "ttftMs": 48.5,
+          "totalMs": 15368.69,
           "error": null
         },
         {
@@ -1146,10 +1146,10 @@
           "cachedTokens": 59,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 26.2,
+          "decodeTps": 26.11,
           "prefillTokens": 59,
-          "ttftMs": 34.55,
-          "totalMs": 15339.02,
+          "ttftMs": 48.33,
+          "totalMs": 15370.32,
           "error": null
         },
         {
@@ -1157,10 +1157,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 24.95,
+          "decodeTps": 25.7,
           "prefillTokens": 65,
-          "ttftMs": 74.55,
-          "totalMs": 16084.16,
+          "ttftMs": 48.59,
+          "totalMs": 15584.23,
           "error": null
         },
         {
@@ -1168,10 +1168,10 @@
           "cachedTokens": 59,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 25.13,
+          "decodeTps": 25.28,
           "prefillTokens": 59,
-          "ttftMs": 34.39,
-          "totalMs": 15936.32,
+          "ttftMs": 22.76,
+          "totalMs": 15825.25,
           "error": null
         },
         {
@@ -1179,10 +1179,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 26.75,
+          "decodeTps": 25.86,
           "prefillTokens": 58,
-          "ttftMs": 34.34,
-          "totalMs": 14964.37,
+          "ttftMs": 22.49,
+          "totalMs": 15463.43,
           "error": null
         },
         {
@@ -1190,10 +1190,10 @@
           "cachedTokens": 61,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 24.5,
+          "decodeTps": 24.78,
           "prefillTokens": 61,
-          "ttftMs": 34.38,
-          "totalMs": 16322.07,
+          "ttftMs": 47.96,
+          "totalMs": 16184.53,
           "error": null
         },
         {
@@ -1201,10 +1201,10 @@
           "cachedTokens": 56,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 23.8,
+          "decodeTps": 23.84,
           "prefillTokens": 56,
-          "ttftMs": 33.86,
-          "totalMs": 16808.09,
+          "ttftMs": 22.37,
+          "totalMs": 16770.89,
           "error": null
         },
         {
@@ -1212,10 +1212,10 @@
           "cachedTokens": 62,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 26.28,
+          "decodeTps": 27.33,
           "prefillTokens": 62,
-          "ttftMs": 73.82,
-          "totalMs": 15295.36,
+          "ttftMs": 47.84,
+          "totalMs": 14660.31,
           "error": null
         },
         {
@@ -1223,10 +1223,10 @@
           "cachedTokens": 63,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 25.85,
+          "decodeTps": 24.89,
           "prefillTokens": 63,
-          "ttftMs": 73.75,
-          "totalMs": 15529.4,
+          "ttftMs": 47.79,
+          "totalMs": 16091.98,
           "error": null
         },
         {
@@ -1234,10 +1234,10 @@
           "cachedTokens": 63,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 26.04,
+          "decodeTps": 24.84,
           "prefillTokens": 63,
-          "ttftMs": 73.66,
-          "totalMs": 15410.39,
+          "ttftMs": 88.59,
+          "totalMs": 16167.67,
           "error": null
         }
       ]
@@ -1246,10 +1246,10 @@
       "promptType": "code",
       "mode": "greedy",
       "concurrency": 12,
-      "aggregateDecodeTps": 246.87,
-      "meanDecodeTps": 22.03,
-      "medianDecodeTps": 21.92,
-      "meanTtftMs": 49.49,
+      "aggregateDecodeTps": 245.21,
+      "meanDecodeTps": 22,
+      "medianDecodeTps": 21.6,
+      "meanTtftMs": 50.85,
       "streamsOk": 12,
       "streamsFailed": 0,
       "totalCompletionTokens": 4800,
@@ -1261,10 +1261,10 @@
           "cachedTokens": 59,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 21.3,
+          "decodeTps": 21.39,
           "prefillTokens": 59,
-          "ttftMs": 12,
-          "totalMs": 18767.07,
+          "ttftMs": 26.68,
+          "totalMs": 18694.37,
           "error": null
         },
         {
@@ -1272,10 +1272,10 @@
           "cachedTokens": 59,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 23.1,
+          "decodeTps": 24.45,
           "prefillTokens": 59,
-          "ttftMs": 30.9,
-          "totalMs": 17316.03,
+          "ttftMs": 43.06,
+          "totalMs": 16376.15,
           "error": null
         },
         {
@@ -1283,10 +1283,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 21.46,
+          "decodeTps": 21.2,
           "prefillTokens": 65,
-          "ttftMs": 89.78,
-          "totalMs": 18703.48,
+          "ttftMs": 84.01,
+          "totalMs": 18939.29,
           "error": null
         },
         {
@@ -1294,10 +1294,10 @@
           "cachedTokens": 59,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 21.89,
+          "decodeTps": 21.68,
           "prefillTokens": 59,
-          "ttftMs": 48,
-          "totalMs": 18311.83,
+          "ttftMs": 42.74,
+          "totalMs": 18473.36,
           "error": null
         },
         {
@@ -1305,10 +1305,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 22.69,
+          "decodeTps": 23.67,
           "prefillTokens": 58,
-          "ttftMs": 30.47,
-          "totalMs": 17626.62,
+          "ttftMs": 26.55,
+          "totalMs": 16896.54,
           "error": null
         },
         {
@@ -1316,10 +1316,10 @@
           "cachedTokens": 61,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 21.03,
+          "decodeTps": 21.15,
           "prefillTokens": 61,
-          "ttftMs": 47.89,
-          "totalMs": 19040.85,
+          "ttftMs": 42.69,
+          "totalMs": 18925.66,
           "error": null
         },
         {
@@ -1327,10 +1327,10 @@
           "cachedTokens": 56,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 20.59,
+          "decodeTps": 20.43,
           "prefillTokens": 56,
-          "ttftMs": 30.35,
-          "totalMs": 19418.65,
+          "ttftMs": 25.97,
+          "totalMs": 19561.2,
           "error": null
         },
         {
@@ -1338,10 +1338,10 @@
           "cachedTokens": 62,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 22.35,
+          "decodeTps": 21.73,
           "prefillTokens": 62,
-          "ttftMs": 47.9,
-          "totalMs": 17918.09,
+          "ttftMs": 83.5,
+          "totalMs": 18482.61,
           "error": null
         },
         {
@@ -1349,10 +1349,10 @@
           "cachedTokens": 63,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 21.94,
+          "decodeTps": 21.35,
           "prefillTokens": 63,
-          "ttftMs": 89.4,
-          "totalMs": 18295.2,
+          "ttftMs": 83.45,
+          "totalMs": 18787.64,
           "error": null
         },
         {
@@ -1360,10 +1360,10 @@
           "cachedTokens": 63,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 22.95,
+          "decodeTps": 22.53,
           "prefillTokens": 63,
-          "ttftMs": 89.35,
-          "totalMs": 17489.22,
+          "ttftMs": 83.4,
+          "totalMs": 17804.91,
           "error": null
         },
         {
@@ -1371,10 +1371,10 @@
           "cachedTokens": 57,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 21.74,
+          "decodeTps": 21.51,
           "prefillTokens": 57,
-          "ttftMs": 30.23,
-          "totalMs": 18395.28,
+          "ttftMs": 25.83,
+          "totalMs": 18589.78,
           "error": null
         },
         {
@@ -1382,10 +1382,10 @@
           "cachedTokens": 60,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 23.32,
+          "decodeTps": 22.92,
           "prefillTokens": 60,
-          "ttftMs": 47.57,
-          "totalMs": 17170.67,
+          "ttftMs": 42.3,
+          "totalMs": 17460.35,
           "error": null
         }
       ]
@@ -1394,10 +1394,10 @@
       "promptType": "code",
       "mode": "greedy",
       "concurrency": 16,
-      "aggregateDecodeTps": 251.53,
-      "meanDecodeTps": 17,
-      "medianDecodeTps": 16.74,
-      "meanTtftMs": 54.92,
+      "aggregateDecodeTps": 253.4,
+      "meanDecodeTps": 17.21,
+      "medianDecodeTps": 16.97,
+      "meanTtftMs": 56.63,
       "streamsOk": 16,
       "streamsFailed": 0,
       "totalCompletionTokens": 6400,
@@ -1409,10 +1409,10 @@
           "cachedTokens": 59,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.2,
+          "decodeTps": 16.33,
           "prefillTokens": 59,
-          "ttftMs": 53.72,
-          "totalMs": 24704.95,
+          "ttftMs": 10.38,
+          "totalMs": 24464.5,
           "error": null
         },
         {
@@ -1420,10 +1420,10 @@
           "cachedTokens": 59,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 18.93,
+          "decodeTps": 19.85,
           "prefillTokens": 59,
-          "ttftMs": 53.61,
-          "totalMs": 21152.42,
+          "ttftMs": 43.53,
+          "totalMs": 20154.57,
           "error": null
         },
         {
@@ -1431,10 +1431,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.3,
+          "decodeTps": 16.12,
           "prefillTokens": 65,
-          "ttftMs": 11.39,
-          "totalMs": 24511.79,
+          "ttftMs": 67.5,
+          "totalMs": 24841.77,
           "error": null
         },
         {
@@ -1442,10 +1442,10 @@
           "cachedTokens": 59,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.84,
+          "decodeTps": 17.12,
           "prefillTokens": 59,
-          "ttftMs": 53.47,
-          "totalMs": 23746.1,
+          "ttftMs": 43.4,
+          "totalMs": 23381.55,
           "error": null
         },
         {
@@ -1453,10 +1453,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 18.76,
+          "decodeTps": 19.02,
           "prefillTokens": 58,
-          "ttftMs": 53.41,
-          "totalMs": 21334.78,
+          "ttftMs": 43.36,
+          "totalMs": 21038.7,
           "error": null
         },
         {
@@ -1464,10 +1464,10 @@
           "cachedTokens": 61,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.09,
+          "decodeTps": 16.64,
           "prefillTokens": 61,
-          "ttftMs": 77.75,
-          "totalMs": 24875.62,
+          "ttftMs": 67.37,
+          "totalMs": 24071.72,
           "error": null
         },
         {
@@ -1475,10 +1475,10 @@
           "cachedTokens": 56,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 15.84,
+          "decodeTps": 15.87,
           "prefillTokens": 56,
-          "ttftMs": 27.79,
-          "totalMs": 25233.15,
+          "ttftMs": 18.8,
+          "totalMs": 25171.08,
           "error": null
         },
         {
@@ -1486,10 +1486,10 @@
           "cachedTokens": 62,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.09,
+          "decodeTps": 17.02,
           "prefillTokens": 62,
-          "ttftMs": 77.55,
-          "totalMs": 23442.23,
+          "ttftMs": 67.3,
+          "totalMs": 23524.25,
           "error": null
         },
         {
@@ -1497,10 +1497,10 @@
           "cachedTokens": 63,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.8,
+          "decodeTps": 18.31,
           "prefillTokens": 63,
-          "ttftMs": 53.26,
-          "totalMs": 22485.45,
+          "ttftMs": 67.19,
+          "totalMs": 21865.07,
           "error": null
         },
         {
@@ -1508,10 +1508,10 @@
           "cachedTokens": 63,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 19.11,
+          "decodeTps": 18.91,
           "prefillTokens": 63,
-          "ttftMs": 77.4,
-          "totalMs": 20964.89,
+          "ttftMs": 107.6,
+          "totalMs": 21222.21,
           "error": null
         },
         {
@@ -1519,10 +1519,10 @@
           "cachedTokens": 57,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.74,
+          "decodeTps": 17.12,
           "prefillTokens": 57,
-          "ttftMs": 27.5,
-          "totalMs": 23908.3,
+          "ttftMs": 42.99,
+          "totalMs": 23370.68,
           "error": null
         },
         {
@@ -1530,10 +1530,10 @@
           "cachedTokens": 60,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.45,
+          "decodeTps": 17.36,
           "prefillTokens": 60,
-          "ttftMs": 52.87,
-          "totalMs": 22922.14,
+          "ttftMs": 42.96,
+          "totalMs": 23046.63,
           "error": null
         },
         {
@@ -1541,10 +1541,10 @@
           "cachedTokens": 63,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.04,
+          "decodeTps": 16.42,
           "prefillTokens": 63,
-          "ttftMs": 77.24,
-          "totalMs": 24977.54,
+          "ttftMs": 66.95,
+          "totalMs": 24409.82,
           "error": null
         },
         {
@@ -1552,10 +1552,10 @@
           "cachedTokens": 60,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 15.76,
+          "decodeTps": 15.87,
           "prefillTokens": 60,
-          "ttftMs": 77.18,
-          "totalMs": 25400.24,
+          "ttftMs": 66.89,
+          "totalMs": 25205.38,
           "error": null
         },
         {
@@ -1563,10 +1563,10 @@
           "cachedTokens": 57,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.73,
+          "decodeTps": 16.91,
           "prefillTokens": 57,
-          "ttftMs": 27.43,
-          "totalMs": 23910.13,
+          "ttftMs": 42.73,
+          "totalMs": 23653.58,
           "error": null
         },
         {
@@ -1574,10 +1574,10 @@
           "cachedTokens": 63,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.27,
+          "decodeTps": 16.44,
           "prefillTokens": 63,
-          "ttftMs": 77.16,
-          "totalMs": 24626.73,
+          "ttftMs": 107.2,
+          "totalMs": 24394.2,
           "error": null
         }
       ]
@@ -1586,10 +1586,10 @@
       "promptType": "structured",
       "mode": "greedy",
       "concurrency": 1,
-      "aggregateDecodeTps": 152.61,
-      "meanDecodeTps": 152.61,
-      "medianDecodeTps": 152.61,
-      "meanTtftMs": 46.26,
+      "aggregateDecodeTps": 154.89,
+      "meanDecodeTps": 154.89,
+      "medianDecodeTps": 154.89,
+      "meanTtftMs": 46.09,
       "streamsOk": 1,
       "streamsFailed": 0,
       "totalCompletionTokens": 400,
@@ -1601,10 +1601,10 @@
           "cachedTokens": 25,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 152.61,
+          "decodeTps": 154.89,
           "prefillTokens": 25,
-          "ttftMs": 46.26,
-          "totalMs": 2669.41,
+          "ttftMs": 46.09,
+          "totalMs": 2630.97,
           "error": null
         }
       ]
@@ -1613,10 +1613,10 @@
       "promptType": "structured",
       "mode": "greedy",
       "concurrency": 2,
-      "aggregateDecodeTps": 255.39,
-      "meanDecodeTps": 127.71,
-      "medianDecodeTps": 127.71,
-      "meanTtftMs": 46.86,
+      "aggregateDecodeTps": 261.29,
+      "meanDecodeTps": 130.66,
+      "medianDecodeTps": 130.66,
+      "meanTtftMs": 46.3,
       "streamsOk": 2,
       "streamsFailed": 0,
       "totalCompletionTokens": 800,
@@ -1628,10 +1628,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 127.7,
+          "decodeTps": 130.65,
           "prefillTokens": 32,
-          "ttftMs": 47.07,
-          "totalMs": 3199.7,
+          "ttftMs": 46.44,
+          "totalMs": 3118.69,
           "error": null
         },
         {
@@ -1639,10 +1639,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 127.71,
+          "decodeTps": 130.66,
           "prefillTokens": 32,
-          "ttftMs": 46.64,
-          "totalMs": 3197.74,
+          "ttftMs": 46.16,
+          "totalMs": 3116.7,
           "error": null
         }
       ]
@@ -1651,10 +1651,10 @@
       "promptType": "structured",
       "mode": "greedy",
       "concurrency": 4,
-      "aggregateDecodeTps": 383.71,
-      "meanDecodeTps": 95.94,
-      "medianDecodeTps": 95.95,
-      "meanTtftMs": 47.55,
+      "aggregateDecodeTps": 389.72,
+      "meanDecodeTps": 97.44,
+      "medianDecodeTps": 97.44,
+      "meanTtftMs": 46.82,
       "streamsOk": 4,
       "streamsFailed": 0,
       "totalCompletionTokens": 1600,
@@ -1666,10 +1666,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 95.94,
+          "decodeTps": 97.44,
           "prefillTokens": 32,
-          "ttftMs": 47.81,
-          "totalMs": 4237.99,
+          "ttftMs": 47.18,
+          "totalMs": 4174.33,
           "error": null
         },
         {
@@ -1677,10 +1677,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 95.95,
+          "decodeTps": 97.43,
           "prefillTokens": 32,
-          "ttftMs": 47.59,
-          "totalMs": 4228.45,
+          "ttftMs": 46.81,
+          "totalMs": 4179,
           "error": null
         },
         {
@@ -1688,10 +1688,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 95.93,
+          "decodeTps": 97.44,
           "prefillTokens": 32,
-          "ttftMs": 47.46,
-          "totalMs": 4239.14,
+          "ttftMs": 46.72,
+          "totalMs": 4178.58,
           "error": null
         },
         {
@@ -1699,10 +1699,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 95.95,
+          "decodeTps": 97.43,
           "prefillTokens": 32,
-          "ttftMs": 47.32,
-          "totalMs": 4229.89,
+          "ttftMs": 46.57,
+          "totalMs": 4168.84,
           "error": null
         }
       ]
@@ -1711,10 +1711,10 @@
       "promptType": "structured",
       "mode": "greedy",
       "concurrency": 6,
-      "aggregateDecodeTps": 449.26,
-      "meanDecodeTps": 74.89,
-      "medianDecodeTps": 74.88,
-      "meanTtftMs": 28.76,
+      "aggregateDecodeTps": 449.87,
+      "meanDecodeTps": 75.19,
+      "medianDecodeTps": 75.01,
+      "meanTtftMs": 35.73,
       "streamsOk": 6,
       "streamsFailed": 0,
       "totalCompletionTokens": 2400,
@@ -1726,10 +1726,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 74.9,
+          "decodeTps": 74.98,
           "prefillTokens": 32,
-          "ttftMs": 29.22,
-          "totalMs": 5404.26,
+          "ttftMs": 22.27,
+          "totalMs": 5390.72,
           "error": null
         },
         {
@@ -1737,10 +1737,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 74.89,
+          "decodeTps": 75.01,
           "prefillTokens": 32,
-          "ttftMs": 28.94,
-          "totalMs": 5405.92,
+          "ttftMs": 21.99,
+          "totalMs": 5385.74,
           "error": null
         },
         {
@@ -1748,10 +1748,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 74.88,
+          "decodeTps": 75,
           "prefillTokens": 32,
-          "ttftMs": 28.75,
-          "totalMs": 5408.6,
+          "ttftMs": 21.81,
+          "totalMs": 5375.49,
           "error": null
         },
         {
@@ -1759,10 +1759,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 74.89,
+          "decodeTps": 75.6,
           "prefillTokens": 32,
-          "ttftMs": 28.65,
-          "totalMs": 5397.79,
+          "ttftMs": 63.39,
+          "totalMs": 5392.35,
           "error": null
         },
         {
@@ -1770,10 +1770,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 74.88,
+          "decodeTps": 75.57,
           "prefillTokens": 32,
-          "ttftMs": 28.54,
-          "totalMs": 5406.83,
+          "ttftMs": 63.31,
+          "totalMs": 5383.98,
           "error": null
         },
         {
@@ -1781,10 +1781,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 74.88,
+          "decodeTps": 75,
           "prefillTokens": 32,
-          "ttftMs": 28.46,
-          "totalMs": 5409.94,
+          "ttftMs": 21.6,
+          "totalMs": 5386.44,
           "error": null
         }
       ]
@@ -1793,10 +1793,10 @@
       "promptType": "structured",
       "mode": "greedy",
       "concurrency": 8,
-      "aggregateDecodeTps": 504.64,
-      "meanDecodeTps": 63.39,
-      "medianDecodeTps": 63.49,
-      "meanTtftMs": 40.92,
+      "aggregateDecodeTps": 443.14,
+      "meanDecodeTps": 56.31,
+      "medianDecodeTps": 56.47,
+      "meanTtftMs": 34.13,
       "streamsOk": 8,
       "streamsFailed": 0,
       "totalCompletionTokens": 3200,
@@ -1808,10 +1808,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 63.49,
+          "decodeTps": 56.48,
           "prefillTokens": 32,
-          "ttftMs": 30.66,
-          "totalMs": 6390.17,
+          "ttftMs": 33.86,
+          "totalMs": 7174.54,
           "error": null
         },
         {
@@ -1819,10 +1819,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 63.49,
+          "decodeTps": 56.28,
           "prefillTokens": 32,
-          "ttftMs": 30.51,
-          "totalMs": 6389.87,
+          "ttftMs": 9.68,
+          "totalMs": 7175.81,
           "error": null
         },
         {
@@ -1830,10 +1830,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 63.08,
+          "decodeTps": 56.48,
           "prefillTokens": 32,
-          "ttftMs": 30.49,
-          "totalMs": 6397.35,
+          "ttftMs": 33.62,
+          "totalMs": 7164.98,
           "error": null
         },
         {
@@ -1841,10 +1841,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 63.49,
+          "decodeTps": 56.48,
           "prefillTokens": 32,
-          "ttftMs": 30.34,
-          "totalMs": 6391.78,
+          "ttftMs": 33.57,
+          "totalMs": 7212.59,
           "error": null
         },
         {
@@ -1852,10 +1852,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 63.49,
+          "decodeTps": 55.8,
           "prefillTokens": 32,
-          "ttftMs": 30.27,
-          "totalMs": 6397.29,
+          "ttftMs": 62.01,
+          "totalMs": 7220.89,
           "error": null
         },
         {
@@ -1863,10 +1863,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 63.08,
+          "decodeTps": 56.47,
           "prefillTokens": 32,
-          "ttftMs": 30.2,
-          "totalMs": 6396.96,
+          "ttftMs": 33.46,
+          "totalMs": 7213.99,
           "error": null
         },
         {
@@ -1874,10 +1874,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 63.51,
+          "decodeTps": 56.47,
           "prefillTokens": 32,
-          "ttftMs": 72.49,
-          "totalMs": 6384.94,
+          "ttftMs": 33.42,
+          "totalMs": 7172.23,
           "error": null
         },
         {
@@ -1885,10 +1885,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 63.51,
+          "decodeTps": 55.98,
           "prefillTokens": 32,
-          "ttftMs": 72.41,
-          "totalMs": 6386.73,
+          "ttftMs": 33.38,
+          "totalMs": 7211.13,
           "error": null
         }
       ]
@@ -1897,10 +1897,10 @@
       "promptType": "structured",
       "mode": "greedy",
       "concurrency": 10,
-      "aggregateDecodeTps": 443.04,
-      "meanDecodeTps": 47.29,
-      "medianDecodeTps": 47.94,
-      "meanTtftMs": 44.94,
+      "aggregateDecodeTps": 460.66,
+      "meanDecodeTps": 49.12,
+      "medianDecodeTps": 49.78,
+      "meanTtftMs": 44.51,
       "streamsOk": 10,
       "streamsFailed": 0,
       "totalCompletionTokens": 4000,
@@ -1912,10 +1912,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 47.8,
+          "decodeTps": 49.75,
           "prefillTokens": 32,
-          "ttftMs": 8.94,
-          "totalMs": 8458.17,
+          "ttftMs": 34.81,
+          "totalMs": 8193.66,
           "error": null
         },
         {
@@ -1923,10 +1923,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 47.95,
+          "decodeTps": 49.63,
           "prefillTokens": 32,
-          "ttftMs": 35.14,
-          "totalMs": 8453.68,
+          "ttftMs": 9.21,
+          "totalMs": 8191.82,
           "error": null
         },
         {
@@ -1934,10 +1934,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 47.95,
+          "decodeTps": 49.79,
           "prefillTokens": 32,
-          "ttftMs": 35.07,
-          "totalMs": 8499.19,
+          "ttftMs": 34.56,
+          "totalMs": 8127.64,
           "error": null
         },
         {
@@ -1945,10 +1945,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 47.94,
+          "decodeTps": 49.79,
           "prefillTokens": 32,
-          "ttftMs": 35.02,
-          "totalMs": 8504.11,
+          "ttftMs": 34.5,
+          "totalMs": 8171.26,
           "error": null
         },
         {
@@ -1956,10 +1956,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 47.91,
+          "decodeTps": 49.79,
           "prefillTokens": 32,
-          "ttftMs": 34.97,
-          "totalMs": 8447.44,
+          "ttftMs": 34.45,
+          "totalMs": 8171.36,
           "error": null
         },
         {
@@ -1967,10 +1967,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 48.19,
+          "decodeTps": 50.03,
           "prefillTokens": 32,
-          "ttftMs": 76.93,
-          "totalMs": 8506.86,
+          "ttftMs": 76.36,
+          "totalMs": 8191.67,
           "error": null
         },
         {
@@ -1978,10 +1978,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 47.95,
+          "decodeTps": 49.8,
           "prefillTokens": 32,
-          "ttftMs": 34.86,
-          "totalMs": 8505.31,
+          "ttftMs": 34.34,
+          "totalMs": 8127.7,
           "error": null
         },
         {
@@ -1989,10 +1989,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 47.94,
+          "decodeTps": 46.43,
           "prefillTokens": 32,
-          "ttftMs": 35.13,
-          "totalMs": 8455.26,
+          "ttftMs": 76.27,
+          "totalMs": 8691.57,
           "error": null
         },
         {
@@ -2000,10 +2000,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 44.64,
+          "decodeTps": 46.43,
           "prefillTokens": 32,
-          "ttftMs": 76.7,
-          "totalMs": 9016.6,
+          "ttftMs": 76.22,
+          "totalMs": 8693.58,
           "error": null
         },
         {
@@ -2011,10 +2011,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 44.64,
+          "decodeTps": 49.77,
           "prefillTokens": 32,
-          "ttftMs": 76.64,
-          "totalMs": 9018.44,
+          "ttftMs": 34.39,
+          "totalMs": 8188.7,
           "error": null
         }
       ]
@@ -2023,10 +2023,10 @@
       "promptType": "structured",
       "mode": "greedy",
       "concurrency": 12,
-      "aggregateDecodeTps": 496.97,
-      "meanDecodeTps": 41.69,
-      "medianDecodeTps": 41.67,
-      "meanTtftMs": 50.03,
+      "aggregateDecodeTps": 500.52,
+      "meanDecodeTps": 41.84,
+      "medianDecodeTps": 41.82,
+      "meanTtftMs": 43.64,
       "streamsOk": 12,
       "streamsFailed": 0,
       "totalCompletionTokens": 4800,
@@ -2038,10 +2038,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 41.67,
+          "decodeTps": 41.72,
           "prefillTokens": 32,
-          "ttftMs": 41.72,
-          "totalMs": 9725.23,
+          "ttftMs": 17.19,
+          "totalMs": 9699.68,
           "error": null
         },
         {
@@ -2049,10 +2049,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 41.67,
+          "decodeTps": 41.72,
           "prefillTokens": 32,
-          "ttftMs": 41.38,
-          "totalMs": 9729.19,
+          "ttftMs": 16.62,
+          "totalMs": 9687.28,
           "error": null
         },
         {
@@ -2060,10 +2060,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 41.6,
+          "decodeTps": 41.86,
           "prefillTokens": 32,
-          "ttftMs": 25.89,
-          "totalMs": 9738.79,
+          "ttftMs": 47.46,
+          "totalMs": 9688.93,
           "error": null
         },
         {
@@ -2071,10 +2071,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 41.6,
+          "decodeTps": 41.78,
           "prefillTokens": 32,
-          "ttftMs": 25.82,
-          "totalMs": 9727.47,
+          "ttftMs": 31.54,
+          "totalMs": 9671.62,
           "error": null
         },
         {
@@ -2082,10 +2082,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 41.6,
+          "decodeTps": 41.78,
           "prefillTokens": 32,
-          "ttftMs": 25.77,
-          "totalMs": 9722.84,
+          "ttftMs": 31.64,
+          "totalMs": 9683.87,
           "error": null
         },
         {
@@ -2093,10 +2093,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 41.6,
+          "decodeTps": 41.79,
           "prefillTokens": 32,
-          "ttftMs": 26.07,
-          "totalMs": 9732.18,
+          "ttftMs": 31.37,
+          "totalMs": 9692.04,
           "error": null
         },
         {
@@ -2104,10 +2104,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 41.66,
+          "decodeTps": 41.86,
           "prefillTokens": 32,
-          "ttftMs": 41.01,
-          "totalMs": 9719.42,
+          "ttftMs": 47.1,
+          "totalMs": 9680.11,
           "error": null
         },
         {
@@ -2115,10 +2115,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 41.48,
+          "decodeTps": 41.85,
           "prefillTokens": 32,
-          "ttftMs": 40.96,
-          "totalMs": 9685.37,
+          "ttftMs": 47.16,
+          "totalMs": 9696.91,
           "error": null
         },
         {
@@ -2126,10 +2126,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 41.85,
+          "decodeTps": 41.78,
           "prefillTokens": 32,
-          "ttftMs": 82.99,
-          "totalMs": 9734.17,
+          "ttftMs": 31.13,
+          "totalMs": 9694.99,
           "error": null
         },
         {
@@ -2137,10 +2137,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 41.85,
+          "decodeTps": 41.86,
           "prefillTokens": 32,
-          "ttftMs": 82.95,
-          "totalMs": 9708.08,
+          "ttftMs": 46.92,
+          "totalMs": 9693.29,
           "error": null
         },
         {
@@ -2148,10 +2148,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 41.85,
+          "decodeTps": 42.03,
           "prefillTokens": 32,
-          "ttftMs": 82.91,
-          "totalMs": 9738.13,
+          "ttftMs": 87.78,
+          "totalMs": 9701.18,
           "error": null
         },
         {
@@ -2159,10 +2159,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 41.85,
+          "decodeTps": 42.03,
           "prefillTokens": 32,
-          "ttftMs": 82.86,
-          "totalMs": 9730.09,
+          "ttftMs": 87.71,
+          "totalMs": 9703.4,
           "error": null
         }
       ]
@@ -2171,10 +2171,10 @@
       "promptType": "structured",
       "mode": "greedy",
       "concurrency": 16,
-      "aggregateDecodeTps": 478.46,
-      "meanDecodeTps": 30.04,
-      "medianDecodeTps": 30.05,
-      "meanTtftMs": 58.33,
+      "aggregateDecodeTps": 502.05,
+      "meanDecodeTps": 31.5,
+      "medianDecodeTps": 31.5,
+      "meanTtftMs": 49.71,
       "streamsOk": 16,
       "streamsFailed": 0,
       "totalCompletionTokens": 6400,
@@ -2186,10 +2186,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 29.94,
+          "decodeTps": 31.41,
           "prefillTokens": 32,
-          "ttftMs": 11.04,
-          "totalMs": 13470.43,
+          "ttftMs": 10.12,
+          "totalMs": 12844.7,
           "error": null
         },
         {
@@ -2197,10 +2197,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 30,
+          "decodeTps": 31.45,
           "prefillTokens": 32,
-          "ttftMs": 39.25,
-          "totalMs": 13486.55,
+          "ttftMs": 25.43,
+          "totalMs": 12856.86,
           "error": null
         },
         {
@@ -2208,10 +2208,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 30,
+          "decodeTps": 31.44,
           "prefillTokens": 32,
-          "ttftMs": 39.18,
-          "totalMs": 13427.25,
+          "ttftMs": 25.34,
+          "totalMs": 12868.01,
           "error": null
         },
         {
@@ -2219,10 +2219,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 30,
+          "decodeTps": 31.44,
           "prefillTokens": 32,
-          "ttftMs": 39.14,
-          "totalMs": 13499.02,
+          "ttftMs": 25.55,
+          "totalMs": 12873.24,
           "error": null
         },
         {
@@ -2230,10 +2230,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 30,
+          "decodeTps": 31.5,
           "prefillTokens": 32,
-          "ttftMs": 39.05,
-          "totalMs": 13490.75,
+          "ttftMs": 48.03,
+          "totalMs": 12832.56,
           "error": null
         },
         {
@@ -2241,10 +2241,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 30,
+          "decodeTps": 31.5,
           "prefillTokens": 32,
-          "ttftMs": 38.97,
-          "totalMs": 13490.78,
+          "ttftMs": 47.98,
+          "totalMs": 12837.94,
           "error": null
         },
         {
@@ -2252,10 +2252,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 30,
+          "decodeTps": 31.5,
           "prefillTokens": 32,
-          "ttftMs": 39.11,
-          "totalMs": 13466.37,
+          "ttftMs": 47.89,
+          "totalMs": 12830.14,
           "error": null
         },
         {
@@ -2263,10 +2263,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 30.05,
+          "decodeTps": 31.49,
           "prefillTokens": 32,
-          "ttftMs": 62.74,
-          "totalMs": 13496.58,
+          "ttftMs": 47.82,
+          "totalMs": 12811.41,
           "error": null
         },
         {
@@ -2274,10 +2274,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 30.05,
+          "decodeTps": 31.49,
           "prefillTokens": 32,
-          "ttftMs": 62.68,
-          "totalMs": 13424.28,
+          "ttftMs": 47.72,
+          "totalMs": 12872.98,
           "error": null
         },
         {
@@ -2285,10 +2285,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 30.05,
+          "decodeTps": 31.49,
           "prefillTokens": 32,
-          "ttftMs": 62.6,
-          "totalMs": 13496.55,
+          "ttftMs": 47.91,
+          "totalMs": 12858.15,
           "error": null
         },
         {
@@ -2296,10 +2296,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 30.05,
+          "decodeTps": 31.53,
           "prefillTokens": 32,
-          "ttftMs": 62.54,
-          "totalMs": 13449.11,
+          "ttftMs": 70.42,
+          "totalMs": 12860.2,
           "error": null
         },
         {
@@ -2307,10 +2307,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 30.04,
+          "decodeTps": 31.53,
           "prefillTokens": 32,
-          "ttftMs": 62.48,
-          "totalMs": 13445.03,
+          "ttftMs": 70.36,
+          "totalMs": 12872.42,
           "error": null
         },
         {
@@ -2318,10 +2318,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 30.05,
+          "decodeTps": 31.55,
           "prefillTokens": 32,
-          "ttftMs": 62.58,
-          "totalMs": 13413.08,
+          "ttftMs": 70.29,
+          "totalMs": 12872.55,
           "error": null
         },
         {
@@ -2329,10 +2329,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 30.13,
+          "decodeTps": 31.53,
           "prefillTokens": 32,
-          "ttftMs": 104.02,
-          "totalMs": 13492.44,
+          "ttftMs": 70.21,
+          "totalMs": 12841.33,
           "error": null
         },
         {
@@ -2340,10 +2340,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 30.12,
+          "decodeTps": 31.54,
           "prefillTokens": 32,
-          "ttftMs": 103.98,
-          "totalMs": 13483.25,
+          "ttftMs": 70.33,
+          "totalMs": 12834.87,
           "error": null
         },
         {
@@ -2351,10 +2351,10 @@
           "cachedTokens": 32,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 30.12,
+          "decodeTps": 31.54,
           "prefillTokens": 32,
-          "ttftMs": 103.91,
-          "totalMs": 13474.82,
+          "ttftMs": 70.03,
+          "totalMs": 12839.04,
           "error": null
         }
       ]
@@ -2363,10 +2363,10 @@
       "promptType": "prose",
       "mode": "think",
       "concurrency": 1,
-      "aggregateDecodeTps": 68.04,
-      "meanDecodeTps": 68.04,
-      "medianDecodeTps": 68.04,
-      "meanTtftMs": 46.01,
+      "aggregateDecodeTps": 68.11,
+      "meanDecodeTps": 68.11,
+      "medianDecodeTps": 68.11,
+      "meanTtftMs": 45.35,
       "streamsOk": 1,
       "streamsFailed": 0,
       "totalCompletionTokens": 400,
@@ -2378,10 +2378,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 68.04,
+          "decodeTps": 68.11,
           "prefillTokens": 58,
-          "ttftMs": 46.01,
-          "totalMs": 5921.62,
+          "ttftMs": 45.35,
+          "totalMs": 5917.77,
           "error": null
         }
       ]
@@ -2390,10 +2390,10 @@
       "promptType": "prose",
       "mode": "think",
       "concurrency": 2,
-      "aggregateDecodeTps": 94.13,
-      "meanDecodeTps": 47.33,
-      "medianDecodeTps": 47.33,
-      "meanTtftMs": 45.37,
+      "aggregateDecodeTps": 94.63,
+      "meanDecodeTps": 47.8,
+      "medianDecodeTps": 47.8,
+      "meanTtftMs": 45.02,
       "streamsOk": 2,
       "streamsFailed": 0,
       "totalCompletionTokens": 800,
@@ -2405,10 +2405,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 47.07,
+          "decodeTps": 48.28,
           "prefillTokens": 65,
-          "ttftMs": 45.44,
-          "totalMs": 8536.92,
+          "ttftMs": 45.06,
+          "totalMs": 8334.78,
           "error": null
         },
         {
@@ -2416,10 +2416,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 47.58,
+          "decodeTps": 47.32,
           "prefillTokens": 65,
-          "ttftMs": 45.3,
-          "totalMs": 8451.6,
+          "ttftMs": 44.97,
+          "totalMs": 8491.46,
           "error": null
         }
       ]
@@ -2428,10 +2428,10 @@
       "promptType": "prose",
       "mode": "think",
       "concurrency": 4,
-      "aggregateDecodeTps": 134.13,
-      "meanDecodeTps": 34.65,
-      "medianDecodeTps": 34.47,
-      "meanTtftMs": 42.4,
+      "aggregateDecodeTps": 130.93,
+      "meanDecodeTps": 33.77,
+      "medianDecodeTps": 33.49,
+      "meanTtftMs": 39.77,
       "streamsOk": 4,
       "streamsFailed": 0,
       "totalCompletionTokens": 1600,
@@ -2443,10 +2443,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 33.88,
+          "decodeTps": 32.93,
           "prefillTokens": 65,
-          "ttftMs": 11.21,
-          "totalMs": 11810.1,
+          "ttftMs": 10.1,
+          "totalMs": 12147.24,
           "error": null
         },
         {
@@ -2454,10 +2454,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 36.03,
+          "decodeTps": 32.84,
           "prefillTokens": 65,
-          "ttftMs": 52.95,
-          "totalMs": 11151.21,
+          "ttftMs": 49.81,
+          "totalMs": 12203.46,
           "error": null
         },
         {
@@ -2465,10 +2465,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 33.65,
+          "decodeTps": 34.04,
           "prefillTokens": 65,
-          "ttftMs": 52.81,
-          "totalMs": 11922.94,
+          "ttftMs": 49.66,
+          "totalMs": 11788.51,
           "error": null
         },
         {
@@ -2476,10 +2476,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 35.05,
+          "decodeTps": 35.25,
           "prefillTokens": 65,
-          "ttftMs": 52.63,
-          "totalMs": 11453.82,
+          "ttftMs": 49.51,
+          "totalMs": 11393.48,
           "error": null
         }
       ]
@@ -2488,10 +2488,10 @@
       "promptType": "prose",
       "mode": "think",
       "concurrency": 6,
-      "aggregateDecodeTps": 158.09,
-      "meanDecodeTps": 27.49,
-      "medianDecodeTps": 27.28,
-      "meanTtftMs": 30.28,
+      "aggregateDecodeTps": 161.74,
+      "meanDecodeTps": 27.57,
+      "medianDecodeTps": 27.53,
+      "meanTtftMs": 31.41,
       "streamsOk": 6,
       "streamsFailed": 0,
       "totalCompletionTokens": 2400,
@@ -2503,10 +2503,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 27.55,
+          "decodeTps": 27.21,
           "prefillTokens": 65,
-          "ttftMs": 30.7,
-          "totalMs": 14537.99,
+          "ttftMs": 32.18,
+          "totalMs": 14712.54,
           "error": null
         },
         {
@@ -2514,10 +2514,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 28.92,
+          "decodeTps": 27.76,
           "prefillTokens": 65,
-          "ttftMs": 30.42,
-          "totalMs": 13846.12,
+          "ttftMs": 31.8,
+          "totalMs": 14426.69,
           "error": null
         },
         {
@@ -2525,10 +2525,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 28.71,
+          "decodeTps": 27.53,
           "prefillTokens": 65,
-          "ttftMs": 30.22,
-          "totalMs": 13947.61,
+          "ttftMs": 31.52,
+          "totalMs": 14603.36,
           "error": null
         },
         {
@@ -2536,10 +2536,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 27.01,
+          "decodeTps": 28.44,
           "prefillTokens": 65,
-          "ttftMs": 30.12,
-          "totalMs": 14820.86,
+          "ttftMs": 31.38,
+          "totalMs": 14083.84,
           "error": null
         },
         {
@@ -2547,10 +2547,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 26.35,
+          "decodeTps": 27.53,
           "prefillTokens": 65,
-          "ttftMs": 30.03,
-          "totalMs": 15179.16,
+          "ttftMs": 30.75,
+          "totalMs": 14547.88,
           "error": null
         },
         {
@@ -2558,10 +2558,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 26.42,
+          "decodeTps": 26.96,
           "prefillTokens": 65,
-          "ttftMs": 30.16,
-          "totalMs": 15153.98,
+          "ttftMs": 30.84,
+          "totalMs": 14835.89,
           "error": null
         }
       ]
@@ -2570,10 +2570,10 @@
       "promptType": "prose",
       "mode": "think",
       "concurrency": 8,
-      "aggregateDecodeTps": 171.94,
-      "meanDecodeTps": 22.3,
-      "medianDecodeTps": 21.89,
-      "meanTtftMs": 42.4,
+      "aggregateDecodeTps": 173.29,
+      "meanDecodeTps": 22.56,
+      "medianDecodeTps": 22.56,
+      "meanTtftMs": 46.51,
       "streamsOk": 8,
       "streamsFailed": 0,
       "totalCompletionTokens": 3200,
@@ -2585,10 +2585,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 21.49,
+          "decodeTps": 21.7,
           "prefillTokens": 65,
-          "ttftMs": 32.64,
-          "totalMs": 18596.99,
+          "ttftMs": 20.68,
+          "totalMs": 18437.05,
           "error": null
         },
         {
@@ -2596,10 +2596,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 22.65,
+          "decodeTps": 21.77,
           "prefillTokens": 65,
-          "ttftMs": 32.39,
-          "totalMs": 17669.21,
+          "ttftMs": 20.47,
+          "totalMs": 18366.18,
           "error": null
         },
         {
@@ -2607,10 +2607,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 21.74,
+          "decodeTps": 23.75,
           "prefillTokens": 65,
-          "ttftMs": 32.3,
-          "totalMs": 18404.03,
+          "ttftMs": 20.61,
+          "totalMs": 16842.91,
           "error": null
         },
         {
@@ -2618,10 +2618,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 22.04,
+          "decodeTps": 22.94,
           "prefillTokens": 65,
-          "ttftMs": 32.23,
-          "totalMs": 18158.1,
+          "ttftMs": 62.19,
+          "totalMs": 17458.07,
           "error": null
         },
         {
@@ -2629,10 +2629,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 21.53,
+          "decodeTps": 22.24,
           "prefillTokens": 65,
-          "ttftMs": 32.16,
-          "totalMs": 18593.37,
+          "ttftMs": 62.13,
+          "totalMs": 18020.55,
           "error": null
         },
         {
@@ -2640,10 +2640,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 21.59,
+          "decodeTps": 21.71,
           "prefillTokens": 65,
-          "ttftMs": 32.1,
-          "totalMs": 18532.25,
+          "ttftMs": 62.07,
+          "totalMs": 18439.77,
           "error": null
         },
         {
@@ -2651,10 +2651,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 23.91,
+          "decodeTps": 23.47,
           "prefillTokens": 65,
-          "ttftMs": 72.77,
-          "totalMs": 16783.26,
+          "ttftMs": 62.01,
+          "totalMs": 17084.34,
           "error": null
         },
         {
@@ -2662,10 +2662,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 23.42,
+          "decodeTps": 22.88,
           "prefillTokens": 65,
-          "ttftMs": 72.64,
-          "totalMs": 17135.21,
+          "ttftMs": 61.89,
+          "totalMs": 17515.87,
           "error": null
         }
       ]
@@ -2674,10 +2674,10 @@
       "promptType": "prose",
       "mode": "think",
       "concurrency": 10,
-      "aggregateDecodeTps": 186.99,
-      "meanDecodeTps": 19.31,
-      "medianDecodeTps": 19.39,
-      "meanTtftMs": 48.77,
+      "aggregateDecodeTps": 187.73,
+      "meanDecodeTps": 19.34,
+      "medianDecodeTps": 19.17,
+      "meanTtftMs": 41,
       "streamsOk": 10,
       "streamsFailed": 0,
       "totalCompletionTokens": 4000,
@@ -2689,10 +2689,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 19.31,
+          "decodeTps": 19.37,
           "prefillTokens": 65,
-          "ttftMs": 32.72,
-          "totalMs": 20730.02,
+          "ttftMs": 21.26,
+          "totalMs": 20642.29,
           "error": null
         },
         {
@@ -2700,10 +2700,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 18.81,
+          "decodeTps": 19.56,
           "prefillTokens": 65,
-          "ttftMs": 73.55,
-          "totalMs": 21287.95,
+          "ttftMs": 43.85,
+          "totalMs": 20459.91,
           "error": null
         },
         {
@@ -2711,10 +2711,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 19.66,
+          "decodeTps": 19.29,
           "prefillTokens": 65,
-          "ttftMs": 73.48,
-          "totalMs": 20434.64,
+          "ttftMs": 21.05,
+          "totalMs": 20715.18,
           "error": null
         },
         {
@@ -2722,10 +2722,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 19.62,
+          "decodeTps": 20.75,
           "prefillTokens": 65,
-          "ttftMs": 32.42,
-          "totalMs": 20391.64,
+          "ttftMs": 43.73,
+          "totalMs": 19299.87,
           "error": null
         },
         {
@@ -2733,10 +2733,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 19.43,
+          "decodeTps": 19,
           "prefillTokens": 65,
-          "ttftMs": 32.38,
-          "totalMs": 20607.94,
+          "ttftMs": 43.68,
+          "totalMs": 21091.54,
           "error": null
         },
         {
@@ -2744,10 +2744,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 19.47,
+          "decodeTps": 19.03,
           "prefillTokens": 65,
-          "ttftMs": 73.24,
-          "totalMs": 20604.67,
+          "ttftMs": 21.06,
+          "totalMs": 21010.03,
           "error": null
         },
         {
@@ -2755,10 +2755,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 20.02,
+          "decodeTps": 19.64,
           "prefillTokens": 65,
-          "ttftMs": 32.46,
-          "totalMs": 19982.12,
+          "ttftMs": 43.58,
+          "totalMs": 20382.38,
           "error": null
         },
         {
@@ -2766,10 +2766,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 18.7,
+          "decodeTps": 18.92,
           "prefillTokens": 65,
-          "ttftMs": 32.21,
-          "totalMs": 21386.93,
+          "ttftMs": 43.54,
+          "totalMs": 21155.32,
           "error": null
         },
         {
@@ -2777,10 +2777,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 18.74,
+          "decodeTps": 18.79,
           "prefillTokens": 65,
-          "ttftMs": 32.17,
-          "totalMs": 21326.19,
+          "ttftMs": 43.53,
+          "totalMs": 21287.85,
           "error": null
         },
         {
@@ -2788,10 +2788,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 19.35,
+          "decodeTps": 19.04,
           "prefillTokens": 65,
-          "ttftMs": 73.05,
-          "totalMs": 20715.86,
+          "ttftMs": 84.76,
+          "totalMs": 21088.19,
           "error": null
         }
       ]
@@ -2800,10 +2800,10 @@
       "promptType": "prose",
       "mode": "think",
       "concurrency": 12,
-      "aggregateDecodeTps": 201.37,
-      "meanDecodeTps": 17.19,
-      "medianDecodeTps": 17.13,
-      "meanTtftMs": 46.4,
+      "aggregateDecodeTps": 196.45,
+      "meanDecodeTps": 16.84,
+      "medianDecodeTps": 16.86,
+      "meanTtftMs": 46.86,
       "streamsOk": 12,
       "streamsFailed": 0,
       "totalCompletionTokens": 4800,
@@ -2815,10 +2815,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.81,
+          "decodeTps": 16.68,
           "prefillTokens": 65,
-          "ttftMs": 29.18,
-          "totalMs": 23782.03,
+          "ttftMs": 28.73,
+          "totalMs": 23988.33,
           "error": null
         },
         {
@@ -2826,10 +2826,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.79,
+          "decodeTps": 16.62,
           "prefillTokens": 65,
-          "ttftMs": 28.73,
-          "totalMs": 23793.6,
+          "ttftMs": 16.25,
+          "totalMs": 24025.04,
           "error": null
         },
         {
@@ -2837,10 +2837,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.1,
+          "decodeTps": 16.55,
           "prefillTokens": 65,
-          "ttftMs": 13.17,
-          "totalMs": 23390.8,
+          "ttftMs": 28.47,
+          "totalMs": 24158.22,
           "error": null
         },
         {
@@ -2848,10 +2848,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.38,
+          "decodeTps": 17.35,
           "prefillTokens": 65,
-          "ttftMs": 28.56,
-          "totalMs": 23010.98,
+          "ttftMs": 28.55,
+          "totalMs": 23046.04,
           "error": null
         },
         {
@@ -2859,10 +2859,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.27,
+          "decodeTps": 16.45,
           "prefillTokens": 65,
-          "ttftMs": 44.09,
-          "totalMs": 23167.53,
+          "ttftMs": 86.08,
+          "totalMs": 24367.52,
           "error": null
         },
         {
@@ -2870,10 +2870,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.65,
+          "decodeTps": 17.02,
           "prefillTokens": 65,
-          "ttftMs": 44.2,
-          "totalMs": 22688.48,
+          "ttftMs": 43.89,
+          "totalMs": 23562.13,
           "error": null
         },
         {
@@ -2881,10 +2881,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.15,
+          "decodeTps": 17.16,
           "prefillTokens": 65,
-          "ttftMs": 84.69,
-          "totalMs": 23386.94,
+          "ttftMs": 43.81,
+          "totalMs": 23310.65,
           "error": null
         },
         {
@@ -2892,10 +2892,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.87,
+          "decodeTps": 16.38,
           "prefillTokens": 65,
-          "ttftMs": 43.81,
-          "totalMs": 23719.36,
+          "ttftMs": 28.05,
+          "totalMs": 24392.02,
           "error": null
         },
         {
@@ -2903,10 +2903,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.83,
+          "decodeTps": 17.09,
           "prefillTokens": 65,
-          "ttftMs": 43.73,
-          "totalMs": 23768.55,
+          "ttftMs": 43.78,
+          "totalMs": 23412.32,
           "error": null
         },
         {
@@ -2914,10 +2914,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.64,
+          "decodeTps": 16.69,
           "prefillTokens": 65,
-          "ttftMs": 28,
-          "totalMs": 22684.41,
+          "ttftMs": 43.58,
+          "totalMs": 23990.28,
           "error": null
         },
         {
@@ -2925,10 +2925,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.82,
+          "decodeTps": 17.05,
           "prefillTokens": 65,
-          "ttftMs": 84.34,
-          "totalMs": 22482.89,
+          "ttftMs": 85.58,
+          "totalMs": 23564.55,
           "error": null
         },
         {
@@ -2936,10 +2936,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.02,
+          "decodeTps": 17.05,
           "prefillTokens": 65,
-          "ttftMs": 84.24,
-          "totalMs": 23545.04,
+          "ttftMs": 85.49,
+          "totalMs": 23564.35,
           "error": null
         }
       ]
@@ -2948,10 +2948,10 @@
       "promptType": "prose",
       "mode": "think",
       "concurrency": 16,
-      "aggregateDecodeTps": 211.91,
-      "meanDecodeTps": 13.64,
-      "medianDecodeTps": 13.55,
-      "meanTtftMs": 56.31,
+      "aggregateDecodeTps": 215.39,
+      "meanDecodeTps": 14.01,
+      "medianDecodeTps": 14.02,
+      "meanTtftMs": 59.55,
       "streamsOk": 16,
       "streamsFailed": 0,
       "totalCompletionTokens": 6400,
@@ -2963,10 +2963,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.5,
+          "decodeTps": 14.1,
           "prefillTokens": 65,
-          "ttftMs": 39.21,
-          "totalMs": 29623.93,
+          "ttftMs": 64.37,
+          "totalMs": 28389.65,
           "error": null
         },
         {
@@ -2974,10 +2974,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.45,
+          "decodeTps": 13.76,
           "prefillTokens": 65,
-          "ttftMs": 10.44,
-          "totalMs": 29693.81,
+          "ttftMs": 41.16,
+          "totalMs": 29063.27,
           "error": null
         },
         {
@@ -2985,10 +2985,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 14.07,
+          "decodeTps": 14,
           "prefillTokens": 65,
-          "ttftMs": 38.94,
-          "totalMs": 28429.46,
+          "ttftMs": 13.16,
+          "totalMs": 28567.3,
           "error": null
         },
         {
@@ -2996,10 +2996,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.97,
+          "decodeTps": 14.33,
           "prefillTokens": 65,
-          "ttftMs": 38.86,
-          "totalMs": 28626.65,
+          "ttftMs": 40.95,
+          "totalMs": 27918.75,
           "error": null
         },
         {
@@ -3007,10 +3007,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.37,
+          "decodeTps": 13.69,
           "prefillTokens": 65,
-          "ttftMs": 60.18,
-          "totalMs": 29908.71,
+          "ttftMs": 63.92,
+          "totalMs": 29228.01,
           "error": null
         },
         {
@@ -3018,10 +3018,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.52,
+          "decodeTps": 13.51,
           "prefillTokens": 65,
-          "ttftMs": 38.47,
-          "totalMs": 29557.23,
+          "ttftMs": 40.7,
+          "totalMs": 29590.57,
           "error": null
         },
         {
@@ -3029,10 +3029,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.43,
+          "decodeTps": 14.77,
           "prefillTokens": 65,
-          "ttftMs": 38.43,
-          "totalMs": 29750.98,
+          "ttftMs": 40.62,
+          "totalMs": 27073.08,
           "error": null
         },
         {
@@ -3040,10 +3040,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.47,
+          "decodeTps": 13.56,
           "prefillTokens": 65,
-          "ttftMs": 59.84,
-          "totalMs": 29707.04,
+          "ttftMs": 40.54,
+          "totalMs": 29492.4,
           "error": null
         },
         {
@@ -3051,10 +3051,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.27,
+          "decodeTps": 14.59,
           "prefillTokens": 65,
-          "ttftMs": 59.7,
-          "totalMs": 30148.89,
+          "ttftMs": 63.6,
+          "totalMs": 27423.57,
           "error": null
         },
         {
@@ -3062,10 +3062,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.75,
+          "decodeTps": 13.52,
           "prefillTokens": 65,
-          "ttftMs": 100.43,
-          "totalMs": 29139.67,
+          "ttftMs": 63.43,
+          "totalMs": 29645.62,
           "error": null
         },
         {
@@ -3073,10 +3073,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 14.35,
+          "decodeTps": 14.04,
           "prefillTokens": 65,
-          "ttftMs": 37.94,
-          "totalMs": 27858.57,
+          "ttftMs": 104.92,
+          "totalMs": 28569.89,
           "error": null
         },
         {
@@ -3084,10 +3084,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.57,
+          "decodeTps": 14.23,
           "prefillTokens": 65,
-          "ttftMs": 59.47,
-          "totalMs": 29484.07,
+          "ttftMs": 63.26,
+          "totalMs": 28113.24,
           "error": null
         },
         {
@@ -3095,10 +3095,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.77,
+          "decodeTps": 13.84,
           "prefillTokens": 65,
-          "ttftMs": 59.43,
-          "totalMs": 29051.58,
+          "ttftMs": 63.21,
+          "totalMs": 28906.96,
           "error": null
         },
         {
@@ -3106,10 +3106,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.6,
+          "decodeTps": 14.39,
           "prefillTokens": 65,
-          "ttftMs": 59.4,
-          "totalMs": 29409.98,
+          "ttftMs": 39.98,
+          "totalMs": 27775.93,
           "error": null
         },
         {
@@ -3117,10 +3117,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.31,
+          "decodeTps": 13.5,
           "prefillTokens": 65,
-          "ttftMs": 100.11,
-          "totalMs": 30089.65,
+          "ttftMs": 104.57,
+          "totalMs": 29697.22,
           "error": null
         },
         {
@@ -3128,10 +3128,10 @@
           "cachedTokens": 65,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.9,
+          "decodeTps": 14.36,
           "prefillTokens": 65,
-          "ttftMs": 100.04,
-          "totalMs": 28831.1,
+          "ttftMs": 104.47,
+          "totalMs": 27920.54,
           "error": null
         }
       ]
@@ -3140,10 +3140,10 @@
       "promptType": "code",
       "mode": "think",
       "concurrency": 1,
-      "aggregateDecodeTps": 82.21,
-      "meanDecodeTps": 82.21,
-      "medianDecodeTps": 82.21,
-      "meanTtftMs": 45.36,
+      "aggregateDecodeTps": 82.03,
+      "meanDecodeTps": 82.03,
+      "medianDecodeTps": 82.03,
+      "meanTtftMs": 46.3,
       "streamsOk": 1,
       "streamsFailed": 0,
       "totalCompletionTokens": 400,
@@ -3155,10 +3155,10 @@
           "cachedTokens": 85,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 82.21,
+          "decodeTps": 82.03,
           "prefillTokens": 85,
-          "ttftMs": 45.36,
-          "totalMs": 4903.6,
+          "ttftMs": 46.3,
+          "totalMs": 4920.83,
           "error": null
         }
       ]
@@ -3167,10 +3167,10 @@
       "promptType": "code",
       "mode": "think",
       "concurrency": 2,
-      "aggregateDecodeTps": 120.32,
-      "meanDecodeTps": 60.16,
-      "medianDecodeTps": 60.16,
-      "meanTtftMs": 45.59,
+      "aggregateDecodeTps": 119.26,
+      "meanDecodeTps": 59.63,
+      "medianDecodeTps": 59.63,
+      "meanTtftMs": 45.43,
       "streamsOk": 2,
       "streamsFailed": 0,
       "totalCompletionTokens": 800,
@@ -3182,10 +3182,10 @@
           "cachedTokens": 85,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 60.16,
+          "decodeTps": 59.63,
           "prefillTokens": 85,
-          "ttftMs": 45.67,
-          "totalMs": 6696.54,
+          "ttftMs": 45.58,
+          "totalMs": 6758.75,
           "error": null
         },
         {
@@ -3193,10 +3193,10 @@
           "cachedTokens": 85,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 60.16,
+          "decodeTps": 59.63,
           "prefillTokens": 85,
-          "ttftMs": 45.5,
-          "totalMs": 6695.55,
+          "ttftMs": 45.28,
+          "totalMs": 6761.76,
           "error": null
         }
       ]
@@ -3205,10 +3205,10 @@
       "promptType": "code",
       "mode": "think",
       "concurrency": 4,
-      "aggregateDecodeTps": 142.26,
-      "meanDecodeTps": 37.56,
-      "medianDecodeTps": 37.13,
-      "meanTtftMs": 33.38,
+      "aggregateDecodeTps": 141.91,
+      "meanDecodeTps": 37.7,
+      "medianDecodeTps": 37.01,
+      "meanTtftMs": 46.6,
       "streamsOk": 4,
       "streamsFailed": 0,
       "totalCompletionTokens": 1600,
@@ -3220,10 +3220,10 @@
           "cachedTokens": 85,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 35.56,
+          "decodeTps": 36.15,
           "prefillTokens": 85,
-          "ttftMs": 12.56,
-          "totalMs": 11243.75,
+          "ttftMs": 46.9,
+          "totalMs": 11104.58,
           "error": null
         },
         {
@@ -3231,10 +3231,10 @@
           "cachedTokens": 85,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 36.15,
+          "decodeTps": 35.48,
           "prefillTokens": 85,
-          "ttftMs": 12.59,
-          "totalMs": 11064.99,
+          "ttftMs": 46.68,
+          "totalMs": 11306.77,
           "error": null
         },
         {
@@ -3242,10 +3242,10 @@
           "cachedTokens": 91,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 40.42,
+          "decodeTps": 41.3,
           "prefillTokens": 91,
-          "ttftMs": 54.26,
-          "totalMs": 9949.55,
+          "ttftMs": 46.49,
+          "totalMs": 9725.42,
           "error": null
         },
         {
@@ -3253,10 +3253,10 @@
           "cachedTokens": 85,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 38.11,
+          "decodeTps": 37.87,
           "prefillTokens": 85,
-          "ttftMs": 54.12,
-          "totalMs": 10544.34,
+          "ttftMs": 46.33,
+          "totalMs": 10602.79,
           "error": null
         }
       ]
@@ -3265,10 +3265,10 @@
       "promptType": "code",
       "mode": "think",
       "concurrency": 6,
-      "aggregateDecodeTps": 164.55,
-      "meanDecodeTps": 29.37,
-      "medianDecodeTps": 28.88,
-      "meanTtftMs": 32.7,
+      "aggregateDecodeTps": 165.1,
+      "meanDecodeTps": 29.95,
+      "medianDecodeTps": 29.4,
+      "meanTtftMs": 49.14,
       "streamsOk": 6,
       "streamsFailed": 0,
       "totalCompletionTokens": 2400,
@@ -3280,10 +3280,10 @@
           "cachedTokens": 85,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 29.64,
+          "decodeTps": 27.52,
           "prefillTokens": 85,
-          "ttftMs": 33.14,
-          "totalMs": 13516.95,
+          "ttftMs": 22.98,
+          "totalMs": 14535.1,
           "error": null
         },
         {
@@ -3291,10 +3291,10 @@
           "cachedTokens": 85,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 33.11,
+          "decodeTps": 32.57,
           "prefillTokens": 85,
-          "ttftMs": 32.87,
-          "totalMs": 12103.66,
+          "ttftMs": 64.03,
+          "totalMs": 12365.38,
           "error": null
         },
         {
@@ -3302,10 +3302,10 @@
           "cachedTokens": 91,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 28.29,
+          "decodeTps": 29.73,
           "prefillTokens": 91,
-          "ttftMs": 32.73,
-          "totalMs": 14160.41,
+          "ttftMs": 62.72,
+          "totalMs": 13506.06,
           "error": null
         },
         {
@@ -3313,10 +3313,10 @@
           "cachedTokens": 85,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 29.18,
+          "decodeTps": 32.57,
           "prefillTokens": 85,
-          "ttftMs": 32.57,
-          "totalMs": 13727.44,
+          "ttftMs": 62.55,
+          "totalMs": 12360.5,
           "error": null
         },
         {
@@ -3324,10 +3324,10 @@
           "cachedTokens": 84,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 27.42,
+          "decodeTps": 28.24,
           "prefillTokens": 84,
-          "ttftMs": 32.49,
-          "totalMs": 14596.17,
+          "ttftMs": 20.61,
+          "totalMs": 14167.24,
           "error": null
         },
         {
@@ -3335,10 +3335,10 @@
           "cachedTokens": 87,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 28.58,
+          "decodeTps": 29.06,
           "prefillTokens": 87,
-          "ttftMs": 32.37,
-          "totalMs": 14014.93,
+          "ttftMs": 61.95,
+          "totalMs": 13794.2,
           "error": null
         }
       ]
@@ -3347,10 +3347,10 @@
       "promptType": "code",
       "mode": "think",
       "concurrency": 8,
-      "aggregateDecodeTps": 177.64,
-      "meanDecodeTps": 24.06,
-      "medianDecodeTps": 23.75,
-      "meanTtftMs": 37.4,
+      "aggregateDecodeTps": 175.1,
+      "meanDecodeTps": 24.45,
+      "medianDecodeTps": 24.26,
+      "meanTtftMs": 45.07,
       "streamsOk": 8,
       "streamsFailed": 0,
       "totalCompletionTokens": 3200,
@@ -3362,10 +3362,10 @@
           "cachedTokens": 85,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 22.72,
+          "decodeTps": 22.3,
           "prefillTokens": 85,
-          "ttftMs": 9.75,
-          "totalMs": 17594.33,
+          "ttftMs": 60.87,
+          "totalMs": 17973.95,
           "error": null
         },
         {
@@ -3373,10 +3373,10 @@
           "cachedTokens": 85,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 23.25,
+          "decodeTps": 27.58,
           "prefillTokens": 85,
-          "ttftMs": 35.63,
-          "totalMs": 17211.55,
+          "ttftMs": 19.45,
+          "totalMs": 14502.79,
           "error": null
         },
         {
@@ -3384,10 +3384,10 @@
           "cachedTokens": 91,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 22.36,
+          "decodeTps": 21.94,
           "prefillTokens": 91,
-          "ttftMs": 76.63,
-          "totalMs": 17941.18,
+          "ttftMs": 60.63,
+          "totalMs": 18261.96,
           "error": null
         },
         {
@@ -3395,10 +3395,10 @@
           "cachedTokens": 85,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 24.99,
+          "decodeTps": 27.44,
           "prefillTokens": 85,
-          "ttftMs": 35.5,
-          "totalMs": 16013.64,
+          "ttftMs": 60.56,
+          "totalMs": 14610.92,
           "error": null
         },
         {
@@ -3408,8 +3408,8 @@
           "decodeTokens": 399,
           "decodeTps": 24.82,
           "prefillTokens": 84,
-          "ttftMs": 35.44,
-          "totalMs": 16125.54,
+          "ttftMs": 19.33,
+          "totalMs": 16117.03,
           "error": null
         },
         {
@@ -3417,10 +3417,10 @@
           "cachedTokens": 87,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 22.24,
+          "decodeTps": 22.53,
           "prefillTokens": 87,
-          "ttftMs": 35.38,
-          "totalMs": 17980.43,
+          "ttftMs": 60.38,
+          "totalMs": 17789.87,
           "error": null
         },
         {
@@ -3428,10 +3428,10 @@
           "cachedTokens": 82,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 27.84,
+          "decodeTps": 25.31,
           "prefillTokens": 82,
-          "ttftMs": 35.33,
-          "totalMs": 14391.18,
+          "ttftMs": 19.1,
+          "totalMs": 15803.83,
           "error": null
         },
         {
@@ -3439,10 +3439,10 @@
           "cachedTokens": 88,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 24.25,
+          "decodeTps": 23.69,
           "prefillTokens": 88,
-          "ttftMs": 35.55,
-          "totalMs": 16507.72,
+          "ttftMs": 60.22,
+          "totalMs": 16923.85,
           "error": null
         }
       ]
@@ -3451,10 +3451,10 @@
       "promptType": "code",
       "mode": "think",
       "concurrency": 10,
-      "aggregateDecodeTps": 184,
-      "meanDecodeTps": 20.27,
-      "medianDecodeTps": 20.01,
-      "meanTtftMs": 46.72,
+      "aggregateDecodeTps": 182.19,
+      "meanDecodeTps": 20.02,
+      "medianDecodeTps": 19.72,
+      "meanTtftMs": 43.11,
       "streamsOk": 10,
       "streamsFailed": 0,
       "totalCompletionTokens": 4000,
@@ -3466,10 +3466,10 @@
           "cachedTokens": 85,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 18.4,
+          "decodeTps": 18.22,
           "prefillTokens": 85,
-          "ttftMs": 9.16,
-          "totalMs": 21707.17,
+          "ttftMs": 34.24,
+          "totalMs": 21945.94,
           "error": null
         },
         {
@@ -3477,10 +3477,10 @@
           "cachedTokens": 85,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 22.52,
+          "decodeTps": 21.97,
           "prefillTokens": 85,
-          "ttftMs": 27.61,
-          "totalMs": 17773.07,
+          "ttftMs": 33.93,
+          "totalMs": 18205.61,
           "error": null
         },
         {
@@ -3488,10 +3488,10 @@
           "cachedTokens": 91,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 22.54,
+          "decodeTps": 21.44,
           "prefillTokens": 91,
-          "ttftMs": 69.81,
-          "totalMs": 17775.46,
+          "ttftMs": 57.49,
+          "totalMs": 18686.37,
           "error": null
         },
         {
@@ -3499,10 +3499,10 @@
           "cachedTokens": 85,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 18.86,
+          "decodeTps": 18.96,
           "prefillTokens": 85,
-          "ttftMs": 27.62,
-          "totalMs": 21193.31,
+          "ttftMs": 33.74,
+          "totalMs": 21096.79,
           "error": null
         },
         {
@@ -3510,10 +3510,10 @@
           "cachedTokens": 84,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 20.47,
+          "decodeTps": 20.5,
           "prefillTokens": 84,
-          "ttftMs": 27.5,
-          "totalMs": 19532,
+          "ttftMs": 33.66,
+          "totalMs": 19507.81,
           "error": null
         },
         {
@@ -3521,10 +3521,10 @@
           "cachedTokens": 87,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 18.95,
+          "decodeTps": 18.39,
           "prefillTokens": 87,
-          "ttftMs": 69.64,
-          "totalMs": 21146.98,
+          "ttftMs": 33.64,
+          "totalMs": 21749.73,
           "error": null
         },
         {
@@ -3532,10 +3532,10 @@
           "cachedTokens": 82,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 21.96,
+          "decodeTps": 21.63,
           "prefillTokens": 82,
-          "ttftMs": 27.4,
-          "totalMs": 18210.54,
+          "ttftMs": 33.51,
+          "totalMs": 18497.77,
           "error": null
         },
         {
@@ -3543,10 +3543,10 @@
           "cachedTokens": 88,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 19.02,
+          "decodeTps": 19.69,
           "prefillTokens": 88,
-          "ttftMs": 69.54,
-          "totalMs": 21068.74,
+          "ttftMs": 57.07,
+          "totalMs": 20333.76,
           "error": null
         },
         {
@@ -3556,8 +3556,8 @@
           "decodeTokens": 399,
           "decodeTps": 19.75,
           "prefillTokens": 89,
-          "ttftMs": 69.48,
-          "totalMs": 20290.83,
+          "ttftMs": 56.99,
+          "totalMs": 20277.77,
           "error": null
         },
         {
@@ -3565,10 +3565,10 @@
           "cachedTokens": 89,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 20.27,
+          "decodeTps": 19.69,
           "prefillTokens": 89,
-          "ttftMs": 69.4,
-          "totalMs": 19776.5,
+          "ttftMs": 56.87,
+          "totalMs": 20389.28,
           "error": null
         }
       ]
@@ -3577,10 +3577,10 @@
       "promptType": "code",
       "mode": "think",
       "concurrency": 12,
-      "aggregateDecodeTps": 194.42,
-      "meanDecodeTps": 17.87,
-      "medianDecodeTps": 17.65,
-      "meanTtftMs": 45.56,
+      "aggregateDecodeTps": 196.31,
+      "meanDecodeTps": 17.89,
+      "medianDecodeTps": 17.48,
+      "meanTtftMs": 45.41,
       "streamsOk": 12,
       "streamsFailed": 0,
       "totalCompletionTokens": 4800,
@@ -3592,10 +3592,10 @@
           "cachedTokens": 85,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.21,
+          "decodeTps": 16.37,
           "prefillTokens": 85,
-          "ttftMs": 33.4,
-          "totalMs": 24660.69,
+          "ttftMs": 33.26,
+          "totalMs": 24426.05,
           "error": null
         },
         {
@@ -3603,10 +3603,10 @@
           "cachedTokens": 85,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 19.54,
+          "decodeTps": 19.3,
           "prefillTokens": 85,
-          "ttftMs": 33.05,
-          "totalMs": 20465.35,
+          "ttftMs": 17.85,
+          "totalMs": 20710.24,
           "error": null
         },
         {
@@ -3614,10 +3614,10 @@
           "cachedTokens": 91,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 19.28,
+          "decodeTps": 19.55,
           "prefillTokens": 91,
-          "ttftMs": 49.88,
-          "totalMs": 20764.98,
+          "ttftMs": 49.61,
+          "totalMs": 20485.55,
           "error": null
         },
         {
@@ -3625,10 +3625,10 @@
           "cachedTokens": 85,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.46,
+          "decodeTps": 16.61,
           "prefillTokens": 85,
-          "ttftMs": 18.02,
-          "totalMs": 24261.27,
+          "ttftMs": 32.75,
+          "totalMs": 24081.7,
           "error": null
         },
         {
@@ -3636,10 +3636,10 @@
           "cachedTokens": 84,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 18.13,
+          "decodeTps": 18.21,
           "prefillTokens": 84,
-          "ttftMs": 32.88,
-          "totalMs": 22057.14,
+          "ttftMs": 32.69,
+          "totalMs": 21964.21,
           "error": null
         },
         {
@@ -3647,10 +3647,10 @@
           "cachedTokens": 87,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.42,
+          "decodeTps": 16.38,
           "prefillTokens": 87,
-          "ttftMs": 49.22,
-          "totalMs": 24372.07,
+          "ttftMs": 49.03,
+          "totalMs": 24428.36,
           "error": null
         },
         {
@@ -3658,10 +3658,10 @@
           "cachedTokens": 82,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 19.33,
+          "decodeTps": 19.1,
           "prefillTokens": 82,
-          "ttftMs": 18.07,
-          "totalMs": 20682.26,
+          "ttftMs": 17.6,
+          "totalMs": 20924.81,
           "error": null
         },
         {
@@ -3669,10 +3669,10 @@
           "cachedTokens": 88,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.53,
+          "decodeTps": 16.86,
           "prefillTokens": 88,
-          "ttftMs": 49.1,
-          "totalMs": 24214.52,
+          "ttftMs": 48.92,
+          "totalMs": 23722.87,
           "error": null
         },
         {
@@ -3680,10 +3680,10 @@
           "cachedTokens": 89,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.17,
+          "decodeTps": 17.11,
           "prefillTokens": 89,
-          "ttftMs": 90.78,
-          "totalMs": 23348.14,
+          "ttftMs": 91.04,
+          "totalMs": 23432.25,
           "error": null
         },
         {
@@ -3691,10 +3691,10 @@
           "cachedTokens": 89,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 18.26,
+          "decodeTps": 17.85,
           "prefillTokens": 89,
-          "ttftMs": 90.74,
-          "totalMs": 21951.72,
+          "ttftMs": 91.01,
+          "totalMs": 22462.42,
           "error": null
         },
         {
@@ -3702,10 +3702,10 @@
           "cachedTokens": 83,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 20,
+          "decodeTps": 20.32,
           "prefillTokens": 83,
-          "ttftMs": 32.64,
-          "totalMs": 19998.69,
+          "ttftMs": 32.42,
+          "totalMs": 19683.56,
           "error": null
         },
         {
@@ -3713,10 +3713,10 @@
           "cachedTokens": 86,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.1,
+          "decodeTps": 17,
           "prefillTokens": 86,
-          "ttftMs": 48.95,
-          "totalMs": 23394.51,
+          "ttftMs": 48.76,
+          "totalMs": 23545.27,
           "error": null
         }
       ]
@@ -3725,10 +3725,10 @@
       "promptType": "code",
       "mode": "think",
       "concurrency": 16,
-      "aggregateDecodeTps": 210.28,
-      "meanDecodeTps": 14.45,
-      "medianDecodeTps": 13.92,
-      "meanTtftMs": 53.41,
+      "aggregateDecodeTps": 211.29,
+      "meanDecodeTps": 14.69,
+      "medianDecodeTps": 14.08,
+      "meanTtftMs": 55.93,
       "streamsOk": 16,
       "streamsFailed": 0,
       "totalCompletionTokens": 6400,
@@ -3740,10 +3740,10 @@
           "cachedTokens": 85,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.19,
+          "decodeTps": 13.36,
           "prefillTokens": 85,
-          "ttftMs": 53.05,
-          "totalMs": 30322.77,
+          "ttftMs": 49.58,
+          "totalMs": 29941.59,
           "error": null
         },
         {
@@ -3751,10 +3751,10 @@
           "cachedTokens": 85,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 16.63,
+          "decodeTps": 17.13,
           "prefillTokens": 85,
-          "ttftMs": 52.73,
-          "totalMs": 24059.69,
+          "ttftMs": 49.42,
+          "totalMs": 23348.49,
           "error": null
         },
         {
@@ -3762,10 +3762,10 @@
           "cachedTokens": 91,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 15.86,
+          "decodeTps": 16.03,
           "prefillTokens": 91,
-          "ttftMs": 52.76,
-          "totalMs": 25224.59,
+          "ttftMs": 71.5,
+          "totalMs": 24981.67,
           "error": null
         },
         {
@@ -3773,10 +3773,10 @@
           "cachedTokens": 85,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.56,
+          "decodeTps": 14.08,
           "prefillTokens": 85,
-          "ttftMs": 52.32,
-          "totalMs": 29477.33,
+          "ttftMs": 49.26,
+          "totalMs": 28400.53,
           "error": null
         },
         {
@@ -3784,10 +3784,10 @@
           "cachedTokens": 84,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 15.11,
+          "decodeTps": 15.48,
           "prefillTokens": 84,
-          "ttftMs": 52.18,
-          "totalMs": 26455.5,
+          "ttftMs": 49.2,
+          "totalMs": 25836.86,
           "error": null
         },
         {
@@ -3795,10 +3795,10 @@
           "cachedTokens": 87,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.24,
+          "decodeTps": 13.73,
           "prefillTokens": 87,
-          "ttftMs": 14.77,
-          "totalMs": 30178.71,
+          "ttftMs": 13.04,
+          "totalMs": 29090.41,
           "error": null
         },
         {
@@ -3806,10 +3806,10 @@
           "cachedTokens": 82,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 15.92,
+          "decodeTps": 16.53,
           "prefillTokens": 82,
-          "ttftMs": 28.81,
-          "totalMs": 25108.39,
+          "ttftMs": 24.71,
+          "totalMs": 24179.27,
           "error": null
         },
         {
@@ -3817,10 +3817,10 @@
           "cachedTokens": 88,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.95,
+          "decodeTps": 14.05,
           "prefillTokens": 88,
-          "ttftMs": 73.69,
-          "totalMs": 28701.64,
+          "ttftMs": 71.17,
+          "totalMs": 28491.71,
           "error": null
         },
         {
@@ -3828,10 +3828,10 @@
           "cachedTokens": 89,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 14.23,
+          "decodeTps": 14.28,
           "prefillTokens": 89,
-          "ttftMs": 73.55,
-          "totalMs": 28129.36,
+          "ttftMs": 71.1,
+          "totalMs": 28032.99,
           "error": null
         },
         {
@@ -3839,10 +3839,10 @@
           "cachedTokens": 89,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 14.66,
+          "decodeTps": 14.78,
           "prefillTokens": 89,
-          "ttftMs": 73.46,
-          "totalMs": 27318.41,
+          "ttftMs": 71.06,
+          "totalMs": 27083.68,
           "error": null
         },
         {
@@ -3850,10 +3850,10 @@
           "cachedTokens": 83,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 17.6,
+          "decodeTps": 17.84,
           "prefillTokens": 83,
-          "ttftMs": 28.62,
-          "totalMs": 22706.15,
+          "ttftMs": 24.59,
+          "totalMs": 22403.78,
           "error": null
         },
         {
@@ -3861,10 +3861,10 @@
           "cachedTokens": 86,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.88,
+          "decodeTps": 14.07,
           "prefillTokens": 86,
-          "ttftMs": 51.38,
-          "totalMs": 28809.55,
+          "ttftMs": 111.66,
+          "totalMs": 28505.65,
           "error": null
         },
         {
@@ -3872,10 +3872,10 @@
           "cachedTokens": 89,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.2,
+          "decodeTps": 13.26,
           "prefillTokens": 89,
-          "ttftMs": 73.2,
-          "totalMs": 30335.39,
+          "ttftMs": 70.89,
+          "totalMs": 30161.88,
           "error": null
         },
         {
@@ -3883,10 +3883,10 @@
           "cachedTokens": 86,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.66,
+          "decodeTps": 13.87,
           "prefillTokens": 86,
-          "ttftMs": 73.11,
-          "totalMs": 29311.71,
+          "ttftMs": 48.62,
+          "totalMs": 28834.79,
           "error": null
         },
         {
@@ -3894,10 +3894,10 @@
           "cachedTokens": 83,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.27,
+          "decodeTps": 13.38,
           "prefillTokens": 83,
-          "ttftMs": 28.13,
-          "totalMs": 30116.63,
+          "ttftMs": 48.51,
+          "totalMs": 29880.25,
           "error": null
         },
         {
@@ -3905,10 +3905,10 @@
           "cachedTokens": 89,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 13.17,
+          "decodeTps": 13.23,
           "prefillTokens": 89,
-          "ttftMs": 72.86,
-          "totalMs": 30385.85,
+          "ttftMs": 70.61,
+          "totalMs": 30239.59,
           "error": null
         }
       ]
@@ -3917,10 +3917,10 @@
       "promptType": "structured",
       "mode": "think",
       "concurrency": 1,
-      "aggregateDecodeTps": 142.36,
-      "meanDecodeTps": 142.36,
-      "medianDecodeTps": 142.36,
-      "meanTtftMs": 46.65,
+      "aggregateDecodeTps": 141.53,
+      "meanDecodeTps": 141.53,
+      "medianDecodeTps": 141.53,
+      "meanTtftMs": 46.53,
       "streamsOk": 1,
       "streamsFailed": 0,
       "totalCompletionTokens": 400,
@@ -3932,10 +3932,10 @@
           "cachedTokens": 51,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 142.36,
+          "decodeTps": 141.53,
           "prefillTokens": 51,
-          "ttftMs": 46.65,
-          "totalMs": 2860.81,
+          "ttftMs": 46.53,
+          "totalMs": 2877.88,
           "error": null
         }
       ]
@@ -3944,10 +3944,10 @@
       "promptType": "structured",
       "mode": "think",
       "concurrency": 2,
-      "aggregateDecodeTps": 175.45,
-      "meanDecodeTps": 93.19,
-      "medianDecodeTps": 93.19,
-      "meanTtftMs": 44.75,
+      "aggregateDecodeTps": 179.62,
+      "meanDecodeTps": 94.82,
+      "medianDecodeTps": 94.82,
+      "meanTtftMs": 46.1,
       "streamsOk": 2,
       "streamsFailed": 0,
       "totalCompletionTokens": 800,
@@ -3959,10 +3959,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 98.65,
+          "decodeTps": 99.82,
           "prefillTokens": 58,
-          "ttftMs": 44.84,
-          "totalMs": 4092.01,
+          "ttftMs": 46.24,
+          "totalMs": 4063.37,
           "error": null
         },
         {
@@ -3970,10 +3970,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 87.73,
+          "decodeTps": 89.81,
           "prefillTokens": 58,
-          "ttftMs": 44.66,
-          "totalMs": 4604.01,
+          "ttftMs": 45.95,
+          "totalMs": 4499.72,
           "error": null
         }
       ]
@@ -3982,10 +3982,10 @@
       "promptType": "structured",
       "mode": "think",
       "concurrency": 4,
-      "aggregateDecodeTps": 233.83,
-      "meanDecodeTps": 63.96,
-      "medianDecodeTps": 63.47,
-      "meanTtftMs": 47.43,
+      "aggregateDecodeTps": 239.88,
+      "meanDecodeTps": 64.84,
+      "medianDecodeTps": 64,
+      "meanTtftMs": 46.35,
       "streamsOk": 4,
       "streamsFailed": 0,
       "totalCompletionTokens": 1600,
@@ -3997,10 +3997,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 70.46,
+          "decodeTps": 71.39,
           "prefillTokens": 58,
-          "ttftMs": 47.75,
-          "totalMs": 5712.1,
+          "ttftMs": 46.62,
+          "totalMs": 5654.58,
           "error": null
         },
         {
@@ -4008,10 +4008,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 63.75,
+          "decodeTps": 64.29,
           "prefillTokens": 58,
-          "ttftMs": 47.48,
-          "totalMs": 6323.12,
+          "ttftMs": 46.39,
+          "totalMs": 6270.4,
           "error": null
         },
         {
@@ -4019,10 +4019,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 63.18,
+          "decodeTps": 63.7,
           "prefillTokens": 58,
-          "ttftMs": 47.32,
-          "totalMs": 6370.44,
+          "ttftMs": 46.26,
+          "totalMs": 6326.5,
           "error": null
         },
         {
@@ -4030,10 +4030,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 58.46,
+          "decodeTps": 59.97,
           "prefillTokens": 58,
-          "ttftMs": 47.16,
-          "totalMs": 6884.04,
+          "ttftMs": 46.13,
+          "totalMs": 6712.11,
           "error": null
         }
       ]
@@ -4042,10 +4042,10 @@
       "promptType": "structured",
       "mode": "think",
       "concurrency": 6,
-      "aggregateDecodeTps": 249.5,
-      "meanDecodeTps": 50.41,
-      "medianDecodeTps": 50.64,
-      "meanTtftMs": 36.81,
+      "aggregateDecodeTps": 272.96,
+      "meanDecodeTps": 50.07,
+      "medianDecodeTps": 49.57,
+      "meanTtftMs": 28.51,
       "streamsOk": 6,
       "streamsFailed": 0,
       "totalCompletionTokens": 2400,
@@ -4057,10 +4057,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 55.11,
+          "decodeTps": 53.62,
           "prefillTokens": 58,
-          "ttftMs": 23.05,
-          "totalMs": 7283.6,
+          "ttftMs": 24.16,
+          "totalMs": 7498.91,
           "error": null
         },
         {
@@ -4068,10 +4068,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 50.34,
+          "decodeTps": 49.09,
           "prefillTokens": 58,
-          "ttftMs": 65.36,
-          "totalMs": 8004.55,
+          "ttftMs": 23.89,
+          "totalMs": 8168.94,
           "error": null
         },
         {
@@ -4079,10 +4079,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 50.84,
+          "decodeTps": 45.49,
           "prefillTokens": 58,
-          "ttftMs": 22.57,
-          "totalMs": 7889.86,
+          "ttftMs": 23.66,
+          "totalMs": 8802.55,
           "error": null
         },
         {
@@ -4090,10 +4090,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 41.58,
+          "decodeTps": 50.05,
           "prefillTokens": 58,
-          "ttftMs": 22.61,
-          "totalMs": 9626.46,
+          "ttftMs": 37.88,
+          "totalMs": 8027.23,
           "error": null
         },
         {
@@ -4101,10 +4101,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 50.43,
+          "decodeTps": 48.55,
           "prefillTokens": 58,
-          "ttftMs": 22.38,
-          "totalMs": 7950.62,
+          "ttftMs": 37.83,
+          "totalMs": 8274.33,
           "error": null
         },
         {
@@ -4112,10 +4112,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 54.15,
+          "decodeTps": 53.61,
           "prefillTokens": 58,
-          "ttftMs": 64.86,
-          "totalMs": 7451.57,
+          "ttftMs": 23.61,
+          "totalMs": 7485.89,
           "error": null
         }
       ]
@@ -4124,10 +4124,10 @@
       "promptType": "structured",
       "mode": "think",
       "concurrency": 8,
-      "aggregateDecodeTps": 266.85,
-      "meanDecodeTps": 38.49,
-      "medianDecodeTps": 38.55,
-      "meanTtftMs": 35.06,
+      "aggregateDecodeTps": 261.64,
+      "meanDecodeTps": 39.91,
+      "medianDecodeTps": 39.7,
+      "meanTtftMs": 45.89,
       "streamsOk": 8,
       "streamsFailed": 0,
       "totalCompletionTokens": 3200,
@@ -4139,10 +4139,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 41.82,
+          "decodeTps": 44.71,
           "prefillTokens": 58,
-          "ttftMs": 8.98,
-          "totalMs": 9559.96,
+          "ttftMs": 19.78,
+          "totalMs": 8957.35,
           "error": null
         },
         {
@@ -4150,10 +4150,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 37.95,
+          "decodeTps": 39.31,
           "prefillTokens": 58,
-          "ttftMs": 34.28,
-          "totalMs": 10557.74,
+          "ttftMs": 19.62,
+          "totalMs": 10188.83,
           "error": null
         },
         {
@@ -4161,10 +4161,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 38.9,
+          "decodeTps": 40.08,
           "prefillTokens": 58,
-          "ttftMs": 67.11,
-          "totalMs": 10343.66,
+          "ttftMs": 61.79,
+          "totalMs": 10033.21,
           "error": null
         },
         {
@@ -4172,10 +4172,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 33.43,
+          "decodeTps": 32.71,
           "prefillTokens": 58,
-          "ttftMs": 34.13,
-          "totalMs": 11978.81,
+          "ttftMs": 19.63,
+          "totalMs": 12231.03,
           "error": null
         },
         {
@@ -4183,10 +4183,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 38.19,
+          "decodeTps": 38.93,
           "prefillTokens": 58,
-          "ttftMs": 34.14,
-          "totalMs": 10500.47,
+          "ttftMs": 61.68,
+          "totalMs": 10329.06,
           "error": null
         },
         {
@@ -4194,10 +4194,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 41.4,
+          "decodeTps": 43.21,
           "prefillTokens": 58,
-          "ttftMs": 34.02,
-          "totalMs": 9683.26,
+          "ttftMs": 61.6,
+          "totalMs": 9309.99,
           "error": null
         },
         {
@@ -4205,10 +4205,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 40.53,
+          "decodeTps": 43.72,
           "prefillTokens": 58,
-          "ttftMs": 33.97,
-          "totalMs": 9895.46,
+          "ttftMs": 61.54,
+          "totalMs": 9199.84,
           "error": null
         },
         {
@@ -4216,10 +4216,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 35.7,
+          "decodeTps": 36.62,
           "prefillTokens": 58,
-          "ttftMs": 33.87,
-          "totalMs": 11230.54,
+          "ttftMs": 61.44,
+          "totalMs": 10976.2,
           "error": null
         }
       ]
@@ -4228,10 +4228,10 @@
       "promptType": "structured",
       "mode": "think",
       "concurrency": 10,
-      "aggregateDecodeTps": 283.07,
-      "meanDecodeTps": 34.5,
-      "medianDecodeTps": 35.11,
-      "meanTtftMs": 40.91,
+      "aggregateDecodeTps": 281.4,
+      "meanDecodeTps": 34.54,
+      "medianDecodeTps": 35.04,
+      "meanTtftMs": 48.21,
       "streamsOk": 10,
       "streamsFailed": 0,
       "totalCompletionTokens": 4000,
@@ -4243,10 +4243,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 39.81,
+          "decodeTps": 39.19,
           "prefillTokens": 58,
-          "ttftMs": 43.82,
-          "totalMs": 10078.49,
+          "ttftMs": 32.05,
+          "totalMs": 10224.14,
           "error": null
         },
         {
@@ -4254,10 +4254,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 35.11,
+          "decodeTps": 35.76,
           "prefillTokens": 58,
-          "ttftMs": 21.93,
-          "totalMs": 11422.98,
+          "ttftMs": 31.9,
+          "totalMs": 11261.09,
           "error": null
         },
         {
@@ -4265,10 +4265,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 36.45,
+          "decodeTps": 35.76,
           "prefillTokens": 58,
-          "ttftMs": 21.57,
-          "totalMs": 10976.78,
+          "ttftMs": 32.19,
+          "totalMs": 11218.87,
           "error": null
         },
         {
@@ -4276,10 +4276,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 28.35,
+          "decodeTps": 28.14,
           "prefillTokens": 58,
-          "ttftMs": 43.46,
-          "totalMs": 14129,
+          "ttftMs": 31.74,
+          "totalMs": 14220.54,
           "error": null
         },
         {
@@ -4287,10 +4287,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 35.11,
+          "decodeTps": 34.32,
           "prefillTokens": 58,
-          "ttftMs": 21.35,
-          "totalMs": 11405.42,
+          "ttftMs": 31.69,
+          "totalMs": 11674.68,
           "error": null
         },
         {
@@ -4298,10 +4298,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 39.28,
+          "decodeTps": 39.71,
           "prefillTokens": 58,
-          "ttftMs": 43.28,
-          "totalMs": 10214.51,
+          "ttftMs": 31.65,
+          "totalMs": 10093.05,
           "error": null
         },
         {
@@ -4309,10 +4309,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 37.33,
+          "decodeTps": 38.86,
           "prefillTokens": 58,
-          "ttftMs": 43.27,
-          "totalMs": 10739.63,
+          "ttftMs": 72.79,
+          "totalMs": 10349.66,
           "error": null
         },
         {
@@ -4320,10 +4320,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 29.8,
+          "decodeTps": 29.82,
           "prefillTokens": 58,
-          "ttftMs": 43.16,
-          "totalMs": 13452.05,
+          "ttftMs": 72.75,
+          "totalMs": 13470.91,
           "error": null
         },
         {
@@ -4331,10 +4331,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 31.91,
+          "decodeTps": 32.21,
           "prefillTokens": 58,
-          "ttftMs": 43.1,
-          "totalMs": 12566.32,
+          "ttftMs": 72.71,
+          "totalMs": 12478.6,
           "error": null
         },
         {
@@ -4342,10 +4342,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 31.85,
+          "decodeTps": 31.63,
           "prefillTokens": 58,
-          "ttftMs": 84.13,
-          "totalMs": 12629.45,
+          "ttftMs": 72.63,
+          "totalMs": 12690.29,
           "error": null
         }
       ]
@@ -4354,10 +4354,10 @@
       "promptType": "structured",
       "mode": "think",
       "concurrency": 12,
-      "aggregateDecodeTps": 300.14,
-      "meanDecodeTps": 32.16,
-      "medianDecodeTps": 32.84,
-      "meanTtftMs": 46.14,
+      "aggregateDecodeTps": 305.44,
+      "meanDecodeTps": 32.13,
+      "medianDecodeTps": 31.93,
+      "meanTtftMs": 45.75,
       "streamsOk": 12,
       "streamsFailed": 0,
       "totalCompletionTokens": 4800,
@@ -4369,10 +4369,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 37.52,
+          "decodeTps": 37.58,
           "prefillTokens": 58,
-          "ttftMs": 25.49,
-          "totalMs": 10672.52,
+          "ttftMs": 17.69,
+          "totalMs": 10648.64,
           "error": null
         },
         {
@@ -4380,10 +4380,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 32.06,
+          "decodeTps": 31.67,
           "prefillTokens": 58,
-          "ttftMs": 48.88,
-          "totalMs": 12514.88,
+          "ttftMs": 34.05,
+          "totalMs": 12649.98,
           "error": null
         },
         {
@@ -4391,10 +4391,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 33.62,
+          "decodeTps": 32.18,
           "prefillTokens": 58,
-          "ttftMs": 15.44,
-          "totalMs": 11895.03,
+          "ttftMs": 33.98,
+          "totalMs": 12444.99,
           "error": null
         },
         {
@@ -4402,10 +4402,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 25.03,
+          "decodeTps": 25.48,
           "prefillTokens": 58,
-          "ttftMs": 25.36,
-          "totalMs": 15977.08,
+          "ttftMs": 33.91,
+          "totalMs": 15703.45,
           "error": null
         },
         {
@@ -4413,10 +4413,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 29.35,
+          "decodeTps": 29.74,
           "prefillTokens": 58,
-          "ttftMs": 48.63,
-          "totalMs": 13661.96,
+          "ttftMs": 34,
+          "totalMs": 13468.42,
           "error": null
         },
         {
@@ -4424,10 +4424,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 36.69,
+          "decodeTps": 38.08,
           "prefillTokens": 58,
-          "ttftMs": 48.58,
-          "totalMs": 10942.64,
+          "ttftMs": 17.41,
+          "totalMs": 10507.41,
           "error": null
         },
         {
@@ -4435,10 +4435,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 37.01,
+          "decodeTps": 35.48,
           "prefillTokens": 58,
-          "ttftMs": 16.46,
-          "totalMs": 10817.25,
+          "ttftMs": 49.11,
+          "totalMs": 11307.55,
           "error": null
         },
         {
@@ -4446,10 +4446,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 26.19,
+          "decodeTps": 26.44,
           "prefillTokens": 58,
-          "ttftMs": 48.46,
-          "totalMs": 15305.17,
+          "ttftMs": 49.07,
+          "totalMs": 15156.25,
           "error": null
         },
         {
@@ -4457,10 +4457,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 27.05,
+          "decodeTps": 27.22,
           "prefillTokens": 58,
-          "ttftMs": 48.45,
-          "totalMs": 14818.2,
+          "ttftMs": 49.12,
+          "totalMs": 14724.11,
           "error": null
         },
         {
@@ -4468,10 +4468,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 27.29,
+          "decodeTps": 27.48,
           "prefillTokens": 58,
-          "ttftMs": 48.42,
-          "totalMs": 14688.97,
+          "ttftMs": 48.97,
+          "totalMs": 14580.96,
           "error": null
         },
         {
@@ -4479,10 +4479,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 36.82,
+          "decodeTps": 36.9,
           "prefillTokens": 58,
-          "ttftMs": 89.75,
-          "totalMs": 10948.15,
+          "ttftMs": 90.89,
+          "totalMs": 10913.2,
           "error": null
         },
         {
@@ -4490,10 +4490,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 37.26,
+          "decodeTps": 37.34,
           "prefillTokens": 58,
-          "ttftMs": 89.7,
-          "totalMs": 10867.44,
+          "ttftMs": 90.84,
+          "totalMs": 10789.01,
           "error": null
         }
       ]
@@ -4502,10 +4502,10 @@
       "promptType": "structured",
       "mode": "think",
       "concurrency": 16,
-      "aggregateDecodeTps": 314.35,
-      "meanDecodeTps": 24.97,
-      "medianDecodeTps": 24.63,
-      "meanTtftMs": 57.11,
+      "aggregateDecodeTps": 313.27,
+      "meanDecodeTps": 24.43,
+      "medianDecodeTps": 24.74,
+      "meanTtftMs": 51.35,
       "streamsOk": 16,
       "streamsFailed": 0,
       "totalCompletionTokens": 6400,
@@ -4517,10 +4517,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 30.57,
+          "decodeTps": 30.14,
           "prefillTokens": 58,
-          "ttftMs": 20.45,
-          "totalMs": 13088.08,
+          "ttftMs": 26.88,
+          "totalMs": 13274.78,
           "error": null
         },
         {
@@ -4528,10 +4528,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 23.08,
+          "decodeTps": 22.12,
           "prefillTokens": 58,
-          "ttftMs": 44.24,
-          "totalMs": 17338.54,
+          "ttftMs": 26.73,
+          "totalMs": 18082.29,
           "error": null
         },
         {
@@ -4539,10 +4539,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 23.4,
+          "decodeTps": 23.69,
           "prefillTokens": 58,
-          "ttftMs": 44.18,
-          "totalMs": 17104.37,
+          "ttftMs": 10.85,
+          "totalMs": 16864.25,
           "error": null
         },
         {
@@ -4550,10 +4550,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 19.69,
+          "decodeTps": 19.6,
           "prefillTokens": 58,
-          "ttftMs": 66.14,
-          "totalMs": 20341.15,
+          "ttftMs": 26.79,
+          "totalMs": 20401.44,
           "error": null
         },
         {
@@ -4561,10 +4561,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 22.07,
+          "decodeTps": 21.82,
           "prefillTokens": 58,
-          "ttftMs": 44.08,
-          "totalMs": 18145.44,
+          "ttftMs": 50.21,
+          "totalMs": 18358.72,
           "error": null
         },
         {
@@ -4572,10 +4572,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 27.14,
+          "decodeTps": 26.53,
           "prefillTokens": 58,
-          "ttftMs": 66,
-          "totalMs": 14774.87,
+          "ttftMs": 50.2,
+          "totalMs": 15103.91,
           "error": null
         },
         {
@@ -4583,10 +4583,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 25.86,
+          "decodeTps": 25.79,
           "prefillTokens": 58,
-          "ttftMs": 20.02,
-          "totalMs": 15459.9,
+          "ttftMs": 50.13,
+          "totalMs": 15549.69,
           "error": null
         },
         {
@@ -4594,10 +4594,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 20.44,
+          "decodeTps": 20.36,
           "prefillTokens": 58,
-          "ttftMs": 43.78,
-          "totalMs": 19585.38,
+          "ttftMs": 71.88,
+          "totalMs": 19690.2,
           "error": null
         },
         {
@@ -4605,10 +4605,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 21.15,
+          "decodeTps": 20.68,
           "prefillTokens": 58,
-          "ttftMs": 43.73,
-          "totalMs": 18928.66,
+          "ttftMs": 50.07,
+          "totalMs": 19357.29,
           "error": null
         },
         {
@@ -4616,10 +4616,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 21.25,
+          "decodeTps": 21.01,
           "prefillTokens": 58,
-          "ttftMs": 65.73,
-          "totalMs": 18862.28,
+          "ttftMs": 71.81,
+          "totalMs": 19075.99,
           "error": null
         },
         {
@@ -4627,10 +4627,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 29.39,
+          "decodeTps": 26.83,
           "prefillTokens": 58,
-          "ttftMs": 65.68,
-          "totalMs": 13651.21,
+          "ttftMs": 71.76,
+          "totalMs": 14960.08,
           "error": null
         },
         {
@@ -4638,10 +4638,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 30.95,
+          "decodeTps": 30.52,
           "prefillTokens": 58,
-          "ttftMs": 43.59,
-          "totalMs": 12942.71,
+          "ttftMs": 49.84,
+          "totalMs": 13140.18,
           "error": null
         },
         {
@@ -4649,10 +4649,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 27.94,
+          "decodeTps": 26.78,
           "prefillTokens": 58,
-          "ttftMs": 65.58,
-          "totalMs": 14357.88,
+          "ttftMs": 49.79,
+          "totalMs": 14972.64,
           "error": null
         },
         {
@@ -4660,10 +4660,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 26.42,
+          "decodeTps": 25.82,
           "prefillTokens": 58,
-          "ttftMs": 65.54,
-          "totalMs": 15181.07,
+          "ttftMs": 71.56,
+          "totalMs": 15547.47,
           "error": null
         },
         {
@@ -4671,10 +4671,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 22.48,
+          "decodeTps": 22.05,
           "prefillTokens": 58,
-          "ttftMs": 107.55,
-          "totalMs": 17873.37,
+          "ttftMs": 71.5,
+          "totalMs": 18189.06,
           "error": null
         },
         {
@@ -4682,10 +4682,10 @@
           "cachedTokens": 58,
           "completionTokens": 400,
           "decodeTokens": 399,
-          "decodeTps": 27.75,
+          "decodeTps": 27.07,
           "prefillTokens": 58,
-          "ttftMs": 107.48,
-          "totalMs": 14501.96,
+          "ttftMs": 71.62,
+          "totalMs": 14818.55,
           "error": null
         }
       ]
@@ -4694,57 +4694,57 @@
   "prefill": [
     {
       "targetTokens": 4096,
-      "promptTokens": 4115,
+      "promptTokens": 4114,
       "samples": 3,
       "cachedTokens": 0,
-      "prefillTps": 3499.51,
-      "ttftMs": 1347.42,
-      "overheadMs": 171.54
+      "prefillTps": 3468.36,
+      "ttftMs": 1353.91,
+      "overheadMs": 167.76
     },
     {
       "targetTokens": 8192,
-      "promptTokens": 8211,
+      "promptTokens": 8213,
       "samples": 3,
       "cachedTokens": 0,
-      "prefillTps": 3670.9,
-      "ttftMs": 2408.32,
-      "overheadMs": 171.54
+      "prefillTps": 3619.69,
+      "ttftMs": 2436.74,
+      "overheadMs": 167.76
     },
     {
       "targetTokens": 16384,
-      "promptTokens": 16404,
+      "promptTokens": 16406,
       "samples": 3,
       "cachedTokens": 0,
-      "prefillTps": 3728.34,
-      "ttftMs": 4571.35,
-      "overheadMs": 171.54
+      "prefillTps": 3727.4,
+      "ttftMs": 4569.22,
+      "overheadMs": 167.76
     },
     {
       "targetTokens": 32768,
-      "promptTokens": 32786,
+      "promptTokens": 32792,
       "samples": 3,
       "cachedTokens": 0,
-      "prefillTps": 3756.6,
-      "ttftMs": 8899.12,
-      "overheadMs": 171.54
+      "prefillTps": 3734.15,
+      "ttftMs": 8949.4,
+      "overheadMs": 167.76
     },
     {
       "targetTokens": 65536,
-      "promptTokens": 65556,
+      "promptTokens": 65554,
       "samples": 2,
       "cachedTokens": 0,
-      "prefillTps": 3721.75,
-      "ttftMs": 17785.83,
-      "overheadMs": 171.54
+      "prefillTps": 3732.2,
+      "ttftMs": 17732.18,
+      "overheadMs": 167.76
     },
     {
       "targetTokens": 131072,
-      "promptTokens": 131090,
+      "promptTokens": 131094,
       "samples": 2,
       "cachedTokens": 0,
-      "prefillTps": 3669.89,
-      "ttftMs": 35891.98,
-      "overheadMs": 171.54
+      "prefillTps": 3649.26,
+      "ttftMs": 36091.2,
+      "overheadMs": 167.76
     }
   ],
   "quality": {
