@@ -31,7 +31,7 @@
 | Fidelity | Mean KL **0.0784** and 92.0% top-1 agreement with official DeepSeek-V4.1-Flash-1017 logits |
 | Quality | **97.1%** on the 755-item standard set; **97.5%** AIME 2025; **90.5%** GPQA-Diamond (1,434 of 1,584); 88.7% IFEval; 88.0% LiveCodeBench v6; 88.0% MMLU-Pro (500-item subset) |
 | Refusals | 0 of 100 HarmBench prompts refused (98 answered, 2 partial); 0 of 250 XSTest safe prompts fully refused |
-| Capacity | 1,048,576-token context configured (largest measured prompt 131,090); 8M-token KV pool, 16 streams, 256 GiB NVMe spill |
+| Capacity | 1,048,576-token context configured (largest measured prompt 131,094); 8M-token KV pool, 16 streams, 256 GiB NVMe spill |
 | Model | MoE, 384 routed experts, top-6, 1 shared, 40 layers, MLA, DSpark MTP drafter, Engram; `1bae0e1` |
 | Weights | 3.84 bpw EXL3 composition plus [mrfakename](https://huggingface.co/mrfakename/DeepSeek-V4.1-Flash-1017-abliterated)'s rank-2 refusal-removal edit, re-encoded at 6 bits |
 | Engine | TensorFold `dsv41`, production engine `30a9647` for these numbers, with the LakyFx 1.2.8 prefill port and our TP3 work |

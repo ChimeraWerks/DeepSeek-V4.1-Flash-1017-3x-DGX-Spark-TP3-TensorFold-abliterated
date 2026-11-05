@@ -49,7 +49,7 @@ tags:
 | Fidelity | Mean KL **0.0784** and 92.0% top-1 agreement with official DeepSeek-V4.1-Flash-1017 logits |
 | Quality | **97.1%** on the 755-item standard set; **97.5%** AIME 2025; **90.5%** GPQA-Diamond (1,434 of 1,584); 88.7% IFEval; 88.0% LiveCodeBench v6; 88.0% MMLU-Pro (500-item subset) |
 | Refusals | 0 of 100 HarmBench prompts refused (98 answered, 2 partial); 0 of 250 XSTest safe prompts fully refused |
-| Context | 1,048,576 tokens configured; largest measured prompt 131,090 tokens |
+| Context | 1,048,576 tokens configured; largest measured prompt 131,094 tokens |
 | Quantization | EXL3, 3.8361 bpw over quantized linear layers (output head excluded, 6-bit) |
 | Edit | [mrfakename](https://huggingface.co/mrfakename/DeepSeek-V4.1-Flash-1017-abliterated)'s rank-2 refusal-removal edit, applied in FP32 and re-encoded at 6 bits |
 | Size | About 274 GB: 35 safetensors shards |

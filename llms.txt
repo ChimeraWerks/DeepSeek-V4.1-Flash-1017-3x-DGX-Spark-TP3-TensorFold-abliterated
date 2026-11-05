@@ -12,7 +12,7 @@ Decode (v1.2, 2026-11-05, near-empty KV pool, cached short prompts; combined tok
 
 Fidelity: mean KL 0.0784 and 92.0% top-1 agreement against official DeepSeek-V4.1-Flash-1017 logits (65 cuts of 2,048 tokens), the lowest of every pack scored on the same panel, including an unedited 3.5 bpw EXL3 quant (0.0872). Refusals: 0 of 100 HarmBench prompts refused in chat (98 answered, 2 partial); 0 of 50 XSTest safe prompts refused. Quality: 97.1% on the 755-item standard set (720 passed); AIME 2025 97.5% (117 of 120, 4 repeats, thinking on); GPQA-Diamond 90.5% (1,434 of 1,584, 8 repeats, thinking on); IFEval 88.7% (prompt-level strict); LiveCodeBench v6 88.0%; MMLU-Pro 88.0% (500-item subset).
 
-Text serving uses a 1,048,576-token context. The native prefill suite measured 131,090 prompt tokens on the production engine. The 3.84 bpw value excludes the output head.
+Text serving uses a 1,048,576-token context. The native prefill suite measured 131,094 prompt tokens on the production engine. The 3.84 bpw value excludes the output head.
 
 Repository code is Apache-2.0; third-party code keeps its own licenses. Weights: https://huggingface.co/ChimeraWerks/DeepSeek-V4.1-Flash-1017-EXL3-3.84bpw-abliterated
 
