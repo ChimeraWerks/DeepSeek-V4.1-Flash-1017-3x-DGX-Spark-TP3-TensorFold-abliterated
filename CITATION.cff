@@ -14,7 +14,7 @@ abstract: >-
   EXL3 3.84 bits per weight excluding the output head, on three NVIDIA
   DGX Spark GB10 systems using TensorFold tensor parallelism 3.
   Includes operating instructions, component provenance and
-  dated serving measurements. The v1.2 engine is 678ea1b with serving API
+  dated serving measurements. The v1.2 engine is 30a9647 with serving API
   0.1.5, 8M KV, C16 and top_k 20. No model checkpoint is distributed.
 keywords:
   - DeepSeek V4.1 Flash 1017

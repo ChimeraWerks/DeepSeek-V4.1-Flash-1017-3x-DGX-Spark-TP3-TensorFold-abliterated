@@ -1,6 +1,6 @@
 {
   "required_native_profile": "v1.2",
-  "engine_commit": "678ea1b",
+  "engine_commit": "30a9647",
   "serving_version": "0.1.5",
   "production_defaults": {
     "streams": 16,

@@ -1,6 +1,6 @@
 # How v1 was built — historical, October 2026
 
-This page covers the v1 build and October 2026 measurements. Active v1.2 uses `678ea1b` and an 8M pool; see the [current manifest](../release/manifest.json). Weights: [Hugging Face](https://huggingface.co/ChimeraWerks/DeepSeek-V4.1-Flash-1017-EXL3-3.84bpw-abliterated).
+This page covers the v1 build and October 2026 measurements. Active v1.2 uses `30a9647` and an 8M pool; see the [current manifest](../release/manifest.json). Weights: [Hugging Face](https://huggingface.co/ChimeraWerks/DeepSeek-V4.1-Flash-1017-EXL3-3.84bpw-abliterated).
 
 v1 combines existing EXL3 quantizations of DeepSeek V4.1 Flash 1017 to improve agreement with the official model within the memory budget of three DGX Spark systems. We built it through weight composition and runtime tuning rather than base-model training.
 

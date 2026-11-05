@@ -50,7 +50,7 @@ class PackageTests(unittest.TestCase):
         self.assertNotIn("validated_checkpoints", scope["opt_in_later_default_off"])
         self.assertFalse(scope["live_qualified"])
         self.assertEqual(scope["required_native_profile"], "v1.2")
-        self.assertEqual(scope["engine_commit"], "678ea1b")
+        self.assertEqual(scope["engine_commit"], "30a9647")
 
 
 if __name__ == "__main__":

@@ -28,7 +28,7 @@ Edit the shell assignments in `cluster.env`. The scripts source it as shell code
 | `SPARK_API_KEY` | Serving credential. Empty generates a key on the head or reuses its existing mode-0600 file value. |
 | `SPARK_ADMIN_KEY` | Separate operator credential for settings. Empty generates or reuses it on the head. It must differ from the serving key. |
 
-The example pins v1.2: `ENGINE_COMMIT=678ea1b`, `STREAMS=16`, `POOL_TOKENS=8000000`, `CONTEXT_TOKENS=1048576`, `GRAPH_CAP=128`, `SPILL_GIB=256`, `MEMORY_RESERVE_GIB=4` and `TOP_K=20`. The launcher checks these values against the manifest and rejects mismatches. To use another release, supply its matching manifest and API configuration rather than tuning these assertions.
+The example pins v1.2: `ENGINE_COMMIT=30a9647`, `STREAMS=16`, `POOL_TOKENS=8000000`, `CONTEXT_TOKENS=1048576`, `GRAPH_CAP=128`, `SPILL_GIB=256`, `MEMORY_RESERVE_GIB=4` and `TOP_K=20`. The launcher checks these values against the manifest and rejects mismatches. To use another release, supply its matching manifest and API configuration rather than tuning these assertions.
 
 Before release, run the offline consistency check from the repository root. It checks the native launcher, API defaults, cluster example, engine scope and tracked text without contacting the Sparks.
 

@@ -28,7 +28,7 @@ def test_v12_launch_matches_current_production_and_keeps_history():
             assert previous_env["TF_DS_ENGINE_ID"] == "chimera-tensorfold-tp3-14803a3"
             assert previous_env["TF_DS_RECIPE_PATCHES"] == "chimera-tensorfold-patches-20261102"
             assert "TF_DS_PREFILL_SLICE" not in previous_env
-            assert env["TF_DS_ENGINE_ID"] == "chimera-tensorfold-tp3-678ea1b"
+            assert env["TF_DS_ENGINE_ID"] == "chimera-tensorfold-tp3-30a9647"
             assert env["TF_DS_RECIPE_PATCHES"] == "chimera-tensorfold-patches-20261103"
             assert env["TF_DS_PREFILL_SLICE"] == "5"
             assert env["TF_DS_PREFILL_YIELD"] == "1"
