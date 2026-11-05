@@ -164,9 +164,9 @@ def prefill(summary):
     for i, r in enumerate(rows[:-1]):
         s = r["ttftMs"] / 1000
         p.append(text(sb(i) - 9, st(s) - 9, f"{s:.1f}", 12, SOFT, "end", 700))
-    return card(w, h, "\n".join(p), "PREFILL", "3,560–3,833 tok/s from 4K to 128K tokens",
-                "Cold prompts, one request at a time; a 128K prompt reaches its first token in 35 s",
-                "3,833", "TOK/S PEAK · 32K PROMPT", 11)
+    return card(w, h, "\n".join(p), "PREFILL", f"{rows[0]['prefillTps']:,.0f}–{peak['prefillTps']:,.0f} tok/s from 4K to 128K tokens",
+                f"Cold prompts, one request at a time; a 128K prompt reaches its first token in {rows[-1]['ttftMs'] / 1000:.0f} s",
+                f"{peak['prefillTps']:,.0f}", f"TOK/S PEAK · {peak['targetTokens'] // 1024}K PROMPT", 11)
 
 
 CLIMB = [("Port flags", "off", 3011), ("Read-ahead,", "ragged, masked", 3142), ("All 1.2.8 flags,", "4K rows", 3471),
@@ -212,7 +212,7 @@ def climb():
                 f"+{gain:.0f}%", "32K PREFILL", 23)
 
 
-DECODE = [("prose", "Prose", CORAL), ("code", "Code", CYAN)]
+DECODE = [("prose", "Prose", "#D66F4E"), ("code", "Code", "#358FBF")]
 LABELED = (1, 2, 4, 8, 12, 16)
 
 
@@ -236,8 +236,10 @@ def decode(summary):
             color = {pr: col for pr, _, col in DECODE}
             p.append(text(sx(c), sy(hv) - 11, f"{hv:.0f}", 12.5, color[hi], "middle", 800))
             p.append(text(sx(c), sy(lv) + 21, f"{lv:.0f}", 12.5, color[lo], "middle", 800))
-    return card(w, h, "\n".join(p), "DECODE", "Up to 126 tok/s for one request, 263 across sixteen",
-                "All requests combined, 400 output tokens per request", "263", "TOK/S · 16 STREAMS", 37)
+    single = agg("greedy", "code")[1]
+    sixteen = agg("greedy", "prose")[16]
+    return card(w, h, "\n".join(p), "DECODE", f"Up to {single:.0f} tok/s for one request, {sixteen:.0f} across sixteen",
+                "All requests combined, 400 output tokens per request", f"{sixteen:.0f}", "TOK/S · 16 STREAMS", 37)
 
 
 NAMES = {"This release": ("This release", "3.84 bpw mix + mrfakename edit"),
@@ -342,6 +344,7 @@ def quality():
 
 
 EMBER, ROSE, LILAC, PEACH = "#FFA24C", "#FF5C8A", "#C77DF0", "#F3C9A8"
+CODE, PROSE = "#D47834", "#AE70D5"
 W_INK, W_SOFT, W_MUTED, W_LINE, W_EDGE = "#FBF3EE", "#D8CCD2", "#A4939F", "#2E1A26", "#3A1E2E"
 LOADS = (1, 2, 4, 8, 12, 16)
 TABULAR = ' style="font-variant-numeric:tabular-nums"'
@@ -369,17 +372,17 @@ def decode_panel(x, y, title, tag, rates):
     w = 660
     p = [f'<rect x="{x}" y="{y}" width="{w}" height="704" rx="20" fill="url(#spanel)" stroke="{W_EDGE}" stroke-width="1.5"/>',
          text(x + 30, y + 48, title, 29, W_INK, weight=800, extra=' letter-spacing="-0.4"'), text(x + 30, y + 76, tag, 17, PEACH, weight=600)]
-    for dx, name, fill in ((470, "Code", EMBER), (556, "Prose", LILAC)):
+    for dx, name, fill in ((470, "Code", CODE), (556, "Prose", PROSE)):
         p.append(f'<rect x="{x + dx}" y="{y + 32}" width="16" height="16" rx="4" fill="{fill}"/>' + text(x + dx + 24, y + 46, name, 17, W_SOFT, weight=700))
     x0, x1, base, top = x + 30, x + w - 30, y + 328, y + 112
     px = lambda i: x0 + 26 + (x1 - x0 - 78) * i / (len(LOADS) - 1)
     py = lambda v: base - (base - top) * v / 300
     for tick in (100, 200, 300):
         p.append(f'<line x1="{x0}" x2="{x1}" y1="{py(tick):.1f}" y2="{py(tick):.1f}" stroke="{W_LINE}"/>' + text(x1, py(tick) - 6, tick, 14, W_MUTED, "end", 600))
-    for kind, fill in (("prose", LILAC), ("code", EMBER)):
+    for kind, fill in (("prose", PROSE), ("code", CODE)):
         points = " ".join(f"{px(i):.1f},{py(rates[kind, load]):.1f}" for i, load in enumerate(LOADS))
         p.append(f'<polyline points="{points}" fill="none" stroke="{fill}" stroke-width="9" opacity="0.4" filter="url(#lineglow)"/>')
-        p.append(f'<polyline points="{points}" fill="none" stroke="{fill}" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>')
+        p.append(f'<polyline points="{points}" fill="none" stroke="{fill}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>')
         for i, load in enumerate(LOADS):
             p.append(f'<circle cx="{px(i):.1f}" cy="{py(rates[kind, load]):.1f}" r="6.5" fill="#150B13" stroke="{fill}" stroke-width="3.5"/>')
     for i, load in enumerate(LOADS):
@@ -413,16 +416,18 @@ def scorecard(summary):
     # The hero art without its baked-in title and stats, mirrored so the whale swims toward the headline.
     p = ['<g mask="url(#headfade)"><g mask="url(#basefade)"><g transform="translate(1436 8) scale(-0.75 0.75)"><g clip-path="url(#notitle)">'
          f'<image href="data:image/jpeg;base64,{art}" width="1536" height="768"/></g></g></g></g>',
-         text(60, 64, "3× DGX SPARK  ·  TP3  ·  3.84 BPW EXL3", 21, PEACH, weight=700, extra=' letter-spacing="2.6"'),
+         text(60, 64, "3× DGX SPARK  ·  TP3  ·  TENSORFOLD", 21, PEACH, weight=700, extra=' letter-spacing="2.6"'),
          text(58, 128, "DeepSeek V4.1 Flash", 54, W_INK, weight=800, extra=' letter-spacing="-1.4"'),
-         f'<rect x="60" y="150" width="280" height="54" rx="27" fill="{EMBER}" fill-opacity="0.12" stroke="{EMBER}" stroke-opacity="0.7" stroke-width="1.5"/>',
-         text(200, 187, "ABLITERATED", 26, W_INK, "middle", 800, ' letter-spacing="4"'),
+         f'<rect x="60" y="150" width="362" height="64" rx="32" fill="{EMBER}" fill-opacity="0.12" stroke="{EMBER}" stroke-opacity="0.7" stroke-width="1.5"/>',
+         text(241, 194, "ABLITERATED", 31, W_INK, "middle", 800, ' letter-spacing="4"'),
+         f'<rect x="440" y="150" width="316" height="64" rx="32" fill="{LILAC}" fill-opacity="0.12" stroke="{LILAC}" stroke-opacity="0.7" stroke-width="1.5"/>',
+         text(598, 194, "3.84 BPW EXL3", 29, W_INK, "middle", 800, ' letter-spacing="2"'),
          f'<text x="58" y="340" fill="url(#heat)" font-size="150" font-weight="800" letter-spacing="-6" opacity="0.5" filter="url(#numglow)">{peak:,.0f}</text>',
          text(58, 340, f"{peak:,.0f}", 150, "url(#heat)", weight=800, extra=' letter-spacing="-6"'),
          text(432, 306, "tok/s prefill", 44, W_INK, weight=800, extra=' letter-spacing="-0.8"')]
     for x, title, tag, mode in ((30, "Thinking off", "Greedy · temperature 0", "greedy"), (710, "Thinking on", "Non-greedy · temperature 0.7", "think")):
         p.append(decode_panel(x, 380, title, tag, {(k, c): v for (m, k, c), v in rates.items() if m == mode}))
-    p.append(text(700, 1122, "Combined tok/s across all requests · 400 output tokens each · timed at the engine · measured 2 November 2026 on engine 14803a3",
+    p.append(text(700, 1122, "Combined tok/s across all requests · 400 output tokens each · engine 678ea1b · measured 4–5 November 2026",
                   17, W_MUTED, "middle"))
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}" height="{h}" font-family="{FONT}">
 {SCORE_DEFS}
@@ -434,7 +439,7 @@ def scorecard(summary):
 
 
 def build():
-    summary = json.loads((ROOT / "benchmarks/v1.1/summary.json").read_text())
+    summary = json.loads((ROOT / "benchmarks/v1.2/summary.json").read_text())
     return {"chart-prefill.svg": prefill(summary), "chart-prefill-climb.svg": climb(),
             "chart-decode.svg": decode(summary), "chart-kl.svg": kl(), "chart-quality.svg": quality(),
             "scorecard.svg": scorecard(summary)}

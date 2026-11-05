@@ -4,6 +4,49 @@ Results are grouped by runtime and date. Compare runs with matched settings.
 
 ## v1.2 — 2026-11-04
 
+The [v1.2 numeric summary](v1.2/summary.json) combines cold prefill and the 755-item standard quality set measured
+4 November 2026 with a near-empty-pool decode rerun measured 5 November. Both used the production engine `678ea1b` on
+three DGX Spark GB10 systems in TP3, an 8M-token KV pool, 16 streams, all CPU cores, GPUs capped at 2,350 MHz and
+performance cores capped at 3,600 MHz. The summary retains the source hashes and all per-stream timings.
+
+### Decode
+
+Aggregate tok/s across concurrent requests; each request generated 400 tokens. One run per point, with cached short
+prompts and zero failed streams across all 48 points. Greedy has thinking off and temperature 0; thinking uses temperature
+0.7. Both use top_p 1.
+
+| Prompt, greedy | C1 | C2 | C4 | C6 | C8 | C10 | C12 | C16 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Prose | 83.85 | 114.17 | 161.01 | 204.47 | 225.81 | 235.94 | 241.54 | 264.71 |
+| Code | 125.21 | 169.56 | 192.88 | 209.02 | 216.83 | 238.01 | 246.87 | 251.53 |
+| Structured | 152.61 | 255.39 | 383.71 | 449.26 | 504.64 | 443.04 | 496.97 | 478.46 |
+
+| Prompt, thinking | C1 | C2 | C4 | C6 | C8 | C10 | C12 | C16 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Prose | 68.04 | 94.13 | 134.13 | 158.09 | 171.94 | 186.99 | 201.37 | 211.91 |
+| Code | 82.21 | 120.32 | 142.26 | 164.55 | 177.64 | 184.00 | 194.42 | 210.28 |
+| Structured | 142.36 | 175.45 | 233.83 | 249.50 | 266.85 | 283.07 | 300.14 | 314.35 |
+
+### Prefill and standard quality set
+
+Cold prompts, zero cached tokens, one request at a time. The collector subtracts 171.54 ms of request overhead from
+TTFT-derived prefill throughput. Three samples through 32K, two at 64K and 128K.
+
+| Target | Prompt tokens | Samples | Prefill tok/s | TTFT (s) |
+|---|---:|---:|---:|---:|
+| 4K | 4,115 | 3 | 3499.51 | 1.347 |
+| 8K | 8,211 | 3 | 3670.90 | 2.408 |
+| 16K | 16,404 | 3 | 3728.34 | 4.571 |
+| 32K | 32,786 | 3 | 3756.60 | 8.899 |
+| 64K | 65,556 | 2 | 3721.75 | 17.786 |
+| 128K | 131,090 | 2 | 3669.89 | 35.892 |
+
+The standard 755-item set scored **97.1%** (720 passed): arithmetic, reasoning and tracking each 100%, GSM8K 96.5%,
+MMLU 94.4% and QA 92.0%. The AIME 2025, GPQA-Diamond, IFEval, LiveCodeBench and MMLU-Pro results below are separate
+evaluations of the same weights.
+
+### Earlier regression checks
+
 Spot checks on v1.2 (engine `591d9dc`) on 2026-11-04, against the previous production engine `8f4faf6`, an unreleased build between v1.1 and v1.2:
 
 | Check | Result |
@@ -16,7 +59,7 @@ These are quick regression checks against that engine, not comparable with the t
 
 ## v1.1 — 2026-11-02
 
-Production results from **03:59:41–04:19:02 UTC**. The [sanitized numeric summary](v1.1/summary.json) contains all 48 decode points, 6 prefill points, per-stream timing and token counts, request settings and validation notes.
+Production results from **10:59–11:19 p.m. Eastern on 1 November 2026**. The [sanitized numeric summary](v1.1/summary.json) contains all 48 decode points, 6 prefill points, per-stream timing and token counts, request settings and validation notes.
 
 ### Conditions
 
