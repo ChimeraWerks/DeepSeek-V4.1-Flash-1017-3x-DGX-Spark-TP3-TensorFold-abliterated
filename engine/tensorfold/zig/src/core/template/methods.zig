@@ -162,11 +162,11 @@ fn split(rt: *Rt, s: []const u8, sep_: ?Value, max_: ?Value, from_right: bool) E
             if (i == 0) break;
             const j = i;
             while (i > 0 and !sp.is(cps[i - 1])) i -= 1;
-            try parts.append(rt.a, s[uni.offset(s, i)..uni.offset(s, j)]);
+            try parts.append(rt.a, s[@intFromPtr(cps[i].ptr) - @intFromPtr(s.ptr) .. @intFromPtr(cps[j - 1].ptr) - @intFromPtr(s.ptr) + cps[j - 1].len]);
         }
         if (i > 0) {
             while (i > 0 and sp.is(cps[i - 1])) i -= 1;
-            if (i > 0) try parts.append(rt.a, s[0..uni.offset(s, i)]);
+            if (i > 0) try parts.append(rt.a, s[0 .. @intFromPtr(cps[i - 1].ptr) - @intFromPtr(s.ptr) + cps[i - 1].len]);
         }
         std.mem.reverse([]const u8, parts.items);
     }

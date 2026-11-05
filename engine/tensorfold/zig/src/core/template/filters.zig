@@ -166,7 +166,11 @@ pub fn filter(c: *Ctx, name: []const u8, value: Value, pos: []const Value, kw: [
     if (eq(u8, name, "upper")) return methods.upperStr(rt, try softStr(c, value));
     if (eq(u8, name, "lower")) return methods.lowerStr(rt, try softStr(c, value));
     if (eq(u8, name, "capitalize")) return methods.capitalizeStr(rt, try softStr(c, value));
-    if (eq(u8, name, "safe")) return .{ .str = .{ .s = (try softStr(c, value)).s, .safe = true } };
+    if (eq(u8, name, "safe")) {
+        var s = try softStr(c, value);
+        s.safe = true;
+        return .{ .str = s };
+    }
     if (eq(u8, name, "escape") or eq(u8, name, "e")) return eval.escape(c, value);
     if (eq(u8, name, "tojson")) {
         const b = try bind(rt, "tojson", &.{ "ensure_ascii", "indent", "separators", "sort_keys" }, 0, pos, kw);
@@ -218,7 +222,12 @@ pub fn filter(c: *Ctx, name: []const u8, value: Value, pos: []const Value, kw: [
         }
         return Value.string(out.items);
     }
-    if (eq(u8, name, "list")) return rt.list(try rt.a.dupe(Value, try access.iterate(rt, value)), .list);
+    if (eq(u8, name, "list")) {
+        // A fresh wrapper preserves identity; immutable items need no copy.
+        const l = try rt.a.create(v.List);
+        l.* = .{ .items = try access.iterate(rt, value), .buffer = if (value == .list) value.list.buffer else null };
+        return .{ .list = l };
+    }
     if (eq(u8, name, "map")) {
         if (!v.truthy(value)) return rt.iter(&.{}, null);
         var attribute: ?Value = null;
@@ -246,12 +255,20 @@ pub fn filter(c: *Ctx, name: []const u8, value: Value, pos: []const Value, kw: [
         const b = try bind(rt, "unique", &.{ "case_sensitive", "attribute" }, 0, pos, kw);
         var out: std.ArrayList(Value) = .empty;
         var seen: std.ArrayList(Value) = .empty;
+        var strings: std.StringHashMapUnmanaged(void) = .empty;
         for (try access.iterate(rt, value)) |item| {
             var key = (if (b[1]) |at| attrPath(c, item, at, null) else item) catch |err| return lazy(c, out.items, err);
             if (!(b[0] != null and v.truthy(b[0].?))) key = ignoreCase(c, key) catch |err| return lazy(c, out.items, err);
             if (key == .list and key.list.seq != .tuple or key == .dict or key == .ns) {
                 rt.msg = try std.fmt.allocPrint(rt.a, "unhashable type: '{s}'", .{v.typeName(key)});
                 return lazy(c, out.items, error.TemplateError);
+            }
+            // Strings cannot compare equal to non-strings. Hash the common
+            // chat-template keys without changing heterogeneous value equality.
+            if (key == .str) {
+                const entry = try strings.getOrPut(rt.a, key.str.s);
+                if (!entry.found_existing) try out.append(rt.a, item);
+                continue;
             }
             if (for (seen.items) |s| {
                 if (v.eql(s, key)) break true;

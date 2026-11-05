@@ -10,7 +10,10 @@ pub const Map = std.array_hash_map.String(Value);
 /// How a sequence prints: Python lists, tuples, ranges and dict views share one representation.
 pub const Seq = enum { list, tuple, range, items, keys, values };
 
-pub const List = struct { items: []const Value, seq: Seq = .list, range: [3]i64 = .{ 0, 0, 1 } };
+pub const List = struct { items: []const Value, seq: Seq = .list, range: [3]i64 = .{ 0, 0, 1 }, buffer: ?*ListBuffer = null };
+const Buffer = @import("append_buffer.zig").Buffer;
+const StringBuffer = Buffer(u8);
+const ListBuffer = Buffer(Value);
 
 pub const Dict = struct { map: Map };
 
@@ -26,7 +29,7 @@ pub const Method = struct { self: Value, name: []const u8 };
 
 pub const Func = enum { range, namespace, raise_exception, strftime_now, dict, cycler, joiner, lipsum };
 
-pub const Str = struct { s: []const u8, safe: bool = false };
+pub const Str = struct { s: []const u8, safe: bool = false, buffer: ?*StringBuffer = null };
 
 pub const Loop = struct {
     items: []const Value,
@@ -78,6 +81,18 @@ pub const Rt = struct {
     pub fn list(rt: *Rt, items: []const Value, seq: Seq) Error!Value {
         const l = try rt.a.create(List);
         l.* = .{ .items = items, .seq = seq };
+        return .{ .list = l };
+    }
+
+    pub fn concatString(rt: *Rt, left: Str, right: []const u8, safe: bool) Error!Value {
+        const result = try StringBuffer.concat(rt.a, left.buffer, left.s, right);
+        return .{ .str = .{ .s = result[0], .buffer = result[1], .safe = safe } };
+    }
+
+    pub fn concatList(rt: *Rt, left: *const List, right: *const List) Error!Value {
+        const result = try ListBuffer.concat(rt.a, left.buffer, left.items, right.items);
+        const l = try rt.a.create(List);
+        l.* = .{ .items = result[0], .seq = left.seq, .buffer = result[1] };
         return .{ .list = l };
     }
 
@@ -437,4 +452,35 @@ test "python float repr" {
         try writeFloat(&out, a, c[0], false);
         try std.testing.expectEqualStrings(c[1], out.items);
     }
+}
+
+test "append growth is linear and old snapshots survive arena relocation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = Rt{ .a = arena.allocator() };
+    var text = Value.string("");
+    var list = try rt.list(&.{}, .list);
+    var saved: Value = .none;
+    var saved_list: Value = .none;
+    const one = try rt.list(&.{.{ .int = 7 }}, .list);
+    for (0..5000) |i| {
+        text = try rt.concatString(text.str, "0123456789abcdef", false);
+        list = try rt.concatList(list.list, one.list);
+        // Unrelated allocations must not disable amortized growth.
+        const junk = try rt.a.alloc(u8, 3);
+        @memset(junk, 0);
+        if (i == 3) {
+            saved = text;
+            saved_list = list;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 80000), text.str.s.len);
+    try std.testing.expectEqual(@as(usize, 64), saved.str.s.len);
+    try std.testing.expectEqualStrings("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", saved.str.s);
+    try std.testing.expectEqual(@as(usize, 4), saved_list.list.items.len);
+    try std.testing.expectEqual(@as(usize, 5000), list.list.items.len);
+    try std.testing.expect(arena.queryCapacity() < 8 * 1024 * 1024);
+    const fork = try rt.concatString(saved.str, "!", false);
+    try std.testing.expectEqualStrings("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" ++ "!", fork.str.s);
+    try std.testing.expectEqual(@as(usize, 80000), text.str.s.len);
 }

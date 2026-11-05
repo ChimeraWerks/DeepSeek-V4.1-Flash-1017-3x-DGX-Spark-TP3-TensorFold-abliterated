@@ -172,6 +172,20 @@ pub fn slice(rt: *Rt, obj: Value, start: Value, stop: Value, step: Value) Error!
             return .{ .str = .{ .s = out.items, .safe = s.safe } };
         },
         .list => |l| if (l.seq == .list or l.seq == .tuple or l.seq == .range) {
+            // Sandbox sequences cannot be mutated. A view retains its bounded
+            // prefix. Ownership is only reusable when Buffer verifies the full tip.
+            if (((try bound(rt, step)) orelse 1) == 1) {
+                const n: i64 = @intCast(l.items.len);
+                var lo = (try bound(rt, start)) orelse 0;
+                var hi = (try bound(rt, stop)) orelse n;
+                if (lo < 0) lo += n;
+                if (hi < 0) hi += n;
+                lo = std.math.clamp(lo, 0, n);
+                hi = @max(lo, std.math.clamp(hi, 0, n));
+                const view = try rt.a.create(v.List);
+                view.* = .{ .items = l.items[@intCast(lo)..@intCast(hi)], .seq = if (l.seq == .tuple) .tuple else .list, .buffer = l.buffer };
+                return .{ .list = view };
+            }
             const picks = try sliceIndices(rt, l.items.len, start, stop, step);
             const items = try rt.a.alloc(Value, picks.len);
             for (picks, items) |k, *x| x.* = l.items[k];

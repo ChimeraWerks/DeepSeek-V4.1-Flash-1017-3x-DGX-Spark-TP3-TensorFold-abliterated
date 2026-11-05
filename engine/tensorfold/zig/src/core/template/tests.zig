@@ -124,3 +124,39 @@ test "syntax and unknown filters fail at compile time" {
     try expect("{% if %}", shared, .{ .text = null, .raised = null });
     try expect("{% for x in y %}", shared, .{ .text = null, .raised = null });
 }
+
+test "append buffers preserve branches, overlapping operands and safe flags" {
+    try expect("{% set b = 'ab' + 'cd' %}{% set a = b + 'x' %}{% set c = b + 'y' %}{{ a }}|{{ b }}|{{ c }}|{{ b + b }}|{{ a + a[1:] }}", "{}", .{ .text = "abcdx|abcd|abcdy|abcdabcd|abcdxbcdx", .raised = null });
+    try expect("{% set b = '<' + 'x' %}{% set a = (b|safe) + '&' %}{% set c = b + '>' %}{{ a }}|{{ b }}|{{ c }}|{{ b + ('&'|safe) }}", "{}", .{ .text = "<x&amp;|<x|<x>|&lt;x&", .raised = null });
+    try expect("{% set n = namespace(s='') %}{% for i in range(300) %}{% set n.s = n.s ~ 'x' %}{% endfor %}{{ n.s|length }}:{{ n.s[0] }}:{{ n.s[-1] }}", "{}", .{ .text = "300:x:x", .raised = null });
+}
+
+test "grown list slices and branches remain immutable" {
+    try expect("{% set n = namespace(xs=[]) %}{% for i in range(80) %}{% set n.xs = n.xs + [i] %}{% endfor %}{% set old = n.xs %}{% set view = old[10:20] %}{% set n.xs = n.xs + [80] %}{% set fork = old + [90] %}{% set tail = view + [99] %}{{ old|length }}:{{ n.xs[-1] }}:{{ fork[-1] }}:{{ view }}:{{ tail }}:{{ n.xs[79:] }}", "{}", .{ .text = "80:80:90:[10, 11, 12, 13, 14, 15, 16, 17, 18, 19]:[10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 99]:[79, 80]", .raised = null });
+    try expect("{% set a = [1] + [2] %}{% set b = a + a %}{% set c = a + [3] %}{{ a }}|{{ b }}|{{ c }}|{{ b[::-1] }}|{{ b[3:1] }}|{{ b[-99:99] }}|{{ (1,2,3)[1:] }}|{{ range(4)[1:3] }}", "{}", .{ .text = "[1, 2]|[1, 2, 1, 2]|[1, 2, 3]|[2, 1, 2, 1]|[]|[1, 2, 1, 2]|(2, 3)|[1, 2]", .raised = null });
+}
+
+test "unique string keys retain first occurrence and heterogeneous equality" {
+    try expect("{{ ['a', 'A', 'b', 'a', 1, true, 1.0, 2, none, none]|unique|list }}|{{ ['a', 'A', 'a']|unique(case_sensitive=true)|list }}", "{}", .{ .text = "['a', 'b', 1, 2, None]|['a', 'A']", .raised = null });
+}
+
+test "whitespace rsplit uses UTF8 boundaries without rescanning prefixes" {
+    try expect("{{ '  héllo  世界  x  '.rsplit() }}|{{ '  héllo  世界  x  '.rsplit(none, 1) }}|{{ 'x'.rsplit(none, 0) }}|{{ '   '.rsplit() }}", "{}", .{ .text = "['héllo', '世界', 'x']|['  héllo  世界', 'x']|['x']|[]", .raised = null });
+}
+
+test "list conversions and full slices retain value and identity semantics" {
+    try expect("{% set a = [1] + [2] %}{% set b = a[:] %}{% set c = a|list %}{% set d = b + [3] %}{% set e = c + [4] %}{{ a is sameas b }}:{{ a is sameas c }}:{{ a }}:{{ b }}:{{ c }}:{{ d }}:{{ e }}", "{}", .{ .text = "False:False:[1, 2]:[1, 2]:[1, 2]:[1, 2, 3]:[1, 2, 4]", .raised = null });
+}
+
+test "compiled templates do not retain append state between renders" {
+    const a = std.testing.allocator;
+    var t = try template.compile(a, "{% set ns=namespace(s='') %}{% for m in messages %}{% set ns.s=ns.s+m.content %}{% endfor %}{{ ns.s }}", null);
+    defer t.deinit();
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, shared, .{});
+    defer parsed.deinit();
+    for (0..20) |_| {
+        const out = try template.render(a, &t, parsed.value.object.get("messages").?, .null, .null, false, null);
+        defer a.free(out);
+        try std.testing.expectEqualStrings("Hi Hello Bye", out);
+    }
+}

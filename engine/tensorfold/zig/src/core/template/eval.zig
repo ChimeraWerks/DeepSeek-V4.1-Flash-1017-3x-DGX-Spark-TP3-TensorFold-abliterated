@@ -327,21 +327,12 @@ fn binop(c: *Ctx, op: ast.BinOp, l: Value, r: Value) Error!Value {
     if (isNum(l) and isNum(r)) return arith(c, op, l, r);
     if (op == .add and l == .str and r == .str) {
         const safe = l.str.safe or r.str.safe;
-        const ls = if (safe and !l.str.safe) try htmlEscape(c, l.str.s) else l.str.s;
-        const rs = if (safe and !r.str.safe) try htmlEscape(c, r.str.s) else r.str.s;
-        // Templates build their output as `set ns.out = ns.out + "..."`: plain concat copies the whole prefix
-        // every time and the arena keeps every old string, so a long conversation costs O(n^2) bytes (GBs on
-        // agent sessions). When the left string is the arena's last block, grow it in place instead.
-        const lsm = @constCast(ls);
-        if (rt.a.resize(lsm, ls.len + rs.len)) {
-            const grown = lsm.ptr[0 .. ls.len + rs.len];
-            @memcpy(grown[ls.len..], rs);
-            return .{ .str = .{ .s = grown, .safe = safe } };
-        }
-        return .{ .str = .{ .s = try std.mem.concat(rt.a, u8, &.{ ls, rs }), .safe = safe } };
+        const left: v.Str = if (safe and !l.str.safe) .{ .s = try htmlEscape(c, l.str.s) } else l.str;
+        const right = if (safe and !r.str.safe) try htmlEscape(c, r.str.s) else r.str.s;
+        return rt.concatString(left, right, safe);
     }
     if (op == .add and l == .list and r == .list and l.list.seq == r.list.seq and (l.list.seq == .list or l.list.seq == .tuple))
-        return rt.list(try std.mem.concat(rt.a, Value, &.{ l.list.items, r.list.items }), l.list.seq);
+        return rt.concatList(l.list, r.list);
     if (op == .mul and (l == .str or l == .list or r == .str or r == .list) and (isNum(l) or isNum(r)) and l != .float and r != .float) {
         const seq = if (isNum(l)) r else l;
         const n = @max(0, intOf(if (isNum(l)) l else r));
@@ -451,9 +442,17 @@ pub fn eval(c: *Ctx, act: *Activation, e: *const ast.Expr) Error!Value {
         },
         .binop => |b| binop(c, b.op, try eval(c, act, b.l), try eval(c, act, b.r)),
         .concat => |items| blk: {
-            var out: std.ArrayList(u8) = .empty;
-            for (items) |x| try out.appendSlice(rt.a, try v.toStr(rt, try eval(c, act, x)));
-            break :blk Value.string(out.items);
+            var result = Value.string("");
+            for (items, 0..) |x, i| {
+                const item = try eval(c, act, x);
+                // Preserve this evaluator's ~ semantics: str() without Markup
+                // escaping, and an unsafe result. Retain append ownership.
+                if (i == 0 and item == .str) {
+                    result = item;
+                    result.str.safe = false;
+                } else result = try rt.concatString(result.str, try v.toStr(rt, item), false);
+            }
+            break :blk result;
         },
         .list, .tuple => |items| blk: {
             const vals = try rt.a.alloc(Value, items.len);
