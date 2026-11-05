@@ -332,7 +332,7 @@ pub fn main(init: std.process.Init) !u8 {
     };
     if (spill != null) {
         const L = dsv41.lanes.Lanes;
-        snap_vt = .{ .bytes = L.snapBytesFn, .save = L.snapSaveFn, .restore = L.snapRestoreFn, .drop = L.snapDropFn, .usable = L.usableFn };
+        snap_vt = .{ .bytes = L.snapBytesFn, .save = L.snapSaveFn, .restore = L.snapRestoreFn, .drop = L.snapDropFn, .hold = L.snapHoldFn, .usable = L.usableFn };
         store_v = pcache.Store.init(gpa, .{ .ptr = ln, .vtable = &snap_vt }, .{ .grid = dsv41.model.chunk_rows, .window = @intCast(m.cfg.window) }, @intFromFloat(cache_gib * (1 << 30)));
         var seed: [4]u8 = undefined;
         io.random(&seed);

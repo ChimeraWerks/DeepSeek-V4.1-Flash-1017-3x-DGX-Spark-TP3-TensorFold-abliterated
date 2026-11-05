@@ -46,6 +46,8 @@ pub const Snapshots = struct {
         /// Make the live state `saved`'s: the next prompt chunk starts at its position.
         restore: *const fn (ptr: *anyopaque, owner: ?*anyopaque, saved: Saved) anyerror!void,
         drop: *const fn (ptr: *anyopaque, saved: Saved) void,
+        /// A request matched `saved` and waits for its pass: +1 keeps its rows out of other placements, -1 ends that.
+        hold: ?*const fn (ptr: *anyopaque, saved: Saved, delta: i32) void = null,
         /// Synchronous bounded release; all rank receipts complete before return.
         drop_many: ?*const fn (*anyopaque, []const Saved) void = null,
         first_hint: ?*const fn (*anyopaque, Saved) void = null,
@@ -682,14 +684,16 @@ pub const Store = struct {
     }
 
     /// Engine-thread scoped borrow. Retired entries remain charged until the final borrower releases.
-    pub fn pin(_: *Store, e: *Entry) void {
+    pub fn pin(s: *Store, e: *Entry) void {
         std.debug.assert(!e.retired);
         e.pins += 1;
+        if (s.family.vtable.hold) |hold| hold(s.family.ptr, e.saved, 1);
     }
 
     pub fn unpin(s: *Store, e: *Entry) void {
         std.debug.assert(e.pins > 0);
         e.pins -= 1;
+        if (s.family.vtable.hold) |hold| hold(s.family.ptr, e.saved, -1);
         if (e.pins == 0 and e.retired) s.releaseRetired(e);
     }
 

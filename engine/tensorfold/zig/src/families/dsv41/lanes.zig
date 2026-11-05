@@ -518,6 +518,7 @@ pub const Snap = struct {
     restored: bool = false, // read back from the spill tier
     part: u8 = 0, // TF_DS_KV_SHARD: the part holding its rows (parts.zig's Kept; a live move changes it)
     last_use: u64 = 0, loss_reason: u8 = 0,
+    held: u32 = 0, // requests that matched this state and wait for their pass: other placements leave its rows alone
     continuation_at: u64 = 0, continuation_state: u64 = 0,
     adaptive_density: u32 = 0, adaptive_at: u64 = 0,
     first_completed_at: u64 = 0,
@@ -1851,7 +1852,7 @@ pub const Lanes = struct {
             try states.append(self.gpa, .{
                 .key = sn.id, .base = sn.base,
                 .len = if (sn.loading) @max(sn.at, sn.end -| sn.base) else sn.at,
-                .restores = sn.restores, .used = sn.last_use, .protected = sn == protected,
+                .restores = sn.restores, .used = sn.last_use, .protected = sn == protected or sn.held > 0,
                 .loading = sn.loading, .continuation_at = sn.continuation_at,
                 .adaptive_density = sn.adaptive_density, .adaptive_at = sn.adaptive_at,
                 .first_completed_at = sn.first_completed_at,
@@ -1937,7 +1938,7 @@ pub const Lanes = struct {
                     .key = sn.id, .base = sn.base,
                     .len = if (sn.loading) @max(sn.at, sn.end -| sn.base) else sn.at,
                     .restores = sn.restores, .used = sn.used,
-                    .protected = sn == protected,
+                    .protected = sn == protected or sn.held > 0,
                     .loading = sn.loading,
                 });
             };
@@ -1958,7 +1959,7 @@ pub const Lanes = struct {
             }
             if (self.pressure_planner) if (try self.planPressure(live, size, protected)) |base| return base;
             var choice = try pressure.plan(gpa, states.items, live, size, self.m.pool_cap, options);
-            if (choice == null and protected != null) {
+            if (choice == null) {
                 // Only true pressure may sacrifice the requested source. The
                 // caller already handles its invalidation by restarting cold.
                 for (states.items) |*state| state.protected = false;
@@ -2196,6 +2197,12 @@ pub const Lanes = struct {
             saved.len, transaction.followerCount(), transaction.sent -| start, transaction.freed -| transaction.sent, transaction.confirmed -| transaction.freed,
         });
         self.idleRdma();
+    }
+
+    /// A request matched this state and waits for its pass, or stopped waiting.
+    pub fn snapHoldFn(_: *anyopaque, saved: *anyopaque, delta: i32) void {
+        const sn: *Snap = @ptrCast(@alignCast(saved));
+        sn.held = if (delta > 0) sn.held + 1 else sn.held -| 1;
     }
 
     pub fn snapDropFn(ptr: *anyopaque, saved: *anyopaque) void {
@@ -3253,6 +3260,29 @@ test "placement keeps restore source until genuine pool pressure requires cold f
     try std.testing.expect(!a.stale and b.stale);
     m.pool_cap = 10240;
     try std.testing.expectEqual(@as(usize, 0), try l.placeKept(&.{}, 10240, &a));
+    try std.testing.expect(a.stale);
+}
+
+test "a state a waiting request matched survives other placements until only it can give room" {
+    var a: Snap = .{ .id = 1, .at = 6144, .base = 0, .buf = undefined, .held = 1 };
+    var b: Snap = .{ .id = 2, .at = 6144, .base = 6144, .buf = undefined };
+    var m: Model = undefined;
+    m.rs = .{};
+    m.pool_cap = 16384;
+    var l: Lanes = undefined;
+    l.gpa = std.testing.allocator;
+    l.kv = null;
+    l.spill = null;
+    l.streams = .empty;
+    l.relocation_enabled = false;
+    l.m = &m;
+    l.snaps = .empty;
+    defer l.snaps.deinit(l.gpa);
+    try l.snaps.appendSlice(l.gpa, &.{ &a, &b });
+    try std.testing.expectEqual(@as(usize, 6144), try l.placeKept(&.{}, 10240, null));
+    try std.testing.expect(!a.stale and b.stale);
+    m.pool_cap = 10240;
+    try std.testing.expectEqual(@as(usize, 0), try l.placeKept(&.{}, 10240, null));
     try std.testing.expect(a.stale);
 }
 

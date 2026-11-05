@@ -159,6 +159,7 @@ pub const Snaps = struct {
     adaptive_hint: *const fn (*anyopaque, *anyopaque, u32) void,
     drop_many: *const fn (*anyopaque, []const *anyopaque) void,
     first_hint: *const fn (*anyopaque, *anyopaque) void,
+    hold: *const fn (*anyopaque, *anyopaque, i32) void,
     ghost_range: *const fn (*anyopaque, *anyopaque) [2]u32,
 };
 
@@ -294,7 +295,7 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, ctx: *const cuda.Context, dir: [
     // the pool is the model's (preallocated): a stream takes no device memory of its own
     const L = lanes_mod.Lanes;
     var snaps: Snaps = .{ .live = L.snapLiveFn, .compatible = L.snapCompatibleFn, .ptr = &st.lanes,
-        .bytes = L.snapBytesFn, .save = L.snapSaveFn, .restore = L.snapRestoreFn, .drop = L.snapDropFn,
+        .bytes = L.snapBytesFn, .save = L.snapSaveFn, .restore = L.snapRestoreFn, .drop = L.snapDropFn, .hold = L.snapHoldFn,
         .dead_reason = L.snapDeadReasonFn, .short_eligible = L.snapShortEligibleFn,
         .map_mark = L.snapMapMarkFn,
         .automatic_marks = L.snapAutomaticMarksFn, .tail_window = @intCast(st.m.cfg.window),
