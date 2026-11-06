@@ -3,16 +3,9 @@
 Serving recipe for abliterated DeepSeek-V4.1-Flash-1017. **[Weights on Hugging Face](https://huggingface.co/ChimeraWerks/DeepSeek-V4.1-Flash-1017-EXL3-3.84bpw-abliterated)**
 
 <p align="center">
-  <img src="docs/assets/scorecard.svg" width="100%" alt="DeepSeek V4.1 Flash abliterated on 3x DGX Spark, 3.84 bpw EXL3, with a glowing mesh whale. 3,816 tok/s prefill at a 32K prompt, 124 tok/s code decode and 82 tok/s prose decode at 1 request, 270 tok/s combined at 16 requests, 1M token context with an 8M KV pool." />
+  <img src="docs/assets/scorecard.svg" width="100%" alt="DeepSeek V4.1 Flash abliterated on 3x DGX Spark, 3.84 bpw EXL3, with a glowing mesh whale. 3,816 tok/s prefill at a 32K prompt, 82 tok/s prose decode and 124 tok/s code decode at 1 request, 270 tok/s combined at 16 requests, 1M token context with an 8M KV pool." />
+  <img src="docs/assets/speed-grid.svg" width="100%" alt="Prefill tok/s and first token: 4K 3,617 in 1.31 s, 8K 3,732 in 2.37 s, 16K 3,802 in 4.49 s, 32K 3,816 in 8.76 s, 64K 3,789 in 17.47 s, 128K 3,725 in 35.36 s. Combined decode tok/s at C1, C4, C8 and C16. Prose greedy 82.0, 161.4, 219.2, 270.3; prose thinking 68.1, 130.9, 173.3, 215.4; code greedy 124.4, 191.9, 220.0, 253.4; code thinking 82.0, 141.9, 175.1, 211.3. Quality: standard set 97.1%, AIME 2025 97.5%, GPQA-Diamond 90.5%, LiveCodeBench v6 88.0%, KL to official 0.0784, HarmBench refusals 0 of 100." />
 </p>
-
-| Speed | | Quality | |
-| --- | ---: | --- | ---: |
-| Code decode, 1 request | **124 tok/s** | AIME 2025 | **97.5%** |
-| Prose decode, 1 request | **82 tok/s** | GPQA-Diamond | **90.5%** |
-| 16 requests, combined | **270 tok/s** | Standard set | **97.1%** |
-| Prefill, 32K prompt | **3,816 tok/s** | KL to official | **0.0784** |
-| First token, 128K prompt | **35 s** | HarmBench refusals | **0 of 100** |
 
 **3× DGX Spark** · TP3 · 3.84 bpw EXL3 · TensorFold `30a9647` · 1M context configured
 
@@ -21,8 +14,8 @@ Serving recipe for abliterated DeepSeek-V4.1-Flash-1017. **[Weights on Hugging F
 
 | | |
 | --- | --- |
-| Decode | **124 tok/s** code and **82 tok/s** prose at 1 request; **270 tok/s** combined at 16 requests |
 | Prefill | **3,816 tok/s** at 32K; holds 3,725–3,816 tok/s from 8K to 128K; a 128K prompt reaches its first token in 35 s |
+| Decode | **82 tok/s** prose and **124 tok/s** code at 1 request; **270 tok/s** combined at 16 requests |
 | Context | 1,048,576 tokens configured (largest measured prompt 131,088); 8M-token KV pool, 16 streams, 256 GiB NVMe spill |
 | Hardware | 3 × DGX Spark (GB10, 128 GB), TP3 with one rank per Spark, every pair cabled directly |
 | Weights | 3.84 bpw EXL3 composition plus [mrfakename](https://huggingface.co/mrfakename/DeepSeek-V4.1-Flash-1017-abliterated)'s rank-2 refusal-removal edit, re-encoded at 6 bits |
@@ -48,33 +41,6 @@ Serving recipe for abliterated DeepSeek-V4.1-Flash-1017. **[Weights on Hugging F
 
 ## Performance
 
-### Decode
-
-Combined tok/s across all requests at once:
-
-| Requests at once | 1 | 2 | 4 | 8 | 12 | 16 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Code, thinking off | **124.4** | 167.2 | 191.9 | 220.0 | 245.2 | 253.4 |
-| Prose, thinking off | **82.0** | 111.2 | 161.4 | 219.2 | 251.7 | **270.3** |
-| Code, thinking on | 82.0 | 119.3 | 141.9 | 175.1 | 196.3 | 211.3 |
-| Prose, thinking on | 68.1 | 94.6 | 130.9 | 173.3 | 196.5 | 215.4 |
-
-What each request gets, mean tok/s per request:
-
-| Requests at once | 1 | 2 | 4 | 8 | 12 | 16 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Code, thinking off | **124.4** | 85.1 | 49.0 | 29.5 | 22.0 | 17.2 |
-| Prose, thinking off | **82.0** | 57.2 | 41.0 | 28.1 | 21.7 | 17.5 |
-| Code, thinking on | 82.0 | 59.6 | 37.7 | 24.5 | 17.9 | 14.7 |
-| Prose, thinking on | 68.1 | 47.8 | 33.8 | 22.6 | 16.8 | 14.0 |
-
-<p align="center"><img src="docs/assets/chart-decode.svg" width="100%" alt="Two line charts of combined decode tok/s against requests at once. Greedy, prose and code: C1 82 and 124, C2 111 and 167, C4 161 and 192, C8 219 and 220, C12 252 and 245, C16 270 and 253. Thinking, prose and code: C1 68 and 82, C2 95 and 119, C4 131 and 142, C8 173 and 175, C12 196 and 196, C16 215 and 211" /></p>
-
-Measured 5 November 2026 on engine `30a9647` with a near-empty KV pool: 400 output tokens per request, one run per point,
-timed at the engine on short cached prompts, GPUs capped at 2,350 MHz. Greedy is temperature 0 with thinking off; thinking is temperature 0.7 with
-thinking on. All 354 decode streams completed with no failures.
-C6, C10, structured prompts and every per-stream timing: [v1.2 benchmark record](benchmarks/v1.2/summary.json).
-
 ### Prefill
 
 Every prompt row is split across the three GB10s.
@@ -92,6 +58,33 @@ Measured 5 November 2026 on engine `30a9647` with [sparkDash](https://github.com
 zero cached tokens, one request at a time, three samples through 32K and two at 64K and 128K. tok/s comes from time to
 first token with the collector's 171.55 ms request overhead subtracted. All CPU cores, performance cores capped at
 3,600 MHz and stock GPU clocks. [Every measured point](benchmarks/v1.2/summary.json).
+
+### Decode
+
+Combined tok/s across all requests at once:
+
+| Requests at once | 1 | 2 | 4 | 8 | 12 | 16 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Prose, greedy | **82.0** | 111.2 | 161.4 | 219.2 | 251.7 | **270.3** |
+| Prose, thinking | 68.1 | 94.6 | 130.9 | 173.3 | 196.5 | 215.4 |
+| Code, greedy | **124.4** | 167.2 | 191.9 | 220.0 | 245.2 | 253.4 |
+| Code, thinking | 82.0 | 119.3 | 141.9 | 175.1 | 196.3 | 211.3 |
+
+What each request gets, mean tok/s per request:
+
+| Requests at once | 1 | 2 | 4 | 8 | 12 | 16 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Prose, greedy | **82.0** | 57.2 | 41.0 | 28.1 | 21.7 | 17.5 |
+| Prose, thinking | 68.1 | 47.8 | 33.8 | 22.6 | 16.8 | 14.0 |
+| Code, greedy | **124.4** | 85.1 | 49.0 | 29.5 | 22.0 | 17.2 |
+| Code, thinking | 82.0 | 59.6 | 37.7 | 24.5 | 17.9 | 14.7 |
+
+<p align="center"><img src="docs/assets/chart-decode.svg" width="100%" alt="Two line charts of combined decode tok/s against requests at once. Greedy, prose and code: C1 82 and 124, C2 111 and 167, C4 161 and 192, C8 219 and 220, C12 252 and 245, C16 270 and 253. Thinking, prose and code: C1 68 and 82, C2 95 and 119, C4 131 and 142, C8 173 and 175, C12 196 and 196, C16 215 and 211" /></p>
+
+Measured 5 November 2026 on engine `30a9647` with a near-empty KV pool: 400 output tokens per request, one run per point,
+timed at the engine on short cached prompts, GPUs capped at 2,350 MHz. Greedy is temperature 0 with thinking off; thinking is temperature 0.7 with
+thinking on. All 354 decode streams completed with no failures.
+C6, C10, structured prompts and every per-stream timing: [v1.2 benchmark record](benchmarks/v1.2/summary.json).
 
 ## DGX Spark prerequisites
 

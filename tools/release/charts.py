@@ -344,7 +344,7 @@ def quality():
 
 
 EMBER, ROSE, LILAC, PEACH = "#FFA24C", "#FF5C8A", "#C77DF0", "#F3C9A8"
-W_SOFT, W_EDGE = "#D8CCD2", "#3A1E2E"
+W_INK, W_SOFT, W_MUTED, W_LINE, W_EDGE = "#FBF3EE", "#D8CCD2", "#A4939F", "#2E1A26", "#3A1E2E"
 LOADS = (1, 2, 4, 8, 12, 16)
 SCORE_DEFS = f"""<defs>
   <linearGradient id="heat" gradientUnits="userSpaceOnUse" x1="70" y1="0" x2="1330" y2="0"><stop offset="0" stop-color="{EMBER}"/><stop offset="0.55" stop-color="{ROSE}"/><stop offset="1" stop-color="{LILAC}"/></linearGradient>
@@ -366,8 +366,8 @@ def scorecard(summary):
     rate = lambda prompt, load: next(r["aggregateDecodeTps"] for r in summary["decode"]
                                      if (r["mode"], r["promptType"], r["concurrency"]) == ("greedy", prompt, load))
     stats = ((f"{max(r['prefillTps'] for r in summary['prefill']):,.0f}", "TOK/S PREFILL", "32K PROMPT"),
-             (f"{rate('code', 1):.0f}", "TOK/S CODE DECODE", "1 REQUEST"),
              (f"{rate('prose', 1):.0f}", "TOK/S PROSE DECODE", "1 REQUEST"),
+             (f"{rate('code', 1):.0f}", "TOK/S CODE DECODE", "1 REQUEST"),
              (f"{rate('prose', 16):.0f}", "TOK/S COMBINED", "16 REQUESTS"),
              ("1M", "TOKEN CONTEXT", "8M KV POOL"))
     p = [f'<image href="data:image/jpeg;base64,{art}" width="{w}" height="{h}"/>',
@@ -391,11 +391,84 @@ def scorecard(summary):
 """
 
 
+GRID_LOADS = (1, 4, 8, 16)
+
+
+def quality_score(suite):
+    row = next(r for (name, _), r in quality_rows().items() if name.startswith(suite))
+    return f"{float(row['score_percent']):.1f}%"
+
+
+def speed_grid(summary):
+    """The panel under the banner, the same width: prefill, decode and quality on one shared row grid."""
+    w, h = 1400, 462
+    head_y, first, row = 110, 160, 49
+    cols = (0, 400, 950, w)
+    rate = {(r["mode"], r["promptType"], r["concurrency"]): r["aggregateDecodeTps"] for r in summary["decode"]}
+    peak = max(r["prefillTps"] for r in summary["prefill"])
+    with open(ROOT / "benchmarks/v1/fidelity.csv", newline="") as f:
+        ours = next(r for r in csv.DictReader(f) if r["weights"] == "This release")
+    p = []
+    for x, title, note in ((cols[0], "PREFILL", "tok/s · cold prompts"), (cols[1], "DECODE", "combined tok/s · C = requests at once"),
+                           (cols[2], "QUALITY", "abliterated weights")):
+        p.append(text(x + 40, 54, title, 25, PEACH, weight=800, extra=' letter-spacing="2.4"'))
+        p.append(text(x + 40, 82, note, 18, W_MUTED, weight=600))
+    for x in cols[1:3]:
+        p.append(f'<line x1="{x}" x2="{x}" y1="34" y2="{h - 34}" stroke="{PEACH}" stroke-opacity="0.28"/>')
+    for i in range(6):
+        y = first + row * i + 17
+        if i < 5:
+            for x0, x1 in zip(cols, cols[1:]):
+                p.append(f'<line x1="{x0 + 40}" x2="{x1 - 40}" y1="{y}" y2="{y}" stroke="{W_LINE}"/>')
+    # Prefill: prompt, speed, first token.
+    tok_x, ttft_x = cols[0] + 210, cols[1] - 40
+    p.append(text(cols[0] + 40, head_y + 8, "PROMPT", 16, W_MUTED, weight=700, extra=' letter-spacing="1.4"'))
+    p.append(text(tok_x, head_y + 8, "TOK/S", 16, W_MUTED, "end", 700, ' letter-spacing="1.4"'))
+    p.append(text(ttft_x, head_y + 8, "FIRST TOKEN", 16, W_MUTED, "end", 700, ' letter-spacing="1.4"'))
+    for i, r in enumerate(summary["prefill"]):
+        y = first + row * i
+        top = r["prefillTps"] == peak
+        p.append(text(cols[0] + 40, y, f"{r['targetTokens'] // 1024}K", 24, W_SOFT, weight=700))
+        p.append(text(tok_x, y, f"{r['prefillTps']:,.0f}", 27, "url(#heat)" if top else W_INK, "end", 800))
+        p.append(text(ttft_x, y, f"{r['ttftMs'] / 1000:.2f} s", 24, W_SOFT, "end", 600))
+    # Decode: prose above code, greedy above thinking.
+    load_x = [cols[1] + 225 + 95 * i for i in range(len(GRID_LOADS))]
+    for x, load in zip(load_x, GRID_LOADS):
+        p.append(text(x, head_y + 8, f"C{load}", 17, W_MUTED, "end", 700, ' letter-spacing="1.2"'))
+    highlight = {("greedy", "prose", 1), ("greedy", "prose", 16), ("greedy", "code", 1)}
+    i = 0
+    for prompt, name in (("prose", "PROSE"), ("code", "CODE")):
+        p.append(text(cols[1] + 40, first + row * i, name, 19, PEACH, weight=800, extra=' letter-spacing="2"'))
+        i += 1
+        for mode, label in (("greedy", "Greedy"), ("think", "Thinking")):
+            y = first + row * i
+            p.append(text(cols[1] + 40, y, label, 24, W_SOFT, weight=700))
+            for x, load in zip(load_x, GRID_LOADS):
+                top = (mode, prompt, load) in highlight
+                p.append(text(x, y, tps(rate[mode, prompt, load]), 27, "url(#heat)" if top else W_INK, "end", 800))
+            i += 1
+    # Quality.
+    scores = (("Standard set", f"{summary['quality']['overallPct']:.1f}%"), ("AIME 2025", quality_score("AIME")),
+              ("GPQA-Diamond", quality_score("GPQA")), ("LiveCodeBench v6", quality_score("LiveCodeBench")),
+              ("KL to official", f"{float(ours['mean_kl']):.4f}"), ("HarmBench refusals", "0 of 100"))
+    for i, (label, value) in enumerate(scores):
+        y = first + row * i
+        p.append(text(cols[2] + 40, y, label, 24, W_SOFT, weight=700))
+        p.append(text(cols[3] - 40, y, value, 27, W_INK, "end", 800))
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}" height="{h}" font-family="{FONT}">
+<defs><linearGradient id="heat" gradientUnits="userSpaceOnUse" x1="70" y1="0" x2="1330" y2="0"><stop offset="0" stop-color="{EMBER}"/><stop offset="0.55" stop-color="{ROSE}"/><stop offset="1" stop-color="{LILAC}"/></linearGradient></defs>
+<rect width="{w}" height="{h}" rx="26" fill="#07030A"/>
+{chr(10).join(p)}
+<rect x="1" y="1" width="{w - 2}" height="{h - 2}" rx="25" fill="none" stroke="{W_EDGE}" stroke-width="2"/>
+</svg>
+"""
+
+
 def build():
     summary = json.loads((ROOT / "benchmarks/v1.2/summary.json").read_text())
     return {"chart-prefill.svg": prefill(summary), "chart-prefill-climb.svg": climb(),
             "chart-decode.svg": decode(summary), "chart-kl.svg": kl(), "chart-quality.svg": quality(),
-            "scorecard.svg": scorecard(summary)}
+            "scorecard.svg": scorecard(summary), "speed-grid.svg": speed_grid(summary)}
 
 
 def main():

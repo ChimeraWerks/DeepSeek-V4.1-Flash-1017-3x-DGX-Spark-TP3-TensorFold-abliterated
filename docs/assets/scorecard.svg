@@ -13,14 +13,14 @@
 <text x="180.0" y="646.0" fill="#F3C9A8" font-size="17" font-weight="700" text-anchor="middle" letter-spacing="1.8">TOK/S PREFILL</text>
 <text x="180.0" y="668.0" fill="#D8CCD2" font-size="14" font-weight="600" text-anchor="middle" letter-spacing="1.6">32K PROMPT</text>
 <line x1="310.0" x2="310.0" y1="552" y2="664" stroke="#F3C9A8" stroke-opacity="0.35"/>
-<text x="440.0" y="618" fill="url(#heat)" font-size="76" font-weight="800" letter-spacing="-2" text-anchor="middle" opacity="0.45" filter="url(#numglow)">124</text>
-<text x="440.0" y="618.0" fill="url(#heat)" font-size="76" font-weight="800" text-anchor="middle" letter-spacing="-2">124</text>
-<text x="440.0" y="646.0" fill="#F3C9A8" font-size="17" font-weight="700" text-anchor="middle" letter-spacing="1.8">TOK/S CODE DECODE</text>
+<text x="440.0" y="618" fill="url(#heat)" font-size="76" font-weight="800" letter-spacing="-2" text-anchor="middle" opacity="0.45" filter="url(#numglow)">82</text>
+<text x="440.0" y="618.0" fill="url(#heat)" font-size="76" font-weight="800" text-anchor="middle" letter-spacing="-2">82</text>
+<text x="440.0" y="646.0" fill="#F3C9A8" font-size="17" font-weight="700" text-anchor="middle" letter-spacing="1.8">TOK/S PROSE DECODE</text>
 <text x="440.0" y="668.0" fill="#D8CCD2" font-size="14" font-weight="600" text-anchor="middle" letter-spacing="1.6">1 REQUEST</text>
 <line x1="570.0" x2="570.0" y1="552" y2="664" stroke="#F3C9A8" stroke-opacity="0.35"/>
-<text x="700.0" y="618" fill="url(#heat)" font-size="76" font-weight="800" letter-spacing="-2" text-anchor="middle" opacity="0.45" filter="url(#numglow)">82</text>
-<text x="700.0" y="618.0" fill="url(#heat)" font-size="76" font-weight="800" text-anchor="middle" letter-spacing="-2">82</text>
-<text x="700.0" y="646.0" fill="#F3C9A8" font-size="17" font-weight="700" text-anchor="middle" letter-spacing="1.8">TOK/S PROSE DECODE</text>
+<text x="700.0" y="618" fill="url(#heat)" font-size="76" font-weight="800" letter-spacing="-2" text-anchor="middle" opacity="0.45" filter="url(#numglow)">124</text>
+<text x="700.0" y="618.0" fill="url(#heat)" font-size="76" font-weight="800" text-anchor="middle" letter-spacing="-2">124</text>
+<text x="700.0" y="646.0" fill="#F3C9A8" font-size="17" font-weight="700" text-anchor="middle" letter-spacing="1.8">TOK/S CODE DECODE</text>
 <text x="700.0" y="668.0" fill="#D8CCD2" font-size="14" font-weight="600" text-anchor="middle" letter-spacing="1.6">1 REQUEST</text>
 <line x1="830.0" x2="830.0" y1="552" y2="664" stroke="#F3C9A8" stroke-opacity="0.35"/>
 <text x="960.0" y="618" fill="url(#heat)" font-size="76" font-weight="800" letter-spacing="-2" text-anchor="middle" opacity="0.45" filter="url(#numglow)">270</text>

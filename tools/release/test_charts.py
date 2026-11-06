@@ -40,6 +40,15 @@ def test_scorecard_shows_the_decode_and_prefill_headlines():
     assert f"{max(r['prefillTps'] for r in SUMMARY['prefill']):,.0f}" in found
     assert {f"{rate('code', 1):.0f}", f"{rate('prose', 1):.0f}", f"{rate('prose', 16):.0f}"} <= found
 
+def test_speed_grid_lists_prefill_decode_and_quality():
+    found = labels(charts.speed_grid(SUMMARY))
+    for r in SUMMARY["prefill"]:
+        assert f"{r['prefillTps']:,.0f}" in found
+    for r in SUMMARY["decode"]:
+        if r["promptType"] != "structured" and r["concurrency"] in charts.GRID_LOADS:
+            assert charts.tps(r["aggregateDecodeTps"]) in found
+    assert {"97.1%", "97.5%", "90.5%", "88.0%", "0.0784", "0 of 100"} <= found
+
 def test_scorecard_decode_matches_both_cards():
     cards = [(charts.ROOT / path).read_text() for path in ("README.md", "docs/huggingface-card.md")]
     for card in cards:
