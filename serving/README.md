@@ -1,6 +1,6 @@
 # DGX Spark serving API
 
-`chimera-dgx-sparks` serves DeepSeek V4.1 Flash 1017 on three DGX Spark systems with TensorFold TP3. The FastAPI package runs on the head Spark. It provides OpenAI-compatible Chat Completions and Responses routes, client authentication, sampling presets, request admission controls and operator settings. TensorFold runs native generation in a separate process.
+`chimera-dgx-sparks` serves DeepSeek V4.1 Flash 1017 on three DGX Spark systems with TensorFold TP3. The FastAPI package runs on the head Spark. It provides OpenAI-compatible Chat Completions and Responses routes and native Anthropic Messages routes, client authentication, sampling presets, request admission controls and operator settings. TensorFold runs native generation in a separate process.
 
 ## Install and configure
 

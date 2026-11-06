@@ -9,6 +9,7 @@ v1.2 uses engine base `30a9647` with exactly two non-runtime edits in `zig/src/s
 - Added `GPU_CLOCK_CAP_MHZ` (default 2300, `0` for stock clocks): `start.sh` applies it to every Spark, matching the cap production serves with.
 - Added `./scripts/clocks.sh` to read or change the cap on running Sparks without a restart.
 - Added clock, temperature and power results for four GPU caps on `30a9647` in `benchmarks/v1.2/clocks.csv`.
+- Rebuilt the scorecard, charts and link preview from the v1.2 data in one design.
 
 ## 2026-11-05 engine 30a9647
 

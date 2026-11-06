@@ -51,7 +51,7 @@ Uncensored, abliterated EXL3 weights of DeepSeek-V4.1-Flash-1017. **[Serving rec
 ## Performance
 
 Measured 5 November 2026 on production engine `30a9647` with [sparkDash](https://github.com/MiaAI-Lab/sparkDash).
-All CPU cores and performance cores capped at 3,600 MHz. Prefill used stock GPU clocks; decode capped GPUs at 2,350 MHz.
+All CPU cores in use, with performance cores capped at 3,600 MHz. Prefill used stock GPU clocks; decode capped GPUs at 2,350 MHz.
 
 ### Prefill
 
@@ -94,7 +94,7 @@ per-stream timing: [v1.2 benchmarks](https://github.com/ChimeraWerks/DeepSeek-V4
 
 ### Clocks
 
-Production serves with GPUs capped at **2,300 MHz**, and the recipe does the same by default. The 3,816 headline is the stock-GPU run; at this cap 32K prefill is 3,711 tok/s.
+Production serves with GPUs capped at **2,300 MHz**, and the recipe does the same by default. The 3,816 headline is the stock-GPU run; at this cap 32K prefill is 3,711 tok/s, code decode 121.5 tok/s and 16-request prose decode 259.9 tok/s.
 
 | GPU cap | 32K prefill tok/s | Peak SoC | Peak GPU | Decode GPU power |
 | --- | ---: | ---: | ---: | ---: |
@@ -137,7 +137,7 @@ Prefer to let an agent do it? The GitHub README has a
 
 ### Call it
 
-The API speaks OpenAI Chat Completions and Responses, with streaming, tool calls and per-request thinking control. It
+The API speaks OpenAI Chat Completions and Responses plus Anthropic Messages, with streaming, tool calls and per-request thinking control. It
 listens on the head's loopback; call it there or through an SSH tunnel to port 18002.
 
 ```bash

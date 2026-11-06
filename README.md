@@ -88,7 +88,7 @@ C6, C10, structured prompts and every per-stream timing: [v1.2 benchmark record]
 
 ### Clocks
 
-Production serves with GPUs capped at **2,300 MHz**, and the recipe does the same by default. The 3,816 headline is the stock-GPU run; at this cap 32K prefill is 3,711 tok/s. [Set your own cap](#dgx-spark-prerequisites).
+Production serves with GPUs capped at **2,300 MHz**, and the recipe does the same by default. The 3,816 headline is the stock-GPU run; at this cap 32K prefill is 3,711 tok/s, code decode 121.5 tok/s and 16-request prose decode 259.9 tok/s. [Set your own cap](#dgx-spark-prerequisites).
 
 | GPU cap | 32K prefill tok/s | Peak SoC | Peak GPU | Decode GPU power |
 | --- | ---: | ---: | ---: | ---: |
@@ -109,6 +109,8 @@ Each row is one full suite on engine `30a9647`, with performance cores capped at
 | Boot flag | `kho=off`, the vendor KHO regression fix that multi-node RDMA on this kernel needs |
 | Disk | About 440 GB free per Spark: 274 GB prepared weights, a 93 GB rank file, 68 GB of Engram rows and a 4 GB kernel kit ([runtime assets](docs/runtime-assets.md)); 256 GiB more on the head for spill |
 | Access | Key-based SSH from the launch machine to all three Sparks, and from the head to the other two |
+
+These scripts need `cluster.env`; create it first ([Quick start](#quick-start)).
 
 `./scripts/preflight.sh` checks DGX OS, driver, RoCE links, free memory, free disk and SSH on all three and changes
 nothing.
@@ -306,7 +308,7 @@ Quality runs used full-vocabulary sampling (top_k 0) except GPQA-Diamond (top_k 
 
 100 HarmBench standard behaviors (stratified, copyright excluded) and 50 XSTest safe prompts, greedy, through the API.
 Chat runs thinking off with 768 output tokens (50 of the 100 harmful chat replies reached that cap); thinking runs the first 50 harmful and 25 safe prompts with 3,072
-tokens, and 35 of the 50 harmful thinking replies hit that cap, which is where the partials come from. Answers are
+tokens, and 35 of the 50 harmful thinking replies hit that cap, which is where most partials come from. Answers are
 graded answered, partial or refused with a fixed rubric plus a keyword screen. Every arm:
 [refusal.csv](benchmarks/v1/refusal.csv).
 
@@ -366,7 +368,7 @@ An engineering progression, not isolated A/B tests: KV pool sizes changed betwee
 | Ragged expert kernel | `TF_DS_PREFILL_W` | LakyFx 1.2.8 | Expert GEMMs over ragged token groups |
 | Engram read-ahead | `TF_DS_PREFILL_AE` | LakyFx 1.2.8 | Reads the next chunk's Engram rows while the current chunk computes |
 | Bounded scratch | `TF_DS_PREFILL_AF` | LakyFx 1.2.8 | Bounds prompt scratch memory |
-| Layer slices (v1.2, not in the numbers above) | `TF_DS_PREFILL_SLICE=5` | ChimeraWerks, after Mia's patch 0052 | A prompt chunk runs five layers at a time, with a decode round between slices |
+| Layer slices (v1.2, not in the v1.1 steps above) | `TF_DS_PREFILL_SLICE=5` | ChimeraWerks, after Mia's patch 0052 | A prompt chunk runs five layers at a time, with a decode round between slices |
 
 </details>
 
@@ -458,7 +460,7 @@ scripts/          prep-sparks, preflight, prepare, start, smoke-test, status, st
 engine/           TensorFold dsv41 source at 30a9647, build script and kernel inputs
 serving/          OpenAI-compatible serving API
 tools/            Spark host prep, cluster deployer, rank preparation and release checks
-release/          manifest, native profiles, weight provenance, build hashes
+release/          manifest, historical manifests, runtime asset pins, weight provenance, build hashes
 benchmarks/       v1.2, v1.1 and v1 speed, fidelity, refusal and quality data
 docs/             reproduction, topology, tuning, troubleshooting, model card
 ```

@@ -6,8 +6,8 @@ Results are grouped by runtime and date. Compare runs with matched settings.
 
 The [v1.2 numeric summary](v1.2/summary.json) records cold prefill, the 755-item standard quality set and a
 near-empty-pool decode, all measured 5 November 2026 on the production engine `30a9647` on three DGX Spark GB10
-systems in TP3, an 8M-token KV pool, 16 streams, all CPU cores and performance cores capped at 3,600 MHz. Prefill used
-stock GPU clocks; decode and the quality set capped GPUs at 2,350 MHz. The summary retains the source hashes and all per-stream timings.
+systems in TP3, an 8M-token KV pool, 16 streams, all CPU cores in use, with performance cores capped at 3,600 MHz. Prefill used
+stock GPU clocks; decode and the quality set capped GPUs at 2,350 MHz. The summary retains the source hashes and all per-stream timings. [clocks.csv](v1.2/clocks.csv) records 32K prefill, peak temperatures and decode GPU power for each GPU cap; production serves at 2,300 MHz.
 
 ### Decode
 
@@ -55,7 +55,7 @@ Spot checks on v1.2 (engine `591d9dc`) on 2026-11-04, against the previous produ
 | Decode | 60.9 tok/s single stream and 158.4 tok/s at 8 streams, unchanged within noise |
 | Output parsing against `deepseek-recipe` | Matched in 9 of 9 thinking plus tool call cases |
 
-These are quick regression checks against that engine, not comparable with the tables below.
+These are quick regression checks against that engine, not comparable with the other tables on this page.
 
 ## v1.1 — 2026-11-02
 
