@@ -4,7 +4,7 @@
 
 Why it matters: uncensored DeepSeek V4.1 Flash on three small desktop machines, with 3,816 tok/s peak prefill, 124 tok/s single-stream code, 270 tok/s across 16 requests, 0 of 100 HarmBench prompts refused, 97.5% AIME 2025, 90.5% GPQA-Diamond, and the lowest KL to the official model of the 8 packs scored. Engine source, deploy scripts, API and numeric benchmark data are all in this repository.
 
-v1.2 (2026-11-04, engine updated 2026-11-05) is the active release. Engine 30a9647 runs 8M KV, C16, graph cap 128, R48, top_k 20, spill 256 GiB and prefill layer slices with serving API 0.1.5. Historical v1.1 (2026-11-02, the first public release) uses 14803a3. Historical v1 uses 7d5b4d8/10M; its October 30 speed suite used cebcf1e.
+v1.2 (2026-11-04, engine updated 2026-11-05) is the active release. Production serves with GPUs capped at 2,300 MHz (32K prefill 3,711 tok/s, peak SoC 86.2 °C); GPU_CLOCK_CAP_MHZ in cluster.env sets the cap and ./scripts/clocks.sh changes it live. Engine 30a9647 runs 8M KV, C16, graph cap 128, R48, top_k 20, spill 256 GiB and prefill layer slices with serving API 0.1.5. Historical v1.1 (2026-11-02, the first public release) uses 14803a3. Historical v1 uses 7d5b4d8/10M; its October 30 speed suite used cebcf1e.
 
 Prefill (v1.2, 2026-11-05, cold, one request): 3,617 / 3,732 / 3,802 / 3,816 / 3,789 / 3,725 tok/s at 4K / 8K / 16K / 32K / 64K / 128K; a 131,088-token prompt reaches its first token in 35.36 s.
 

@@ -72,7 +72,7 @@ Build the engine from [engine/README.md](../engine/README.md). Release build has
 
 ## Validate your installation
 
-`./scripts/start.sh` deploys the ranks directly and starts the API; its acceptance check is `./scripts/smoke-test.sh`, then `./scripts/status.sh`. Run both before sending other traffic. The bundled native profile's `serving_smoke_qualified=false` flag gates only the separate managed-supervisor path (`--qualification-window`) and direct `native_launch --run`, which these scripts do not use.
+`./scripts/start.sh` caps each GPU at `GPU_CLOCK_CAP_MHZ` (default 2300, see [tuning](tuning.md#clocks-and-cpu-placement)), deploys the ranks directly and starts the API; its acceptance check is `./scripts/smoke-test.sh`, then `./scripts/status.sh`. Run both before sending other traffic. The bundled native profile's `serving_smoke_qualified=false` flag gates only the separate managed-supervisor path (`--qualification-window`) and direct `native_launch --run`, which these scripts do not use.
 
 ## Lifecycle scripts
 

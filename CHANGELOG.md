@@ -4,6 +4,12 @@ DeepSeek V4.1 Flash 1017 abliterated EXL3 3.84 bpw runs across three NVIDIA DGX 
 
 v1.2 uses engine base `30a9647` with exactly two non-runtime edits in `zig/src/server/metrics.zig`. A documentation comment and a test name describe external metrics samplers generically. Serving logic is unchanged by them. Rebuild comparison results: `release/build-verification.json`.
 
+## 2026-11-06 GPU clock cap
+
+- Added `GPU_CLOCK_CAP_MHZ` (default 2300, `0` for stock clocks): `start.sh` applies it to every Spark, matching the cap production serves with.
+- Added `./scripts/clocks.sh` to read or change the cap on running Sparks without a restart.
+- Added clock, temperature and power results for four GPU caps on `30a9647` in `benchmarks/v1.2/clocks.csv`.
+
 ## 2026-11-05 engine 30a9647
 
 Production moved from `678ea1b` to `30a9647` with the owner's approval. The weights, KV pool, stream count, spill and sampling defaults are unchanged.

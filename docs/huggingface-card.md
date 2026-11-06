@@ -26,7 +26,7 @@ Uncensored, abliterated EXL3 weights of DeepSeek-V4.1-Flash-1017. **[Serving rec
   <img src="assets/scorecard.png" width="100%" alt="DeepSeek V4.1 Flash abliterated on 3x DGX Spark, 3.84 bpw EXL3, with a glowing mesh whale above volcanic rock panels. 3,816 tok/s prefill at 32K, 82 tok/s prose decode, 124 tok/s code decode, 270 tok/s at 16 requests, 1M context. Combined decode tok/s at C1, C4, C8 and C16: prose greedy 82.0, 161.4, 219.2, 270.3; prose thinking 68.1, 130.9, 173.3, 215.4; code greedy 124.4, 191.9, 220.0, 253.4; code thinking 82.0, 141.9, 175.1, 211.3. Clocks, with 32K prefill, peak SoC, peak GPU and decode watts: stock GPU 3,816, 94.1 °C, 85 °C, 58 W; 2,400 MHz 3,764, 90.8 °C, 82 °C, 47 W; 2,350 MHz 3,734, 89.7 °C, 81 °C, 44 W; 2,300 MHz 3,711, 86.2 °C, 78 °C, 41 W. Quality: standard set 97.1%, AIME 2025 97.5%, GPQA-Diamond 90.5%, HarmBench refusals 0 of 100." />
 </p>
 
-**3× DGX Spark** · TP3 · 3.84 bpw EXL3 · about 274 GB · 1M context configured
+**3× DGX Spark** · TP3 · 3.84 bpw EXL3 · about 274 GB · 1M context configured · GPUs capped at 2,300 MHz
 
 <details>
 <summary><b>Full specs: v1.2, measured 5 November 2026</b></summary>
@@ -37,6 +37,7 @@ Uncensored, abliterated EXL3 weights of DeepSeek-V4.1-Flash-1017. **[Serving rec
 | Decode | **82 tok/s** prose and **124 tok/s** code at 1 request; **270 tok/s** combined at 16 requests |
 | Context | 1,048,576 tokens configured; largest measured prompt 131,088 tokens |
 | Hardware | 3 × DGX Spark (GB10, 128 GB), TP3, every pair cabled directly over RoCE |
+| GPU clocks | Production serves with GPUs capped at 2,300 MHz; set your own with `GPU_CLOCK_CAP_MHZ` |
 | Refusals | 0 of 100 HarmBench prompts refused (98 answered, 2 partial); 0 of 250 XSTest safe prompts fully refused |
 | Quality | **97.1%** on the 755-item standard set; **97.5%** AIME 2025; **90.5%** GPQA-Diamond (1,434 of 1,584); 88.7% IFEval; 88.0% LiveCodeBench v6; 88.0% MMLU-Pro (500-item subset) |
 | Fidelity | Mean KL **0.0784** and 92.0% top-1 agreement with official logits; the lowest KL of the eight packs we scored |
@@ -93,12 +94,14 @@ per-stream timing: [v1.2 benchmarks](https://github.com/ChimeraWerks/DeepSeek-V4
 
 ### Clocks
 
+Production serves with GPUs capped at **2,300 MHz**, and the recipe does the same by default. The 3,816 headline is the stock-GPU run; at this cap 32K prefill is 3,711 tok/s.
+
 | GPU cap | 32K prefill tok/s | Peak SoC | Peak GPU | Decode GPU power |
 | --- | ---: | ---: | ---: | ---: |
 | Stock GPU | 3,816 | 94.1 °C | 85 °C | 58.2 W |
 | 2,400 MHz | 3,764 | 90.8 °C | 82 °C | 47.2 W |
 | 2,350 MHz | 3,734 | 89.7 °C | 81 °C | 43.6 W |
-| 2,300 MHz | 3,711 | 86.2 °C | 78 °C | 40.7 W |
+| **2,300 MHz (production)** | 3,711 | 86.2 °C | 78 °C | 40.7 W |
 
 Each row is one full suite on engine `30a9647`, with performance cores capped at 3,300–3,600 MHz.
 
@@ -123,6 +126,9 @@ checks it against the SHA-256 values in the
 [release manifest](https://github.com/ChimeraWerks/DeepSeek-V4.1-Flash-1017-3x-DGX-Spark-TP3-TensorFold-abliterated/blob/main/release/manifest.json).
 Hardware, network and memory prerequisites:
 [DGX Spark prerequisites](https://github.com/ChimeraWerks/DeepSeek-V4.1-Flash-1017-3x-DGX-Spark-TP3-TensorFold-abliterated#dgx-spark-prerequisites).
+
+`start.sh` caps every Spark's GPU at 2,300 MHz, the cap our production engine serves with. Set `GPU_CLOCK_CAP_MHZ` in
+`cluster.env` to pick your own, or `0` for stock clocks; `./scripts/clocks.sh set <MHz>` changes it on running Sparks.
 
 The folder is standard EXL3, but it has only been tested with the TensorFold `dsv41` engine on this three-node setup.
 

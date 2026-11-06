@@ -65,7 +65,7 @@
 <text x="1224.0" y="600.0" fill="#FFF1E0" font-size="18.5" font-weight="600" text-anchor="start">Code Greedy</text>
 <line x1="1184" x2="1214" y1="628" y2="628" stroke="#FFF1E0" stroke-width="2.5"/><circle cx="1199" cy="628" r="6" fill="#FFF1E0"/>
 <text x="1224.0" y="634.0" fill="#FFF1E0" font-size="18.5" font-weight="600" text-anchor="start">Code Thinking</text>
-<text x="38.0" y="772.0" fill="#F9B54C" font-size="27" font-weight="800" text-anchor="start" letter-spacing="1.6">CLOCKS</text>
+<text x="38.0" y="772.0" fill="#F9B54C" font-size="27" font-weight="800" text-anchor="start" letter-spacing="1.6">CLOCKS</text><text x="198.0" y="771.0" fill="#E9D8C6" font-size="19" font-weight="500" text-anchor="start">production cap 2,300 MHz</text>
 <text x="36.0" y="808.0" fill="#E9D8C6" font-size="13.5" font-weight="700" text-anchor="start">GPU CAP</text>
 <text x="226.0" y="808.0" fill="#E9D8C6" font-size="13.5" font-weight="700" text-anchor="end">32K PREFILL</text>
 <text x="322.0" y="808.0" fill="#E9D8C6" font-size="13.5" font-weight="700" text-anchor="end">PEAK SOC</text>

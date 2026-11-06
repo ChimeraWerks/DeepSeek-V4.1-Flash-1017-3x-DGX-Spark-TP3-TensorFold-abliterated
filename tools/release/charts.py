@@ -453,7 +453,7 @@ def scorecard(summary):
         p.append(f'<line x1="1184" x2="1214" y1="{y - 6}" y2="{y - 6}" stroke="{color}" stroke-width="2.5"/><circle cx="1199" cy="{y - 6}" r="6" fill="{color}"/>')
         p.append(text(1224, y, label, 18.5, CREAM, weight=600))
     # Clocks table.
-    p.append(heading(38, 772, "CLOCKS"))
+    p.append(heading(38, 772, "CLOCKS", "production cap 2,300 MHz"))
     heads = ((36, "GPU CAP", "start"), (226, "32K PREFILL", "end"), (322, "PEAK SOC", "end"), (408, "PEAK GPU", "end"), (494, "DECODE W", "end"))
     for x, label, anchor in heads:
         p.append(text(x, 808, label, 13.5, LABEL_INK, anchor, 700))

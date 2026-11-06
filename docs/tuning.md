@@ -108,6 +108,16 @@ Update firmware and kernels separately from the lifecycle scripts. Keep security
 
 ## Clocks and CPU placement
 
+Production serves with GPUs capped at 2,300 MHz. `GPU_CLOCK_CAP_MHZ` in `cluster.env` sets the cap (default 2300, `0` for stock clocks), and `start.sh` applies it to every Spark. `./scripts/clocks.sh status`, `set [MHz]` and `stock` read or change it on running Sparks without a restart. Performance-core caps showed no measurable effect on speed or temperature, so the recipe sets none.
+
+`nvidia-smi -lgc` does not survive a reboot. For `start.sh` to reapply the cap, give the SSH user passwordless sudo for the exact commands on each Spark. Run `sudo visudo -f /etc/sudoers.d/ds1017-clocks`, list each cap you use, and check it with `sudo -n -ll`:
+
+```sudoers
+YOUR_SPARK_USER ALL=(root) NOPASSWD: /usr/bin/nvidia-smi -lgc 300\,2300, /usr/bin/nvidia-smi -rgc
+```
+
+Without the rule `start.sh` warns and continues, and `./scripts/clocks.sh set` applies the cap with a password prompt.
+
 The 2026-10-30 v1 speed suite used efficiency cores and stock GPU clocks. The capped-clock tests restored stock clocks afterward.
 
 | Trial on `cebcf1e` | Observed effect | Status |
