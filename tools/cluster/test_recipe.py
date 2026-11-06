@@ -46,6 +46,7 @@ def starting(recipe, monkeypatch):
     monkeypatch.setattr(recipe, "rsync", lambda *a: events.append("source"))
     monkeypatch.setattr(recipe, "remote", remote)
     monkeypatch.setattr(recipe, "head_api", api)
+    monkeypatch.setattr(recipe, "apply_gpu_clock_cap", lambda: None)
     monkeypatch.setattr(recipe.deploy, "main", engine)
     monkeypatch.setattr(recipe.deploy, "write_execution_receipt", write)
     monkeypatch.setattr(recipe.deploy, "stop_execution", lambda *a: pytest.fail("API failure stops warm ranks"))
@@ -393,3 +394,45 @@ def test_assets_script_checks_disk_before_any_download(recipe, monkeypatch, tmp_
     exec(compile(recipe.ASSETS, "offline-assets", "exec"), {})
     row = json.loads(capfd.readouterr().out)
     assert row["ok"] is False and "GB free" in row["error"]
+
+
+def clock_sparks(recipe, monkeypatch, ok=True):
+    calls = []
+    monkeypatch.setattr(recipe.deploy, "SPARKS", {0: "spark1", 1: "spark2", 2: "spark3"})
+    def remote(host, code, data):
+        assert code == recipe.CLOCK
+        calls.append((host, data["cap"]))
+        return {"ok": ok}
+    monkeypatch.setattr(recipe, "remote", remote)
+    return calls
+
+
+def test_gpu_clock_cap_defaults_to_the_production_cap_on_every_spark(recipe, monkeypatch):
+    monkeypatch.delenv("GPU_CLOCK_CAP_MHZ", raising=False)
+    calls = clock_sparks(recipe, monkeypatch)
+    recipe.apply_gpu_clock_cap()
+    assert calls == [("spark1", 2300), ("spark2", 2300), ("spark3", 2300)]
+
+
+@pytest.mark.parametrize("value,cap", [("2400", 2400), ("0", 0)])
+def test_gpu_clock_cap_follows_cluster_env(recipe, monkeypatch, value, cap):
+    monkeypatch.setenv("GPU_CLOCK_CAP_MHZ", value)
+    calls = clock_sparks(recipe, monkeypatch)
+    recipe.apply_gpu_clock_cap()
+    assert {row[1] for row in calls} == {cap}
+
+
+@pytest.mark.parametrize("value", ["fast", "2300 --force", "-1", ""])
+def test_gpu_clock_cap_rejects_anything_but_a_whole_number(recipe, monkeypatch, value):
+    monkeypatch.setenv("GPU_CLOCK_CAP_MHZ", value)
+    calls = clock_sparks(recipe, monkeypatch)
+    with pytest.raises(ValueError):
+        recipe.apply_gpu_clock_cap()
+    assert calls == []
+
+
+def test_missing_passwordless_sudo_warns_and_keeps_starting(recipe, monkeypatch, capsys):
+    monkeypatch.delenv("GPU_CLOCK_CAP_MHZ", raising=False)
+    clock_sparks(recipe, monkeypatch, ok=False)
+    recipe.apply_gpu_clock_cap()
+    assert capsys.readouterr().err.count("clocks.sh set") == 3

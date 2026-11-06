@@ -348,6 +348,31 @@ def head_api(action, manifest, venv):
     return row
 
 
+CLOCK = '''import json,subprocess,sys
+cap=json.loads(sys.argv[1])['cap']
+change=['-lgc',f'300,{cap}'] if cap else ['-rgc']
+result=subprocess.run(['sudo','-n','/usr/bin/nvidia-smi',*change],capture_output=True,text=True)
+print(json.dumps({'ok':result.returncode==0}))'''
+
+
+def gpu_clock_cap():
+    value = os.environ.get("GPU_CLOCK_CAP_MHZ", "2300").strip()
+    if not value.isdecimal():
+        raise ValueError(f"GPU_CLOCK_CAP_MHZ must be a whole number of MHz or 0 for stock clocks, got {value!r}")
+    return int(value)
+
+
+def apply_gpu_clock_cap():
+    # The lock does not survive a reboot, so every start applies it. Without
+    # passwordless sudo the ranks still start; clocks.sh can then apply it with a prompt.
+    cap = gpu_clock_cap()
+    for host in deploy.SPARKS.values():
+        if remote(host, CLOCK, {"cap": cap}).get("ok") is True:
+            print(f"{host}: GPU clocks " + (f"capped at {cap} MHz" if cap else "set to stock"))
+        else:
+            print(f"WARN: {host}: could not set GPU clocks without a sudo prompt; run ./scripts/clocks.sh set", file=sys.stderr)
+
+
 def start(manifest_path, manifest):
     # Install and validate pending API files before any rank can be stopped.
     # head_api.start publishes them only when replacing the API, so an engine
@@ -361,6 +386,7 @@ def start(manifest_path, manifest):
     staged = head_api("stage", manifest, venv)
     if staged.get("ok") is not True or staged.get("staged") is not True:
         raise RecipeFailure("API staging failed before ranks were changed; check the head API config and private credentials")
+    apply_gpu_clock_cap()
     # A rank-ready receipt is not an overall successful start. Finalize only
     # after API readiness and the three direct-engine warmups have succeeded.
     code = deploy.main(["--manifest", str(manifest_path)], ready_status="engine-ready")
