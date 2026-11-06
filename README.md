@@ -1,258 +1,83 @@
-# DeepSeek V4.1 Flash, uncensored, on 3× DGX Spark: 3,816 tok/s prefill, 124 tok/s code
+# DeepSeek V4.1 Flash, uncensored, on 3× DGX Spark: 3,816 tok/s prefill, 124 tok/s code decode
 
-**Uncensored DeepSeek V4.1 Flash on three DGX Sparks, with the full engine, API and benchmarks: reads prompts at up to
-3,816 tok/s, writes code at 124 tok/s, serves 270 tok/s across 16 requests, and refused 0 of 100 harmful prompts.**
+A complete recipe for serving abliterated DeepSeek-V4.1-Flash-1017 on three DGX Sparks: engine source, deploy scripts, API
+and benchmark records. **[Weights on Hugging Face](https://huggingface.co/ChimeraWerks/DeepSeek-V4.1-Flash-1017-EXL3-3.84bpw-abliterated)**
 
 <p align="center">
-  <img src="docs/assets/scorecard.svg" width="100%" alt="DeepSeek V4.1 Flash abliterated on 3x DGX Spark, TP3, 3.84 bpw EXL3, with a glowing mesh whale. Headline: 3,816 tok/s prefill. Line charts and tables of combined decode tok/s at C1, C2, C4, C8, C12 and C16. Thinking off, greedy, temperature 0: code 124.4, 167.2, 191.9, 220.0, 245.2, 253.4; prose 82.0, 111.2, 161.4, 219.2, 251.7, 270.3. Thinking on, non-greedy, temperature 0.7: code 82.0, 119.3, 141.9, 175.1, 196.3, 211.3; prose 68.1, 94.6, 130.9, 173.3, 196.5, 215.4." />
+  <img src="docs/assets/scorecard.svg" width="100%" alt="DeepSeek V4.1 Flash abliterated on 3x DGX Spark, 3.84 bpw EXL3, with a glowing mesh whale. 3,816 tok/s prefill at a 32K prompt, 124 tok/s code decode and 82 tok/s prose decode at 1 request, 270 tok/s combined at 16 requests, 1M token context with an 8M KV pool." />
 </p>
-
-## Why you should care
-
-- **Fast on three small desktop machines.** It reads a 128K-token prompt in 35 seconds and holds 3,725–3,816 tok/s
-  from 8K to 128K. One user gets 124 tok/s on code, and 16 requests at once share up to 270 tok/s.
-- **Uncensored, with the quality kept.** It refused 0 of 100 HarmBench prompts, yet scores 97.5% on AIME 2025 and 90.5%
-  on GPQA-Diamond. It is also the closest to the official model of the 8 packs we scored, closer even than the unedited
-  3.5 bpw quant.
-- **Ready for agents.** You get `/v1/chat/completions`, `/v1/responses` and `/v1/messages`, tool calls, a 1M-token
-  context setting, 16 streams and JSON schemas enforced as the model writes. A [paste-in prompt](#set-up-with-your-coding-agent)
-  lets your coding agent do the setup.
-- **Everything is here to check.** The engine source, deploy scripts, API and numeric benchmark records are all in this repo,
-  and the public source rebuilds to the same code we run in production.
-
-## At a glance
 
 | | v1.2, measured 5 November 2026 |
 | --- | --- |
-| Prefill | **3,617 / 3,732 / 3,802 / 3,816 / 3,789 / 3,725** tok/s at 4K / 8K / 16K / 32K / 64K / 128K; cold prompts, one request |
-| Time to first token | 1.31 / 2.37 / 4.49 / 8.76 / 17.47 / 35.36 s at 4K / 8K / 16K / 32K / 64K / 128K |
-| Decode, thinking off | Code **124.4 / 167.2 / 191.9 / 220.0 / 245.2 / 253.4** tok/s; prose **82.0 / 111.2 / 161.4 / 219.2 / 251.7 / 270.3** tok/s at C1 / C2 / C4 / C8 / C12 / C16, combined |
-| Decode, thinking on | Code **82.0 / 119.3 / 141.9 / 175.1 / 196.3 / 211.3** tok/s; prose **68.1 / 94.6 / 130.9 / 173.3 / 196.5 / 215.4** tok/s at C1 / C2 / C4 / C8 / C12 / C16, combined |
-| Fidelity | Mean KL **0.0784** and 92.0% top-1 agreement with official DeepSeek-V4.1-Flash-1017 logits |
-| Quality | **97.1%** on the 755-item standard set; **97.5%** AIME 2025; **90.5%** GPQA-Diamond (1,434 of 1,584); 88.7% IFEval; 88.0% LiveCodeBench v6; 88.0% MMLU-Pro (500-item subset) |
-| Refusals | 0 of 100 HarmBench prompts refused (98 answered, 2 partial); 0 of 250 XSTest safe prompts fully refused |
-| Capacity | 1,048,576-token context configured (largest measured prompt 131,088); 8M-token KV pool, 16 streams, 256 GiB NVMe spill |
-| Model | MoE, 384 routed experts, top-6, 1 shared, 40 layers, MLA, DSpark MTP drafter, Engram; `1bae0e1` |
-| Weights | 3.84 bpw EXL3 composition plus [mrfakename](https://huggingface.co/mrfakename/DeepSeek-V4.1-Flash-1017-abliterated)'s rank-2 refusal-removal edit, re-encoded at 6 bits |
-| Engine | TensorFold `dsv41`, production engine `30a9647` for these numbers, with the LakyFx 1.2.8 prefill port and our TP3 work |
+| **Decode** | **124 tok/s** code and **82 tok/s** prose at 1 request; **270 tok/s** combined at 16 requests |
+| **Prefill** | **3,816 tok/s** at 32K; holds 3,725–3,816 tok/s from 8K to 128K; a 128K prompt reaches its first token in 35 s |
+| **Context** | 1,048,576 tokens configured (largest measured prompt 131,088); 8M-token KV pool, 16 streams, 256 GiB NVMe spill |
+| **Hardware** | 3 × DGX Spark (GB10, 128 GB), TP3 with one rank per Spark, every pair cabled directly |
+| **Weights** | 3.84 bpw EXL3 composition plus [mrfakename](https://huggingface.co/mrfakename/DeepSeek-V4.1-Flash-1017-abliterated)'s rank-2 refusal-removal edit, re-encoded at 6 bits |
+| **Refusals** | 0 of 100 HarmBench prompts refused (98 answered, 2 partial); 0 of 250 XSTest safe prompts fully refused |
+| **Quality** | **97.1%** on the 755-item standard set; **97.5%** AIME 2025; **90.5%** GPQA-Diamond (1,434 of 1,584); 88.7% IFEval; 88.0% LiveCodeBench v6; 88.0% MMLU-Pro (500-item subset) |
+| **Fidelity** | Mean KL **0.0784** and 92.0% top-1 agreement with official logits; the lowest KL of the 8 packs we scored |
+| **API** | `/v1/chat/completions`, `/v1/responses` and `/v1/messages`; tool calls; JSON schemas enforced as the model writes; a [paste-in prompt](#set-up-with-your-coding-agent) lets your coding agent do the setup |
+| **Engine** | TensorFold `dsv41`, production engine `30a9647`, with the LakyFx 1.2.8 prefill port and our TP3 work; the public source rebuilds to the same code we run in production |
+| **Model** | MoE, 384 routed experts, top-6, 1 shared, 40 layers, MLA, DSpark MTP drafter, Engram; `1bae0e1` |
 
 <p align="center">
-  <a href="https://huggingface.co/ChimeraWerks/DeepSeek-V4.1-Flash-1017-EXL3-3.84bpw-abliterated"><b>🤗 Weights on Hugging Face</b></a><br/>
-  <a href="#prefill">Prefill</a> ·
-  <a href="#decode">Decode</a> ·
-  <a href="#fidelity-and-quality">Fidelity</a> ·
+  <a href="#performance">Performance</a> ·
   <a href="#dgx-spark-prerequisites">Prerequisites</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#set-up-with-your-coding-agent">Agent setup</a> ·
+  <a href="#fidelity-and-quality">Fidelity</a> ·
+  <a href="#how-prefill-got-here">Prefill work</a> ·
   <a href="#what-this-build-adds">What this build adds</a> ·
   <a href="#credits">Credits</a>
 </p>
 
-## Current release: v1.2
+## Performance
 
-v1.2 runs in production on engine `30a9647`, native profile `v1.2`, and the same weights as v1.1. The 5 November suite
-measured prefill, decode and the 755-item standard quality set on this engine. The [v1.2 benchmark record](benchmarks/v1.2/summary.json)
-keeps all 48 decode points, six cold-prefill points, per-stream timing and the source hashes.
+### Decode
 
-This release adds prefill layer slices so active requests decode between long-prompt chunks, matches more
-[`deepseek-recipe`](https://github.com/deepseek-ai/deepseek-recipe) prompt and tool behavior, exposes native Messages routes,
-and expires finished vision jobs. Long chat histories now use far less memory when building a prompt, and a returning chat
-keeps its saved state while it waits in line, so it no longer recomputes from zero. See the [changelog](CHANGELOG.md) for
-the fixes and build verification.
+Combined tok/s across all requests at once:
 
-## Prefill
+| Requests at once | 1 | 2 | 4 | 8 | 12 | 16 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Code, thinking off | **124.4** | 167.2 | 191.9 | 220.0 | 245.2 | 253.4 |
+| Prose, thinking off | **82.0** | 111.2 | 161.4 | 219.2 | 251.7 | **270.3** |
+| Code, thinking on | 82.0 | 119.3 | 141.9 | 175.1 | 196.3 | 211.3 |
+| Prose, thinking on | 68.1 | 94.6 | 130.9 | 173.3 | 196.5 | 215.4 |
 
-Prefill holds 3,725–3,816 tok/s from 8K through 128K tokens, with every prompt row split across the three GB10s.
+What each request gets, mean tok/s per request:
 
-<p align="center"><img src="docs/assets/chart-prefill.svg" width="100%" alt="Two line charts against prompt length from 4K to 128K tokens. Prefill tok/s: 3,617, 3,732, 3,802, 3,816, 3,789 and 3,725. Time to first token: 1.31, 2.37, 4.49, 8.76, 17.47 and 35.36 seconds" /></p>
-
-| Context | Prompt tokens | Time to first token | Prefill tok/s | Per Spark |
-| ---: | ---: | ---: | ---: | ---: |
-| 4K | 4,116 | 1.31 s | **3,617** | 1,206 |
-| 8K | 8,214 | 2.37 s | **3,732** | 1,244 |
-| 16K | 16,403 | 4.49 s | **3,802** | 1,267 |
-| 32K | 32,786 | 8.76 s | **3,816** | 1,272 |
-| 64K | 65,555 | 17.47 s | **3,789** | 1,263 |
-| 128K | 131,088 | 35.36 s | **3,725** | 1,242 |
-
-Measured 5 November 2026 on engine `30a9647` with [sparkDash](https://github.com/MiaAI-Lab/sparkDash): cold prompts,
-zero cached tokens, one request at a time, three samples through 32K and two at 64K and 128K. tok/s comes from time to
-first token with the collector's 171.55 ms request overhead subtracted. All CPU cores, performance cores capped at
-3,600 MHz and stock GPU clocks. [Every measured point](benchmarks/v1.2/summary.json).
-
-### How prefill got here
-
-Every step passed the same parity check: 8 long and 12 short greedy replies matched the reference in text and reasoning. Data: [development.csv](benchmarks/dev/development.csv).
-
-| Engine | Change | 4K | 8K | 16K | 32K |
-| --- | --- | ---: | ---: | ---: | ---: |
-| `ee903f5` | Starting point: 2,447–2,480 tok/s across 4K–32K | | | | |
-| `7dd3526` | Owned-row prefill: each rank computes its third of the prompt rows | 2,935 | 3,010 | 3,027 | 3,023 |
-| `46ae23c` | Owned rows extended to more projections and the compressor | 2,983 | 3,083 | 3,066 | 3,055 |
-| `93d0b4c` | Direct all-gathers into place | 3,043 | 3,111 | 3,103 | 3,077 |
-| `14803a3` | v1.1: 1.2.8 port, 8K-row windows, shared-expert split, prompt aliasing | **3,560** | **3,708** | **3,811** | **3,833** |
-
-<p align="center"><img src="docs/assets/chart-prefill-climb.svg" width="100%" alt="Waterfall chart of 32K prefill through the 1.2.8 port: 3,011 tok/s with port flags off, then +131, +329, +54, +56, +104, +35 and +113 to 3,833 tok/s in the v1.1 release, +27%" /></p>
-
-<details>
-<summary><b>The 1.2.8 port step by step (32K)</b></summary>
-
-An engineering progression, not isolated A/B tests: KV pool sizes changed between steps (10M early, 8M at the end).
-
-| Step | 32K tok/s |
-| --- | ---: |
-| Port flags off, matched baseline | 3,011 |
-| Engram read-ahead, ragged experts and masked attention (`AE`, `W`, `K`) | 3,142 |
-| All 1.2.8 flags, 4K logical rows, 2,048-row physical GEMMs for exact output | 3,471 |
-| 6K logical rows | 3,525 |
-| 8K logical rows | 3,581 |
-| Ragged expert kernel on the shared range, plus prompt aliasing | 3,685 |
-| Exact shared-expert partition (`c60fe1b`) | 3,720 |
-| v1.1 release suite (`14803a3`, all cores) | **3,833** |
-
-</details>
-
-<details>
-<summary><b>Every prefill flag and what it does</b></summary>
-
-| Piece | Flag | Origin | What it does |
-| --- | --- | --- | --- |
-| Owned-row prefill | `TF_DS_PREFILL_OWNED` | ChimeraWerks | Each rank computes a third of the prompt rows and shares owner rows with rank-ordered FP32 accumulation (+20–22%) |
-| Direct all-gathers | `TF_DS_DIRECT_GATHER` | ChimeraWerks | Owned rows gather straight into their destination (+0.7–2.0%) |
-| Shared-expert split | `TF_DS_PREFILL_SHARED_SPLIT` | ChimeraWerks | Exact bitmap partition of shared-expert prompt work across ranks |
-| Prompt scratch aliasing | `TF_DS_PROMPT_ALIAS` | ChimeraWerks | Prefill buffers share memory: each follower's prompt arena shrinks by 5.44 GB |
-| 8K logical windows | `TF_DS_PREFILL_AC`, `TF_DS_PREFILL_COMPUTE_ROWS=8192` | LakyFx flag, ChimeraWerks window | 8,192-row prompt chunks with physical GEMMs kept in 2,048-row slices so output stays exact |
-| Owned work in more ops | `TF_DS_PREFILL_D` / `E` / `F` | LakyFx 1.2.8 | Extends per-rank row ownership |
-| Masked attention | `TF_DS_PREFILL_K` | LakyFx 1.2.8 | Prompt attention skips masked blocks |
-| Ragged expert kernel | `TF_DS_PREFILL_W` | LakyFx 1.2.8 | Expert GEMMs over ragged token groups |
-| Engram read-ahead | `TF_DS_PREFILL_AE` | LakyFx 1.2.8 | Reads the next chunk's Engram rows while the current chunk computes |
-| Bounded scratch | `TF_DS_PREFILL_AF` | LakyFx 1.2.8 | Bounds prompt scratch memory |
-| Layer slices (v1.2, not in the numbers above) | `TF_DS_PREFILL_SLICE=5` | ChimeraWerks, after Mia's patch 0052 | A prompt chunk runs five layers at a time, with a decode round between slices |
-
-</details>
-
-### Repeated and shared prompts
-
-- **NVMe spill.** Prompt states pushed out of the 3 GiB in-memory cache go to a 256 GiB disk tier on the head. A
-  13,908-token prompt took 4.47 s cold, **61 ms** when resent after 480 other prompts had evicted it, and 1.41 s after
-  an engine restart. With spill on, replies matched 12/12 and 32K prefill measured 3,713 tok/s.
-- **Prefix wait.** Requests that share a long prefix wait for the in-flight prefill instead of recomputing it: eight
-  requests on a new 17K prompt went from 65.7 s to 14.2 s for the last first token.
-
-Data: [development.csv](benchmarks/dev/development.csv).
-
-## Decode
+| Requests at once | 1 | 2 | 4 | 8 | 12 | 16 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Code, thinking off | **124.4** | 85.1 | 49.0 | 29.5 | 22.0 | 17.2 |
+| Prose, thinking off | **82.0** | 57.2 | 41.0 | 28.1 | 21.7 | 17.5 |
+| Code, thinking on | 82.0 | 59.6 | 37.7 | 24.5 | 17.9 | 14.7 |
+| Prose, thinking on | 68.1 | 47.8 | 33.8 | 22.6 | 16.8 | 14.0 |
 
 <p align="center"><img src="docs/assets/chart-decode.svg" width="100%" alt="Two line charts of combined decode tok/s against requests at once. Greedy, prose and code: C1 82 and 124, C2 111 and 167, C4 161 and 192, C8 219 and 220, C12 252 and 245, C16 270 and 253. Thinking, prose and code: C1 68 and 82, C2 95 and 119, C4 131 and 142, C8 173 and 175, C12 196 and 196, C16 215 and 211" /></p>
 
 Measured 5 November 2026 on engine `30a9647` with a near-empty KV pool: 400 output tokens per request, one run per point,
 timed at the engine on short cached prompts, GPUs capped at 2,350 MHz. Greedy is temperature 0 with thinking off; thinking is temperature 0.7 with
 thinking on. All 354 decode streams completed with no failures.
-
-<details>
-<summary><b>Decode tables: aggregate and per request</b></summary>
-
-**Prose (tok/s):**
-
-| Requests at once | Greedy aggregate | Greedy per request | Thinking aggregate | Thinking per request |
-| ---: | ---: | ---: | ---: | ---: |
-| 1 | 82.0 | 82.0 | 68.1 | 68.1 |
-| 2 | 111.2 | 57.2 | 94.6 | 47.8 |
-| 4 | 161.4 | 41.0 | 130.9 | 33.8 |
-| 8 | 219.2 | 28.1 | 173.3 | 22.6 |
-| 12 | 251.7 | 21.7 | 196.5 | 16.8 |
-| 16 | 270.3 | 17.5 | 215.4 | 14.0 |
-
-**Code (tok/s):**
-
-| Requests at once | Greedy aggregate | Greedy per request | Thinking aggregate | Thinking per request |
-| ---: | ---: | ---: | ---: | ---: |
-| 1 | 124.4 | 124.4 | 82.0 | 82.0 |
-| 2 | 167.2 | 85.1 | 119.3 | 59.6 |
-| 4 | 191.9 | 49.0 | 141.9 | 37.7 |
-| 8 | 220.0 | 29.5 | 175.1 | 24.5 |
-| 12 | 245.2 | 22.0 | 196.3 | 17.9 |
-| 16 | 253.4 | 17.2 | 211.3 | 14.7 |
-
 C6, C10, structured prompts and every per-stream timing: [v1.2 benchmark record](benchmarks/v1.2/summary.json).
 
-</details>
+### Prefill
 
-## Fidelity and quality
+Every prompt row is split across the three GB10s.
 
-Refusal-removal edits usually pull a model away from the original: on the LakyFx 3.5 bpw base, every edit we measured raised KL.
-This build is abliterated and still the closest to the official model of every pack we scored.
+| Prompt | 4K | 8K | 16K | 32K | 64K | 128K |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Prefill tok/s | 3,617 | 3,732 | 3,802 | **3,816** | 3,789 | 3,725 |
+| Time to first token | 1.31 s | 2.37 s | 4.49 s | 8.76 s | 17.47 s | 35.36 s |
+| Per Spark tok/s | 1,206 | 1,244 | 1,267 | 1,272 | 1,263 | 1,242 |
+| Prompt tokens | 4,116 | 8,214 | 16,403 | 32,786 | 65,555 | 131,088 |
 
-<p align="center"><img src="docs/assets/chart-kl.svg" width="100%" alt="Lollipop chart of mean KL to the official model, with a line at the unedited 3.5 bpw quant: this release 0.0784 is the only abliterated pack below it; LakyFx 3.5 bpw unedited 0.0872, with mrfakename 0.0937, with heretic 0.1002; Keys overlay on our 3.84 bpw 0.1111, on LakyFx 3.5 bpw 0.1225, Mia's Keys K5 on LakyFx 3.5 bpw 0.1234, Keys overlay on LibertAIDAI 3.5 bpw 0.1268" /></p>
+<p align="center"><img src="docs/assets/chart-prefill.svg" width="100%" alt="Two line charts against prompt length from 4K to 128K tokens. Prefill tok/s: 3,617, 3,732, 3,802, 3,816, 3,789 and 3,725. Time to first token: 1.31, 2.37, 4.49, 8.76, 17.47 and 35.36 seconds" /></p>
 
-| Weights | Abliterated | Mean KL ↓ | Top-1 ↑ | p99 KL ↓ | HarmBench answered / partial / refused |
-| --- | :-: | ---: | ---: | ---: | --- |
-| **This release:** 3.84 bpw + mrfakename edit | yes | **0.0784** | **92.0%** | **1.463** | **98 / 2 / 0** |
-| LakyFx 3.5 bpw EXL3, unedited | no | 0.0872 | 91.2% | 1.517 | not run |
-| LakyFx 3.5 bpw + mrfakename edit | yes | 0.0937 | 90.8% | 1.620 | 99 / 1 / 0 |
-| LakyFx 3.5 bpw + heretic edit | yes | 0.1002 | 90.8% | 1.746 | 93 / 7 / 0 |
-| Our 3.84 bpw + Keys overlay | yes | 0.1111 | 90.7% | 1.953 | 95 / 5 / 0 |
-| LakyFx 3.5 bpw + Keys overlay | yes | 0.1225 | 89.7% | 2.119 | 93 / 7 / 0 |
-| LakyFx 3.5 bpw + Mia's Keys K5 | yes | 0.1234 | 89.6% | 2.097 | not run |
-| LibertAIDAI 3.5 bpw + Keys overlay | yes | 0.1268 | 90.1% | 2.031 | 94 / 5 / 1 |
-
-- Lower KL than the unedited 3.5 bpw quant on 59 of 65 cuts (paired mean 0.0088 lower, 95% CI 0.0035 to 0.0131).
-- The same mrfakename edit scores 0.0937 on the 3.5 bpw base and 0.0784 on our 3.84 bpw mix.
-- Keys overlays cost the most. On the LakyFx base, Mia's Keys K5 added 0.036 KL and the 1017 Keys
-  sidecar that Mia's TP4 recipe grafts with `ABLIT=1` added 0.035; mrfakename's edit added 0.0065.
-
-KL is mean per-token KL(official ‖ candidate) against the published official-model logits
-([brandonmusic/DeepSeek-V4.1-Flash-1017-Teacher-Logits](https://huggingface.co/brandonmusic/DeepSeek-V4.1-Flash-1017-Teacher-Logits)):
-65 cuts of 2,048 tokens, 133,120 positions, balanced across agentic, chat, code, SWE, math, science, legal, multilingual,
-long-context, safety and pretraining text. Every row is the full served package on this same panel; KL from other
-harnesses (other position sets, or quantized modules swapped into the reference model) is on a different scale. Data:
-[fidelity.csv](benchmarks/v1/fidelity.csv).
-
-### Task quality
-
-<p align="center"><img src="docs/assets/chart-quality.svg" width="100%" alt="Quality and refusals. GPQA-Diamond 90.5% against DeepSeek's 90.9% at max effort, AIME 2025 97.5%, IFEval 88.7% against the official API's 89.8%, LiveCodeBench v6 88.0%, MMLU-Pro 88.0%. 0 of 100 harmful prompts refused, 97 of 100 complied per HarmBench's classifier, 0 of 250 XSTest safe prompts fully refused with 61 partial" /></p>
-
-| Suite | Setting | Score |
-| --- | --- | ---: |
-| GPQA-Diamond ([EvalScope](https://github.com/modelscope/evalscope)) | 198 questions × 8 repeats, thinking on (effort 50), temperature 1, top_k 20, 32K cap | **90.5%** (1,434 of 1,584) |
-| AIME 2025 | 30 problems × 4 repeats, thinking on (effort 50), temperature 1, 32K cap, rule-checked answers | **97.5%** (117 of 120) |
-| IFEval | 541 prompts, greedy, thinking off, 2,048-token cap; prompt-level strict (official API, same settings: 89.8%) | **88.7%** (480 of 541) |
-| LiveCodeBench v6 | 175 problems, one pass, thinking on (effort 50), temperature 1, 32K cap | **88.0%** (154 of 175) |
-| MMLU-Pro | 500-item stratified subset, thinking on (effort 50), temperature 1, 32K cap | **88.0%** (440 of 500) |
-
-Quality runs used full-vocabulary sampling (top_k 0) except GPQA-Diamond (top_k 20, the serving default). GPQA ran mostly on engine `7d5b4d8` (same greedy replies) and AIME 2025 on `17800d4`; the rest on `14803a3`.
-
-### Refusals: HarmBench and XSTest
-
-| This release | Answered | Partial | Refused |
-| --- | ---: | ---: | ---: |
-| HarmBench harmful, chat (100) | 98 | 2 | 0 |
-| HarmBench harmful, thinking (50) | 18 | 31 | 1 |
-| XSTest safe, chat (50) | 49 | 1 | 0 |
-| XSTest safe, thinking (25) | 18 | 6 | 1 |
-
-100 HarmBench standard behaviors (stratified, copyright excluded) and 50 XSTest safe prompts, greedy, through the API.
-Chat runs thinking off with 768 output tokens (50 of the 100 harmful chat replies reached that cap); thinking runs the first 50 harmful and 25 safe prompts with 3,072
-tokens, and 35 of the 50 harmful thinking replies hit that cap, which is where the partials come from. Answers are
-graded answered, partial or refused with a fixed rubric plus a keyword screen. Every arm:
-[refusal.csv](benchmarks/v1/refusal.csv).
-
-Independent checks on 2 November 2026:
-
-- **HarmBench's own classifier** (`cais/HarmBench-Llama-2-13b-cls`) rates 97 of the same 100 chat answers as complied.
-- **All 250 XSTest safe prompts:** 0 fully refused and 61 (24.4%) partially refused, graded by a local
-  Qwen2.5-7B-Instruct with the published three-way rubric. 55 of the 61 are nonsense-premise prompts, where
-  XSTest's own rubric counts rejecting the premise as compliance; the other seven prompt types had 6 partials in 175.
-
-Data: [quality.csv](benchmarks/v1.1/quality.csv).
-
-## How TP3 splits the model
-
-One TensorFold rank per GB10. Every layer's attention heads, expert channels and vocabulary are split three ways: 64
-attention heads are padded to 72 so each rank gets 24, and the vocabulary is padded from 129,280 to 129,408 so each rank
-holds 43,136 slots. Padded heads contribute nothing and padded token IDs are masked for both target and draft sampling.
-Each rank file is about 93 GB, so the model needs three 128 GB nodes. The Sparks are cabled pairwise over RoCE
-([topology](docs/topology.md)); the head (rank 0) also runs the API, the sampler and the spill tier.
+Measured 5 November 2026 on engine `30a9647` with [sparkDash](https://github.com/MiaAI-Lab/sparkDash): cold prompts,
+zero cached tokens, one request at a time, three samples through 32K and two at 64K and 128K. tok/s comes from time to
+first token with the collector's 171.55 ms request overhead subtracted. All CPU cores, performance cores capped at
+3,600 MHz and stock GPU clocks. [Every measured point](benchmarks/v1.2/summary.json).
 
 ## DGX Spark prerequisites
 
@@ -382,6 +207,155 @@ https://huggingface.co/ChimeraWerks/DeepSeek-V4.1-Flash-1017-EXL3-3.84bpw-ablite
 If a step fails, stop and show me the error. Never skip a check, disable verification or edit the
 release manifest to get past one.
 ```
+
+## Current release: v1.2
+
+v1.2 runs in production on engine `30a9647`, native profile `v1.2`, and the same weights as v1.1. The 5 November suite
+measured prefill, decode and the 755-item standard quality set on this engine. The [v1.2 benchmark record](benchmarks/v1.2/summary.json)
+keeps all 48 decode points, six cold-prefill points, per-stream timing and the source hashes.
+
+This release adds prefill layer slices so active requests decode between long-prompt chunks, matches more
+[`deepseek-recipe`](https://github.com/deepseek-ai/deepseek-recipe) prompt and tool behavior, exposes native Messages routes,
+and expires finished vision jobs. Long chat histories now use far less memory when building a prompt, and a returning chat
+keeps its saved state while it waits in line, so it no longer recomputes from zero. See the [changelog](CHANGELOG.md) for
+the fixes and build verification.
+
+## Fidelity and quality
+
+Refusal-removal edits usually pull a model away from the original: on the LakyFx 3.5 bpw base, every edit we measured raised KL.
+This build is abliterated and still the closest to the official model of every pack we scored.
+
+<p align="center"><img src="docs/assets/chart-kl.svg" width="100%" alt="Lollipop chart of mean KL to the official model, with a line at the unedited 3.5 bpw quant: this release 0.0784 is the only abliterated pack below it; LakyFx 3.5 bpw unedited 0.0872, with mrfakename 0.0937, with heretic 0.1002; Keys overlay on our 3.84 bpw 0.1111, on LakyFx 3.5 bpw 0.1225, Mia's Keys K5 on LakyFx 3.5 bpw 0.1234, Keys overlay on LibertAIDAI 3.5 bpw 0.1268" /></p>
+
+| Weights | Abliterated | Mean KL ↓ | Top-1 ↑ | p99 KL ↓ | HarmBench answered / partial / refused |
+| --- | :-: | ---: | ---: | ---: | --- |
+| **This release:** 3.84 bpw + mrfakename edit | yes | **0.0784** | **92.0%** | **1.463** | **98 / 2 / 0** |
+| LakyFx 3.5 bpw EXL3, unedited | no | 0.0872 | 91.2% | 1.517 | not run |
+| LakyFx 3.5 bpw + mrfakename edit | yes | 0.0937 | 90.8% | 1.620 | 99 / 1 / 0 |
+| LakyFx 3.5 bpw + heretic edit | yes | 0.1002 | 90.8% | 1.746 | 93 / 7 / 0 |
+| Our 3.84 bpw + Keys overlay | yes | 0.1111 | 90.7% | 1.953 | 95 / 5 / 0 |
+| LakyFx 3.5 bpw + Keys overlay | yes | 0.1225 | 89.7% | 2.119 | 93 / 7 / 0 |
+| LakyFx 3.5 bpw + Mia's Keys K5 | yes | 0.1234 | 89.6% | 2.097 | not run |
+| LibertAIDAI 3.5 bpw + Keys overlay | yes | 0.1268 | 90.1% | 2.031 | 94 / 5 / 1 |
+
+- Lower KL than the unedited 3.5 bpw quant on 59 of 65 cuts (paired mean 0.0088 lower, 95% CI 0.0035 to 0.0131).
+- The same mrfakename edit scores 0.0937 on the 3.5 bpw base and 0.0784 on our 3.84 bpw mix.
+- Keys overlays cost the most. On the LakyFx base, Mia's Keys K5 added 0.036 KL and the 1017 Keys
+  sidecar that Mia's TP4 recipe grafts with `ABLIT=1` added 0.035; mrfakename's edit added 0.0065.
+
+KL is mean per-token KL(official ‖ candidate) against the published official-model logits
+([brandonmusic/DeepSeek-V4.1-Flash-1017-Teacher-Logits](https://huggingface.co/brandonmusic/DeepSeek-V4.1-Flash-1017-Teacher-Logits)):
+65 cuts of 2,048 tokens, 133,120 positions, balanced across agentic, chat, code, SWE, math, science, legal, multilingual,
+long-context, safety and pretraining text. Every row is the full served package on this same panel; KL from other
+harnesses (other position sets, or quantized modules swapped into the reference model) is on a different scale. Data:
+[fidelity.csv](benchmarks/v1/fidelity.csv).
+
+### Task quality
+
+<p align="center"><img src="docs/assets/chart-quality.svg" width="100%" alt="Quality and refusals. GPQA-Diamond 90.5% against DeepSeek's 90.9% at max effort, AIME 2025 97.5%, IFEval 88.7% against the official API's 89.8%, LiveCodeBench v6 88.0%, MMLU-Pro 88.0%. 0 of 100 harmful prompts refused, 97 of 100 complied per HarmBench's classifier, 0 of 250 XSTest safe prompts fully refused with 61 partial" /></p>
+
+| Suite | Setting | Score |
+| --- | --- | ---: |
+| GPQA-Diamond ([EvalScope](https://github.com/modelscope/evalscope)) | 198 questions × 8 repeats, thinking on (effort 50), temperature 1, top_k 20, 32K cap | **90.5%** (1,434 of 1,584) |
+| AIME 2025 | 30 problems × 4 repeats, thinking on (effort 50), temperature 1, 32K cap, rule-checked answers | **97.5%** (117 of 120) |
+| IFEval | 541 prompts, greedy, thinking off, 2,048-token cap; prompt-level strict (official API, same settings: 89.8%) | **88.7%** (480 of 541) |
+| LiveCodeBench v6 | 175 problems, one pass, thinking on (effort 50), temperature 1, 32K cap | **88.0%** (154 of 175) |
+| MMLU-Pro | 500-item stratified subset, thinking on (effort 50), temperature 1, 32K cap | **88.0%** (440 of 500) |
+
+Quality runs used full-vocabulary sampling (top_k 0) except GPQA-Diamond (top_k 20, the serving default). GPQA ran mostly on engine `7d5b4d8` (same greedy replies) and AIME 2025 on `17800d4`; the rest on `14803a3`.
+
+### Refusals: HarmBench and XSTest
+
+| This release | Answered | Partial | Refused |
+| --- | ---: | ---: | ---: |
+| HarmBench harmful, chat (100) | 98 | 2 | 0 |
+| HarmBench harmful, thinking (50) | 18 | 31 | 1 |
+| XSTest safe, chat (50) | 49 | 1 | 0 |
+| XSTest safe, thinking (25) | 18 | 6 | 1 |
+
+100 HarmBench standard behaviors (stratified, copyright excluded) and 50 XSTest safe prompts, greedy, through the API.
+Chat runs thinking off with 768 output tokens (50 of the 100 harmful chat replies reached that cap); thinking runs the first 50 harmful and 25 safe prompts with 3,072
+tokens, and 35 of the 50 harmful thinking replies hit that cap, which is where the partials come from. Answers are
+graded answered, partial or refused with a fixed rubric plus a keyword screen. Every arm:
+[refusal.csv](benchmarks/v1/refusal.csv).
+
+Independent checks on 2 November 2026:
+
+- **HarmBench's own classifier** (`cais/HarmBench-Llama-2-13b-cls`) rates 97 of the same 100 chat answers as complied.
+- **All 250 XSTest safe prompts:** 0 fully refused and 61 (24.4%) partially refused, graded by a local
+  Qwen2.5-7B-Instruct with the published three-way rubric. 55 of the 61 are nonsense-premise prompts, where
+  XSTest's own rubric counts rejecting the premise as compliance; the other seven prompt types had 6 partials in 175.
+
+Data: [quality.csv](benchmarks/v1.1/quality.csv).
+
+## How prefill got here
+
+Every step passed the same parity check: 8 long and 12 short greedy replies matched the reference in text and reasoning. Data: [development.csv](benchmarks/dev/development.csv).
+
+| Engine | Change | 4K | 8K | 16K | 32K |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `ee903f5` | Starting point: 2,447–2,480 tok/s across 4K–32K | | | | |
+| `7dd3526` | Owned-row prefill: each rank computes its third of the prompt rows | 2,935 | 3,010 | 3,027 | 3,023 |
+| `46ae23c` | Owned rows extended to more projections and the compressor | 2,983 | 3,083 | 3,066 | 3,055 |
+| `93d0b4c` | Direct all-gathers into place | 3,043 | 3,111 | 3,103 | 3,077 |
+| `14803a3` | v1.1: 1.2.8 port, 8K-row windows, shared-expert split, prompt aliasing | **3,560** | **3,708** | **3,811** | **3,833** |
+
+<p align="center"><img src="docs/assets/chart-prefill-climb.svg" width="100%" alt="Waterfall chart of 32K prefill through the 1.2.8 port: 3,011 tok/s with port flags off, then +131, +329, +54, +56, +104, +35 and +113 to 3,833 tok/s in the v1.1 release, +27%" /></p>
+
+<details>
+<summary><b>The 1.2.8 port step by step (32K)</b></summary>
+
+An engineering progression, not isolated A/B tests: KV pool sizes changed between steps (10M early, 8M at the end).
+
+| Step | 32K tok/s |
+| --- | ---: |
+| Port flags off, matched baseline | 3,011 |
+| Engram read-ahead, ragged experts and masked attention (`AE`, `W`, `K`) | 3,142 |
+| All 1.2.8 flags, 4K logical rows, 2,048-row physical GEMMs for exact output | 3,471 |
+| 6K logical rows | 3,525 |
+| 8K logical rows | 3,581 |
+| Ragged expert kernel on the shared range, plus prompt aliasing | 3,685 |
+| Exact shared-expert partition (`c60fe1b`) | 3,720 |
+| v1.1 release suite (`14803a3`, all cores) | **3,833** |
+
+</details>
+
+<details>
+<summary><b>Every prefill flag and what it does</b></summary>
+
+| Piece | Flag | Origin | What it does |
+| --- | --- | --- | --- |
+| Owned-row prefill | `TF_DS_PREFILL_OWNED` | ChimeraWerks | Each rank computes a third of the prompt rows and shares owner rows with rank-ordered FP32 accumulation (+20–22%) |
+| Direct all-gathers | `TF_DS_DIRECT_GATHER` | ChimeraWerks | Owned rows gather straight into their destination (+0.7–2.0%) |
+| Shared-expert split | `TF_DS_PREFILL_SHARED_SPLIT` | ChimeraWerks | Exact bitmap partition of shared-expert prompt work across ranks |
+| Prompt scratch aliasing | `TF_DS_PROMPT_ALIAS` | ChimeraWerks | Prefill buffers share memory: each follower's prompt arena shrinks by 5.44 GB |
+| 8K logical windows | `TF_DS_PREFILL_AC`, `TF_DS_PREFILL_COMPUTE_ROWS=8192` | LakyFx flag, ChimeraWerks window | 8,192-row prompt chunks with physical GEMMs kept in 2,048-row slices so output stays exact |
+| Owned work in more ops | `TF_DS_PREFILL_D` / `E` / `F` | LakyFx 1.2.8 | Extends per-rank row ownership |
+| Masked attention | `TF_DS_PREFILL_K` | LakyFx 1.2.8 | Prompt attention skips masked blocks |
+| Ragged expert kernel | `TF_DS_PREFILL_W` | LakyFx 1.2.8 | Expert GEMMs over ragged token groups |
+| Engram read-ahead | `TF_DS_PREFILL_AE` | LakyFx 1.2.8 | Reads the next chunk's Engram rows while the current chunk computes |
+| Bounded scratch | `TF_DS_PREFILL_AF` | LakyFx 1.2.8 | Bounds prompt scratch memory |
+| Layer slices (v1.2, not in the numbers above) | `TF_DS_PREFILL_SLICE=5` | ChimeraWerks, after Mia's patch 0052 | A prompt chunk runs five layers at a time, with a decode round between slices |
+
+</details>
+
+## Repeated and shared prompts
+
+- **NVMe spill.** Prompt states pushed out of the 3 GiB in-memory cache go to a 256 GiB disk tier on the head. A
+  13,908-token prompt took 4.47 s cold, **61 ms** when resent after 480 other prompts had evicted it, and 1.41 s after
+  an engine restart. With spill on, replies matched 12/12 and 32K prefill measured 3,713 tok/s.
+- **Prefix wait.** Requests that share a long prefix wait for the in-flight prefill instead of recomputing it: eight
+  requests on a new 17K prompt went from 65.7 s to 14.2 s for the last first token.
+
+Data: [development.csv](benchmarks/dev/development.csv).
+
+## How TP3 splits the model
+
+One TensorFold rank per GB10. Every layer's attention heads, expert channels and vocabulary are split three ways: 64
+attention heads are padded to 72 so each rank gets 24, and the vocabulary is padded from 129,280 to 129,408 so each rank
+holds 43,136 slots. Padded heads contribute nothing and padded token IDs are masked for both target and draft sampling.
+Each rank file is about 93 GB, so the model needs three 128 GB nodes. The Sparks are cabled pairwise over RoCE
+([topology](docs/topology.md)); the head (rank 0) also runs the API, the sampler and the spill tier.
 
 ## What this build adds
 
