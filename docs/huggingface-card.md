@@ -20,7 +20,7 @@ tags:
 
 # DeepSeek V4.1 Flash on 3× DGX Spark: 3,816 tok/s prefill, 124 tok/s code decode
 
-Abliterated EXL3 weights of DeepSeek-V4.1-Flash-1017. **[Serving recipe on GitHub](https://github.com/ChimeraWerks/DeepSeek-V4.1-Flash-1017-3x-DGX-Spark-TP3-TensorFold-abliterated)**
+Uncensored, abliterated EXL3 weights of DeepSeek-V4.1-Flash-1017. **[Serving recipe on GitHub](https://github.com/ChimeraWerks/DeepSeek-V4.1-Flash-1017-3x-DGX-Spark-TP3-TensorFold-abliterated)**
 
 <p align="center">
   <img src="assets/scorecard.png" width="100%" alt="DeepSeek V4.1 Flash abliterated on 3x DGX Spark, 3.84 bpw EXL3, with a glowing mesh whale. 3,816 tok/s prefill at a 32K prompt, 82 tok/s prose decode and 124 tok/s code decode at 1 request, 270 tok/s combined at 16 requests, 1M token context with an 8M KV pool." />
