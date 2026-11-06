@@ -11,54 +11,30 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "docs/assets"
 FONT = "Inter, 'SF Pro Display', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif"
-INK, SOFT, MUTED, FAINT, GRID = "#F4F5FF", "#C9CEEA", "#959CC4", "#5F6790", "#1A2149"
-CORAL, VIOLET, BLUE, CYAN = "#F7936F", "#B86CEC", "#5E8FF0", "#6FD3F7"
-SLATE, SLATE_HI = "#2B3360", "#3D477D"
+INK, SOFT, MUTED, FAINT, GRID = "#FFF4E6", "#E9D8C6", "#CDB7A2", "#A98F7A", "#4F3627"
+GOLD, EMBER, ROSE, CREAM = "#FFC83D", "#FF7A1A", "#FF4F7B", "#FFF1E0"
+CORAL, VIOLET, BLUE = EMBER, ROSE, GOLD
+SLATE, SLATE_HI = "#4A3325", "#6B4A35"
+AXIS, DOT = "#6B4A35", "#120804"
 
-DEFS = """<defs>
-  <linearGradient id="bg" x1="0" y1="0" x2="0.35" y2="1"><stop offset="0" stop-color="#0A1033"/><stop offset="1" stop-color="#03050F"/></linearGradient>
-  <radialGradient id="nebula" cx="0.88" cy="0.0" r="0.75"><stop offset="0" stop-color="#8A55E6" stop-opacity="0.30"/><stop offset="0.55" stop-color="#4B3BB8" stop-opacity="0.07"/><stop offset="1" stop-color="#4B3BB8" stop-opacity="0"/></radialGradient>
-  <radialGradient id="ember" cx="0.0" cy="1.0" r="0.65"><stop offset="0" stop-color="#F7936F" stop-opacity="0.15"/><stop offset="1" stop-color="#F7936F" stop-opacity="0"/></radialGradient>
-  <linearGradient id="fold" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#F7936F"/><stop offset="0.5" stop-color="#B86CEC"/><stop offset="1" stop-color="#5E8FF0"/></linearGradient>
-  <linearGradient id="foldv" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#5E8FF0"/><stop offset="0.55" stop-color="#B86CEC"/><stop offset="1" stop-color="#F7936F"/></linearGradient>
-  <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#B86CEC" stop-opacity="0.30"/><stop offset="1" stop-color="#5E8FF0" stop-opacity="0"/></linearGradient>
-  <linearGradient id="meshfade" x1="1" y1="0" x2="0.35" y2="0.8"><stop offset="0" stop-color="#FFFFFF" stop-opacity="1"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></linearGradient>
-  <mask id="meshmask"><rect width="100%" height="100%" fill="url(#meshfade)"/></mask>
+DEFS = f"""<defs>
+  <linearGradient id="fold" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="{GOLD}"/><stop offset="0.55" stop-color="{EMBER}"/><stop offset="1" stop-color="{ROSE}"/></linearGradient>
+  <linearGradient id="foldv" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="{ROSE}"/><stop offset="0.55" stop-color="{EMBER}"/><stop offset="1" stop-color="{GOLD}"/></linearGradient>
+  <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="{EMBER}" stop-opacity="0.30"/><stop offset="1" stop-color="{EMBER}" stop-opacity="0"/></linearGradient>
   <filter id="glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="7"/></filter>
   <filter id="halo" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="3.5"/></filter>
 </defs>"""
 
 
-def mesh(w, h, seed):
-    """A faint triangulated mesh in the top-right corner: the TensorFold whale's skin, as texture."""
-    rng = random.Random(seed)
-    cols, rows, cw, rh = 9, 5, 64, 58
-    x0 = w - cols * cw + 20
-    pts = [[(x0 + c * cw + rng.uniform(-18, 18), -10 + r * rh + rng.uniform(-14, 14)) for c in range(cols + 1)]
-           for r in range(rows + 1)]
-    lines, nodes = [], []
-    for r in range(rows + 1):
-        for c in range(cols + 1):
-            x, y = pts[r][c]
-            for dr, dc in ((0, 1), (1, 0), (1, 1)):
-                if r + dr <= rows and c + dc <= cols:
-                    a, b = pts[r + dr][c + dc]
-                    lines.append(f"M{x:.0f} {y:.0f}L{a:.0f} {b:.0f}")
-            nodes.append(f'<circle cx="{x:.0f}" cy="{y:.0f}" r="{rng.choice((1.1, 1.4, 2.0))}"/>')
-    return (f'<g mask="url(#meshmask)" opacity="0.5"><path d="{" ".join(lines)}" stroke="#7F8CE8" stroke-opacity="0.22" '
-            f'stroke-width="0.8" fill="none"/><g fill="#C9B6F2" fill-opacity="0.55">{"".join(nodes)}</g></g>')
-
-
-def card(w, h, body, kicker, title, subtitle, stat, stat_label, seed):
+def card(w, h, body, kicker, title, subtitle, stat, stat_label):
+    art = base64.b64encode((OUT / "chart-texture.jpg").read_bytes()).decode()
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}" height="{h}" font-family="{FONT}">
 {DEFS}
-<rect width="{w}" height="{h}" rx="22" fill="url(#bg)"/>
-<rect width="{w}" height="{h}" rx="22" fill="url(#nebula)"/>
-<rect width="{w}" height="{h}" rx="22" fill="url(#ember)"/>
-{mesh(w, h, seed)}
-<rect x="0.5" y="0.5" width="{w - 1}" height="{h - 1}" rx="22" fill="none" stroke="#2A3366"/>
+<clipPath id="round"><rect width="{w}" height="{h}" rx="22"/></clipPath>
+<g clip-path="url(#round)"><image href="data:image/jpeg;base64,{art}" width="{w}" height="{h}" preserveAspectRatio="xMidYMid slice"/><rect width="{w}" height="{h}" fill="#0A0503" fill-opacity="0.32"/></g>
+<rect x="0.5" y="0.5" width="{w - 1}" height="{h - 1}" rx="22" fill="none" stroke="{EMBER}" stroke-opacity="0.55"/>
 <rect x="44" y="34" width="28" height="3" rx="1.5" fill="url(#fold)"/>
-<text x="80" y="38" fill="{VIOLET}" font-size="12" font-weight="700" letter-spacing="2">{kicker}</text>
+<text x="80" y="38" fill="{GOLD}" font-size="12" font-weight="700" letter-spacing="2">{kicker}</text>
 <text x="44" y="74" fill="{INK}" font-size="28" font-weight="800" letter-spacing="-0.6">{title}</text>
 <text x="44" y="100" fill="{MUTED}" font-size="14">{subtitle}</text>
 <text x="{w - 44}" y="78" fill="url(#fold)" font-size="50" font-weight="800" letter-spacing="-1.5" text-anchor="end">{stat}</text>
@@ -105,7 +81,7 @@ def panel(x0, x1, y0, y1, ticks, top, sx, xticks, title, xlabel, series, end_fmt
     for x, label in xticks:
         p.append(text(sx(x), y0 + 22, label, 12, MUTED, "middle", 600))
     p.append(text((x0 + x1) / 2, y0 + 44, xlabel, 12, FAINT, "middle"))
-    p.append(f'<line x1="{x0}" x2="{x1}" y1="{y0}" y2="{y0}" stroke="#2A3366"/>')
+    p.append(f'<line x1="{x0}" x2="{x1}" y1="{y0}" y2="{y0}" stroke="{AXIS}"/>')
     ends = []
     for name, color, dash, pts, hero in series:
         line = " ".join(f"{sx(x):.1f},{sy(v):.1f}" for x, v in pts)
@@ -115,7 +91,7 @@ def panel(x0, x1, y0, y1, ticks, top, sx, xticks, title, xlabel, series, end_fmt
         p.append(f'<polyline points="{line}" fill="none" stroke="{color}" stroke-width="7" opacity="0.3" filter="url(#halo)"{dash_attr}/>')
         p.append(f'<polyline points="{line}" fill="none" stroke="{color}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"{dash_attr}/>')
         for x, v in pts:
-            p.append(f'<circle cx="{sx(x):.1f}" cy="{sy(v):.1f}" r="4" fill="#060A1E" stroke="{color}" stroke-width="2"/>')
+            p.append(f'<circle cx="{sx(x):.1f}" cy="{sy(v):.1f}" r="4" fill="{DOT}" stroke="{color}" stroke-width="2"/>')
         ends.append([sy(pts[-1][1]), pts[-1][1], color, sx(pts[-1][0])])
     ends.sort()
     for i in range(1, len(ends)):
@@ -166,7 +142,7 @@ def prefill(summary):
         p.append(text(sb(i) - 9, st(s) - 9, f"{s:.1f}", 12, SOFT, "end", 700))
     return card(w, h, "\n".join(p), "PREFILL", f"{rows[0]['prefillTps']:,.0f}–{peak['prefillTps']:,.0f} tok/s from 4K to 128K tokens",
                 f"Cold prompts, one request at a time; a 128K prompt reaches its first token in {rows[-1]['ttftMs'] / 1000:.0f} s",
-                f"{peak['prefillTps']:,.0f}", f"TOK/S PEAK · {peak['targetTokens'] // 1024}K PROMPT", 11)
+                f"{peak['prefillTps']:,.0f}", f"TOK/S PEAK · {peak['targetTokens'] // 1024}K PROMPT")
 
 
 CLIMB = [("Port flags", "off", 3011), ("Read-ahead,", "ragged, masked", 3142), ("All 1.2.8 flags,", "4K rows", 3471),
@@ -203,16 +179,16 @@ def climb():
         p.append(text(cx, y0 + 26, a, 12, INK if last else SOFT, "middle", 700 if last else 600))
         p.append(text(cx, y0 + 42, b, 12, INK if last else FAINT, "middle", 600 if last else 400))
         prev = v
-    p.append(f'<line x1="{x0}" x2="{x1}" y1="{y0}" y2="{y0}" stroke="#2A3366"/>')
+    p.append(f'<line x1="{x0}" x2="{x1}" y1="{y0}" y2="{y0}" stroke="{AXIS}"/>')
     p.append(text(x0 - 14, y0 + 4, "2,900", 12, FAINT, "end"))
     p.append(text(x0, y0 + 78, "Axis starts at 2,900 tok/s. Every step matched the reference replies (8 long, 12 short greedy checks).", 12, FAINT))
     gain = (CLIMB[-1][2] / CLIMB[0][2] - 1) * 100
     return card(w, h, "\n".join(p), "PREFILL PORT", "Seven steps, +822 tok/s at 32K",
                 "How the LakyFx 1.2.8 prefill port reached three ranks, step by step on the same weights",
-                f"+{gain:.0f}%", "32K PREFILL", 23)
+                f"+{gain:.0f}%", "32K PREFILL")
 
 
-DECODE = [("prose", "Prose", "#D66F4E"), ("code", "Code", "#358FBF")]
+DECODE = [("prose", "Prose", EMBER), ("code", "Code", GOLD)]
 LABELED = (1, 2, 4, 8, 12, 16)
 
 
@@ -239,7 +215,7 @@ def decode(summary):
     single = agg("greedy", "code")[1]
     sixteen = agg("greedy", "prose")[16]
     return card(w, h, "\n".join(p), "DECODE", f"Up to {single:.0f} tok/s for one request, {sixteen:.0f} across sixteen",
-                "All requests combined, 400 output tokens per request", f"{sixteen:.0f}", "TOK/S · 16 STREAMS", 37)
+                "All requests combined, 400 output tokens per request", f"{sixteen:.0f}", "TOK/S · 16 STREAMS")
 
 
 NAMES = {"This release": ("This release", "3.84 bpw mix + mrfakename edit"),
@@ -276,20 +252,20 @@ def kl():
         name, sub = NAMES[r["weights"]]
         cy = y + 10
         if ours:
-            p.append(f'<rect x="20" y="{y - 13}" width="{w - 40}" height="{pitch - 8}" rx="12" fill="#B86CEC" fill-opacity="0.08" stroke="#B86CEC" stroke-opacity="0.25"/>')
+            p.append(f'<rect x="20" y="{y - 13}" width="{w - 40}" height="{pitch - 8}" rx="12" fill="{EMBER}" fill-opacity="0.10" stroke="{EMBER}" stroke-opacity="0.35"/>')
         p.append(text(lx, cy - 1, name, 15 if ours else 14, INK if ours else SOFT, "end", 800 if ours else 600))
         p.append(text(lx, cy + 15, sub, 11.5, CORAL if ours else FAINT, "end", 600 if ours else 400))
         color = "url(#fold)" if ours else (SLATE_HI if plain else SLATE)
         if ours:
             p.append(hbar(x0, cy - 6, sx(v) - x0, 12, color, extra=' opacity="0.7" filter="url(#glow)"'))
         p.append(hbar(x0, cy - 5 if ours else cy - 3, sx(v) - x0, 10 if ours else 6, color, 5 if ours else 3))
-        p.append(f'<circle cx="{sx(v):.1f}" cy="{cy:.1f}" r="{8 if ours else 5}" fill="{"#FFFFFF" if ours else ("#060A1E" if not plain else SOFT)}" '
-                 f'stroke="{VIOLET if ours else MUTED}" stroke-width="2.5"/>')
+        p.append(f'<circle cx="{sx(v):.1f}" cy="{cy:.1f}" r="{8 if ours else 5}" fill="{"#FFFFFF" if ours else (DOT if not plain else SOFT)}" '
+                 f'stroke="{EMBER if ours else MUTED}" stroke-width="2.5"/>')
         p.append(text(sx(v) + 16, cy + 5, f"{v:.4f}", 18 if ours else 13.5, INK if ours else MUTED, "start", 800 if ours else 600))
         y += pitch
     return card(w, h, "\n".join(p), "FIDELITY", "Abliterated, and still closest to the official model",
                 "The only abliterated pack below an unedited quant · 65 × 2,048-token panel, 133,120 positions",
-                "0.0784", "MEAN KL · LOWEST SCORED", 53)
+                "0.0784", "MEAN KL · LOWEST SCORED")
 
 
 def quality_rows():
@@ -313,10 +289,10 @@ def quality():
         v = float(r["score_percent"])
         p.append(text(x0, y + 4, name, 15, INK, weight=700))
         p.append(text(x0, y + 21, sub, 11.5, FAINT))
-        p.append(hbar(sx(0), y - 10, sx(100) - sx(0), 26, "#141B40", 8))
+        p.append(hbar(sx(0), y - 10, sx(100) - sx(0), 26, "#2A1C15", 8))
         p.append(hbar(sx(0), y - 10, sx(v) - sx(0), 26, "url(#fold)", 8, ' opacity="0.55" filter="url(#glow)"'))
         p.append(hbar(sx(0), y - 10, sx(v) - sx(0), 26, "url(#fold)", 8))
-        p.append(text(sx(v) - 10, y + 9, f"{v:.1f}%", 15, "#0A0F2A", "end", 800))
+        p.append(text(sx(v) - 10, y + 9, f"{v:.1f}%", 15, "#1A0E08", "end", 800))
         if r["reference_percent"]:
             ref = float(r["reference_percent"])
             p.append(f'<line x1="{sx(ref):.1f}" x2="{sx(ref):.1f}" y1="{y - 18}" y2="{y + 24}" stroke="{INK}" stroke-width="2"/>')
@@ -340,10 +316,9 @@ def quality():
         ty += 104
     return card(w, h, "\n".join(p), "QUALITY", "Refusals removed, scores stay high",
                 "Thinking evals at effort 50, temperature 1; IFEval and refusal screens greedy through the API",
-                "90.5%", "GPQA-DIAMOND · 1,584 ANSWERS", 71)
+                "90.5%", "GPQA-DIAMOND · 1,584 ANSWERS")
 
 
-GOLD, EMBER, ROSE, CREAM = "#FFC83D", "#FF7A1A", "#FF4F7B", "#FFF1E0"
 TITLE_INK, LABEL_INK, RULE = "#F9B54C", "#E9D8C6", "#6B4A35"
 LOADS = (1, 2, 4, 8, 12, 16)
 GRID_LOADS = (1, 4, 8, 16)
@@ -496,11 +471,35 @@ def scorecard(summary):
 """
 
 
+def social_preview(summary):
+    """The 2:1 link preview: the whale plate with the headline speeds in its rock band."""
+    w, h = 1280, 640
+    art = base64.b64encode((OUT / "social-art.jpg").read_bytes()).decode()
+    rate = {(r["promptType"], r["mode"], r["concurrency"]): r["aggregateDecodeTps"] for r in summary["decode"]}
+    stats = ((f"{max(r['prefillTps'] for r in summary['prefill']):,.0f}", "TOK/S PREFILL"), (f"{rate['prose', 'greedy', 1]:.0f}", "TOK/S PROSE"),
+             (f"{rate['code', 'greedy', 1]:.0f}", "TOK/S CODE"), (f"{rate['prose', 'greedy', 16]:.0f}", "TOK/S AT 16 REQUESTS"), ("1M", "CONTEXT"))
+    p = [f'<image href="data:image/jpeg;base64,{art}" width="{w}" height="{h}"/>']
+    step = w / len(stats)
+    for i, (value, label) in enumerate(stats):
+        x = step * (i + 0.5)
+        if i:
+            p.append(f'<line x1="{x - step / 2:.1f}" x2="{x - step / 2:.1f}" y1="462" y2="596" stroke="{TITLE_INK}" stroke-opacity="0.55"/>')
+        p.append(f'<text x="{x:.1f}" y="540" fill="url(#heat)" font-size="84" font-weight="800" letter-spacing="-2" text-anchor="middle" opacity="0.4" filter="url(#numglow)">{value}</text>')
+        p.append(text(x, 540, value, 84, "url(#heat)", "middle", 800, ' letter-spacing="-2"'))
+        p.append(text(x, 580, label, 18, CREAM, "middle", 700, ' letter-spacing="1.4"'))
+    defs = SCORE_DEFS.replace('x2="1330"', 'x2="1210"').replace('<rect width="1402" height="1066" rx="26"/>', f'<rect width="{w}" height="{h}"/>')
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}" height="{h}" font-family="{FONT}">
+{defs}
+{chr(10).join(p)}
+</svg>
+"""
+
+
 def build():
     summary = json.loads((ROOT / "benchmarks/v1.2/summary.json").read_text())
     return {"chart-prefill.svg": prefill(summary), "chart-prefill-climb.svg": climb(),
             "chart-decode.svg": decode(summary), "chart-kl.svg": kl(), "chart-quality.svg": quality(),
-            "scorecard.svg": scorecard(summary)}
+            "scorecard.svg": scorecard(summary), "social-preview.svg": social_preview(summary)}
 
 
 def main():

@@ -59,6 +59,14 @@ def test_scorecard_decode_matches_both_cards():
             if r["promptType"] != "structured" and r["concurrency"] in charts.LOADS:
                 assert charts.tps(r["aggregateDecodeTps"]) in card
 
+def test_social_preview_shows_the_headlines():
+    assert {"3,816", "82", "124", "270", "1M"} <= labels(charts.social_preview(SUMMARY))
+
+def test_charts_carry_no_old_palette():
+    for name, svg in charts.build().items():
+        for color in ("#B86CEC", "#5E8FF0", "#8A55E6", "#C77DF0", "#060A1E", "#2A3366"):
+            assert color not in svg, (name, color)
+
 def test_committed_charts_are_current():
     for name, svg in charts.build().items():
         assert (charts.OUT / name).read_text() == svg, name
