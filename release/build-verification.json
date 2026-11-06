@@ -69,7 +69,7 @@
     "source": "public engine tree",
     "crossbuilds_passed": 2
   },
-  "qualification": "CPU/source/build comparison only; not GPU or end-to-end serving acceptance. The production stage hashes are the hashes checked on each Spark when the binaries were staged.",
+  "qualification": "CPU/source/build comparison only; not GPU or end-to-end serving acceptance. The production stage hashes were read from the staged binaries on all three Sparks on 2026-11-06.",
   "source_delta": {
     "base_commit": "30a9647",
     "path": "engine/tensorfold/zig/src/server/metrics.zig",
