@@ -20,26 +20,40 @@ tags:
 
 # DeepSeek V4.1 Flash on 3× DGX Spark: 3,816 tok/s prefill, 124 tok/s code decode
 
-3.84 bpw EXL3 abliterated weights of DeepSeek-V4.1-Flash-1017 for three DGX Sparks. Engine, deploy scripts and API:
-**[GitHub recipe](https://github.com/ChimeraWerks/DeepSeek-V4.1-Flash-1017-3x-DGX-Spark-TP3-TensorFold-abliterated)**
+Abliterated EXL3 weights of DeepSeek-V4.1-Flash-1017. **[Serving recipe on GitHub](https://github.com/ChimeraWerks/DeepSeek-V4.1-Flash-1017-3x-DGX-Spark-TP3-TensorFold-abliterated)**
 
 <p align="center">
   <img src="assets/scorecard.png" width="100%" alt="DeepSeek V4.1 Flash abliterated on 3x DGX Spark, 3.84 bpw EXL3, with a glowing mesh whale. 3,816 tok/s prefill at a 32K prompt, 124 tok/s code decode and 82 tok/s prose decode at 1 request, 270 tok/s combined at 16 requests, 1M token context with an 8M KV pool." />
 </p>
 
-| | v1.2, measured 5 November 2026 |
+| Speed | | Quality | |
+| --- | ---: | --- | ---: |
+| Code decode, 1 request | **124 tok/s** | AIME 2025 | **97.5%** |
+| Prose decode, 1 request | **82 tok/s** | GPQA-Diamond | **90.5%** |
+| 16 requests, combined | **270 tok/s** | Standard set | **97.1%** |
+| Prefill, 32K prompt | **3,816 tok/s** | KL to official | **0.0784** |
+| First token, 128K prompt | **35 s** | HarmBench refusals | **0 of 100** |
+
+**3× DGX Spark** · TP3 · 3.84 bpw EXL3 · about 274 GB · 1M context configured
+
+<details>
+<summary><b>Full specs: v1.2, measured 5 November 2026</b></summary>
+
+| | |
 | --- | --- |
-| **Decode** | **124 tok/s** code and **82 tok/s** prose at 1 request; **270 tok/s** combined at 16 requests |
-| **Prefill** | **3,816 tok/s** at 32K; a 128K prompt reaches its first token in 35 s |
-| **Context** | 1,048,576 tokens configured; largest measured prompt 131,088 tokens |
-| **Hardware** | 3 × DGX Spark (GB10, 128 GB), TP3, every pair cabled directly over RoCE |
-| **Refusals** | 0 of 100 HarmBench prompts refused (98 answered, 2 partial); 0 of 250 XSTest safe prompts fully refused |
-| **Quality** | **97.1%** on the 755-item standard set; **97.5%** AIME 2025; **90.5%** GPQA-Diamond (1,434 of 1,584); 88.7% IFEval; 88.0% LiveCodeBench v6; 88.0% MMLU-Pro (500-item subset) |
-| **Fidelity** | Mean KL **0.0784** and 92.0% top-1 agreement with official logits; the lowest KL of the eight packs we scored |
-| **API** | Chat Completions, Responses and Messages routes, tool calls, enforced JSON schemas, 16 streams |
-| **Quantization** | EXL3, 3.8361 bpw over quantized linear layers (output head excluded, 6-bit) |
-| **Edit** | [mrfakename](https://huggingface.co/mrfakename/DeepSeek-V4.1-Flash-1017-abliterated)'s rank-2 refusal-removal edit, applied in FP32 and re-encoded at 6 bits |
-| **Size** | About 274 GB: 35 safetensors shards |
+| Decode | **124 tok/s** code and **82 tok/s** prose at 1 request; **270 tok/s** combined at 16 requests |
+| Prefill | **3,816 tok/s** at 32K; a 128K prompt reaches its first token in 35 s |
+| Context | 1,048,576 tokens configured; largest measured prompt 131,088 tokens |
+| Hardware | 3 × DGX Spark (GB10, 128 GB), TP3, every pair cabled directly over RoCE |
+| Refusals | 0 of 100 HarmBench prompts refused (98 answered, 2 partial); 0 of 250 XSTest safe prompts fully refused |
+| Quality | **97.1%** on the 755-item standard set; **97.5%** AIME 2025; **90.5%** GPQA-Diamond (1,434 of 1,584); 88.7% IFEval; 88.0% LiveCodeBench v6; 88.0% MMLU-Pro (500-item subset) |
+| Fidelity | Mean KL **0.0784** and 92.0% top-1 agreement with official logits; the lowest KL of the eight packs we scored |
+| API | Chat Completions, Responses and Messages routes, tool calls, enforced JSON schemas, 16 streams |
+| Quantization | EXL3, 3.8361 bpw over quantized linear layers (output head excluded, 6-bit) |
+| Edit | [mrfakename](https://huggingface.co/mrfakename/DeepSeek-V4.1-Flash-1017-abliterated)'s rank-2 refusal-removal edit, applied in FP32 and re-encoded at 6 bits |
+| Size | About 274 GB: 35 safetensors shards |
+
+</details>
 
 ## Performance
 
