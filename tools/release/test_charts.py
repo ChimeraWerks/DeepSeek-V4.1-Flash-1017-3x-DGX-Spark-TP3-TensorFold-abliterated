@@ -38,26 +38,28 @@ def test_scorecard_lists_speed_clocks_and_quality():
     assert f"{max(r['prefillTps'] for r in SUMMARY['prefill']):,.0f}" in found
     for r in SUMMARY["decode"]:
         if r["promptType"] != "structured" and r["concurrency"] in charts.GRID_LOADS:
-            assert charts.tps(r["aggregateDecodeTps"]) in found
-    for r in charts.clock_rows():
-        assert f"{float(r['prefill_32k_tps']):,.0f}" in found
-        assert f"{float(r['peak_soc_c']):.1f} °C" in found
+            assert charts.whole(r["aggregateDecodeTps"]) in found
+    assert not {"82.0", "124.4", "270.3"} & found
+    assert {"3,816", "3,711", "94.1 °C", "86.2 °C", "85 °C", "78 °C", "58 W", "41 W"} <= found
+    assert not {"3,764", "3,734"} & found
     assert {"97.1%", "97.5%", "90.5%", "0 of 100"} <= found
 
 def test_clock_table_is_on_both_cards():
     for path in ("README.md", "docs/huggingface-card.md"):
         card = (charts.ROOT / path).read_text()
-        for r in charts.clock_rows():
-            assert f"{float(r['prefill_32k_tps']):,.0f}" in card and f"{float(r['peak_soc_c']):.1f} °C" in card
+        assert "| Stock GPU | 3,816 |" in card and "| **2,300 MHz (production)** | 3,711 |" in card
+        assert "| 2,400 MHz |" not in card and "| 2,350 MHz |" not in card
 
 def test_scorecard_decode_matches_both_cards():
     cards = [(charts.ROOT / path).read_text() for path in ("README.md", "docs/huggingface-card.md")]
     for card in cards:
         for r in SUMMARY["prefill"]:
             assert f"{r['prefillTps']:,.0f}" in card
+        rows = [line for line in card.splitlines() if line.startswith(("| Prose,", "| Code,"))]
+        assert len(rows) == 8 and not any("." in line for line in rows)
         for r in SUMMARY["decode"]:
             if r["promptType"] != "structured" and r["concurrency"] in charts.LOADS:
-                assert charts.tps(r["aggregateDecodeTps"]) in card
+                assert charts.whole(r["aggregateDecodeTps"]) in card
 
 def test_social_preview_shows_the_headlines():
     assert {"3,816", "82", "124", "270", "1M"} <= labels(charts.social_preview(SUMMARY))

@@ -331,9 +331,9 @@ SCORE_DEFS = f"""<defs>
 </defs>"""
 
 
-def tps(v):
-    """One decimal, halves rounded up, so the card agrees with the benchmark tables."""
-    return f"{int(v * 10 + 0.5 + 1e-9) / 10:.1f}"
+def whole(v):
+    """Decode speeds are shown as whole tok/s; halves round up."""
+    return str(int(v + 0.5))
 
 
 def quality_score(suite):
@@ -347,9 +347,9 @@ def clock_rows():
 
 
 def heading(x, y, title, note=""):
-    out = text(x, y, title, 27, TITLE_INK, weight=800, extra=' letter-spacing="1.6"')
+    out = text(x, y, title, 30, TITLE_INK, weight=800, extra=' letter-spacing="1.6"')
     if note:
-        out += text(x + 34 + 21 * len(title), y - 1, note, 19, LABEL_INK, weight=500)
+        out += text(x + 30 + 22 * len(title), y - 1, note, 22, LABEL_INK, weight=500)
     return out
 
 
@@ -357,24 +357,24 @@ def rule(x0, x1, y, opacity=0.8):
     return f'<line x1="{x0}" x2="{x1}" y1="{y}" y2="{y}" stroke="{RULE}" stroke-opacity="{opacity}"/>'
 
 
-def graph(xs, y_bottom, y_top, lo, hi, ticks, xlabels, lines, tick_fmt=str, point_labels=False):
-    """A line graph plotted from data: recessive grid, 2.5px lines, round markers."""
+def graph(xs, y_bottom, y_top, lo, hi, ticks, xlabels, lines, point_labels=False):
+    """A line graph plotted from data: recessive grid, 3px lines, round markers."""
     sy = lambda v: y_bottom - (y_bottom - y_top) * (v - lo) / (hi - lo)
     p = []
     for t in ticks:
         p.append(f'<line x1="{xs[0] - 38}" x2="{xs[-1] + 38}" y1="{sy(t):.1f}" y2="{sy(t):.1f}" stroke="{CREAM}" stroke-opacity="{0.55 if t == lo else 0.16}"/>')
-        p.append(text(xs[0] - 48, sy(t) + 7, tick_fmt(t), 19, LABEL_INK, "end", 600))
+        p.append(text(xs[0] - 48, sy(t) + 8, t, 22, LABEL_INK, "end", 600))
     for x, label in zip(xs, xlabels):
         p.append(f'<line x1="{x}" x2="{x}" y1="{sy(hi):.1f}" y2="{y_bottom}" stroke="{CREAM}" stroke-opacity="0.10"/>')
         for i, part in enumerate(label.split("|")):
-            p.append(text(x, y_bottom + 26 + 20 * i, part, 18 if "|" in label else 20, CREAM, "middle", 600))
+            p.append(text(x, y_bottom + 27 + 22 * i, part, 20 if "|" in label else 23, CREAM, "middle", 600))
     for values, color, above in lines:
         points = " ".join(f"{x:.1f},{sy(v):.1f}" for x, v in zip(xs, values))
-        p.append(f'<polyline points="{points}" fill="none" stroke="{color}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>')
+        p.append(f'<polyline points="{points}" fill="none" stroke="{color}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>')
         for x, v in zip(xs, values):
-            p.append(f'<circle cx="{x:.1f}" cy="{sy(v):.1f}" r="6" fill="{color}" stroke="#120804" stroke-width="1.5"/>')
+            p.append(f'<circle cx="{x:.1f}" cy="{sy(v):.1f}" r="6.5" fill="{color}" stroke="#120804" stroke-width="1.5"/>')
             if point_labels:
-                p.append(text(x, sy(v) + (-13 if above else 27), f"{v:g}", 19, color, "middle", 800))
+                p.append(text(x, sy(v) + (-14 if above else 30), f"{v:g}", 22, color, "middle", 800))
     return "".join(p)
 
 
@@ -384,84 +384,85 @@ def scorecard(summary):
     art = base64.b64encode((OUT / "card-art.jpg").read_bytes()).decode()
     rate = {(r["promptType"], r["mode"], r["concurrency"]): r["aggregateDecodeTps"] for r in summary["decode"]}
     clocks = clock_rows()
-    with open(ROOT / "benchmarks/v1/fidelity.csv", newline="") as f:
-        ours = next(r for r in csv.DictReader(f) if r["weights"] == "This release")
     peak = max(r["prefillTps"] for r in summary["prefill"])
     p = [f'<image href="data:image/jpeg;base64,{art}" width="{w}" height="{h}"/>']
     # Headline stats.
-    stats = ((f"{peak:,.0f}", "TOK/S PREFILL AT 32K"), (f"{rate['prose', 'greedy', 1]:.0f}", "TOK/S PROSE DECODE"),
-             (f"{rate['code', 'greedy', 1]:.0f}", "TOK/S CODE DECODE"), (f"{rate['prose', 'greedy', 16]:.0f}", "TOK/S AT 16 REQUESTS"),
+    stats = ((f"{peak:,.0f}", "TOK/S PREFILL AT 32K"), (whole(rate["prose", "greedy", 1]), "TOK/S PROSE DECODE"),
+             (whole(rate["code", "greedy", 1]), "TOK/S CODE DECODE"), (whole(rate["prose", "greedy", 16]), "TOK/S AT 16 REQUESTS"),
              ("1M", "CONTEXT"))
     step = w / len(stats)
     for i, (value, label) in enumerate(stats):
         x = step * (i + 0.5)
         if i:
-            p.append(f'<line x1="{x - step / 2:.1f}" x2="{x - step / 2:.1f}" y1="338" y2="412" stroke="{TITLE_INK}" stroke-opacity="0.55"/>')
-        p.append(f'<text x="{x:.1f}" y="384" fill="url(#heat)" font-size="68" font-weight="800" letter-spacing="-1.5" text-anchor="middle" opacity="0.4" filter="url(#numglow)">{value}</text>')
-        p.append(text(x, 384, value, 68, "url(#heat)", "middle", 800, ' letter-spacing="-1.5"'))
-        p.append(text(x, 410, label, 17.5, CREAM, "middle", 700, ' letter-spacing="1.3"'))
+            p.append(f'<line x1="{x - step / 2:.1f}" x2="{x - step / 2:.1f}" y1="336" y2="416" stroke="{TITLE_INK}" stroke-opacity="0.55"/>')
+        p.append(f'<text x="{x:.1f}" y="388" fill="url(#heat)" font-size="76" font-weight="800" letter-spacing="-1.5" text-anchor="middle" opacity="0.4" filter="url(#numglow)">{value}</text>')
+        p.append(text(x, 388, value, 76, "url(#heat)", "middle", 800, ' letter-spacing="-1.5"'))
+        p.append(text(x, 416, label, 19, CREAM, "middle", 700, ' letter-spacing="0.8"'))
     # Decode table.
-    p.append(heading(40, 472, "DECODE", "combined tok/s"))
-    col = (328, 422, 516, 610)
+    p.append(heading(40, 476, "DECODE", "combined tok/s"))
+    col = (362, 446, 530, 610)
     for x, load in zip(col, GRID_LOADS):
-        p.append(text(x, 504, f"C{load}", 19, LABEL_INK, "end", 700))
-    p.append(rule(40, 610, 516))
+        p.append(text(x, 510, f"C{load}", 23, LABEL_INK, "end", 700))
+    p.append(rule(40, 610, 522))
     highlight = {("prose", "greedy", 1), ("prose", "greedy", 16), ("code", "greedy", 1)}
-    y = 546
+    y = 556
     for prompt, name in (("prose", "PROSE"), ("code", "CODE")):
-        p.append(text(40, y + 19, name, 22, TITLE_INK, weight=800, extra=' letter-spacing="1"'))
+        p.append(text(40, y + 22, name, 25, TITLE_INK, weight=800, extra=' letter-spacing="1"'))
         for mode, label in (("greedy", "Greedy"), ("think", "Thinking")):
-            p.append(text(148, y, label, 23, CREAM, weight=600))
+            p.append(text(150, y, label, 27, CREAM, weight=600))
             for x, load in zip(col, GRID_LOADS):
                 top = (prompt, mode, load) in highlight
-                p.append(text(x, y, tps(rate[prompt, mode, load]), 24, GOLD if top else CREAM, "end", 800))
-            y += 38
-        p.append(rule(40, 610, y - 24))
-        y += 10
+                p.append(text(x, y, whole(rate[prompt, mode, load]), 30, GOLD if top else CREAM, "end", 800))
+            y += 40
+        if prompt == "prose":
+            p.append(rule(40, 610, y - 25))
+        y += 8
     # Decode graph.
-    p.append(heading(684, 472, "DECODE", "tok/s"))
-    xs = (784, 896, 1008, 1120)
-    p.append(graph(xs, 672, 496, 0, 300, (0, 100, 200, 300), [f"C{n}" for n in GRID_LOADS],
+    p.append(heading(684, 476, "DECODE", "tok/s"))
+    xs = (780, 890, 1000, 1110)
+    p.append(graph(xs, 674, 500, 0, 300, (0, 100, 200, 300), [f"C{n}" for n in GRID_LOADS],
                    [([rate[prompt, mode, n] for n in GRID_LOADS], color, True) for prompt, mode, _, color in SERIES]))
     for i, (_, _, label, color) in enumerate(SERIES):
-        y = 532 + 34 * i
-        p.append(f'<line x1="1184" x2="1214" y1="{y - 6}" y2="{y - 6}" stroke="{color}" stroke-width="2.5"/><circle cx="1199" cy="{y - 6}" r="6" fill="{color}"/>')
-        p.append(text(1224, y, label, 18.5, CREAM, weight=600))
-    # Clocks table.
-    p.append(heading(38, 772, "CLOCKS", "production cap 2,300 MHz"))
-    heads = ((36, "GPU CAP", "start"), (226, "32K PREFILL", "end"), (322, "PEAK SOC", "end"), (408, "PEAK GPU", "end"), (494, "DECODE W", "end"))
-    for x, label, anchor in heads:
-        p.append(text(x, 808, label, 13.5, LABEL_INK, anchor, 700))
-    p.append(rule(36, 494, 820))
-    y = 858
-    for i, r in enumerate(clocks):
-        p.append(text(36, y, r["gpu_cap"], 22, CREAM, weight=600))
-        p.append(text(226, y, f"{float(r['prefill_32k_tps']):,.0f}", 23, GOLD if i == 0 else CREAM, "end", 800))
-        p.append(text(322, y, f"{float(r['peak_soc_c']):.1f} °C", 21, CREAM, "end", 600))
-        p.append(text(408, y, f"{float(r['peak_gpu_c']):.0f} °C", 21, CREAM, "end", 600))
-        p.append(text(494, y, f"{float(r['decode_gpu_w']):.0f} W", 21, CREAM, "end", 600))
-        p.append(rule(36, 494, y + 16))
+        y = 534 + 40 * i
+        p.append(f'<line x1="1166" x2="1194" y1="{y - 8}" y2="{y - 8}" stroke="{color}" stroke-width="3"/><circle cx="1180" cy="{y - 8}" r="6.5" fill="{color}"/>')
+        p.append(text(1204, y, label, 23, CREAM, weight=600))
+    # Clocks: stock against the production cap.
+    stock = clocks[0]
+    capped = next(r for r in clocks if r["gpu_cap"] == "2,300 MHz")
+    p.append(heading(38, 778, "CLOCKS"))
+    p.append(text(336, 822, "Stock GPU", 23, LABEL_INK, "end", 700))
+    p.append(text(488, 822, capped["gpu_cap"], 23, GOLD, "end", 800))
+    p.append(rule(38, 488, 836))
+    y = 874
+    facts = (("32K prefill", lambda r: f"{float(r['prefill_32k_tps']):,.0f}"), ("Peak SoC", lambda r: f"{float(r['peak_soc_c']):.1f} °C"),
+             ("Peak GPU", lambda r: f"{float(r['peak_gpu_c']):.0f} °C"), ("Decode power", lambda r: f"{float(r['decode_gpu_w']):.0f} W"))
+    for i, (label, fmt) in enumerate(facts):
+        p.append(text(38, y, label, 25, CREAM, weight=600))
+        p.append(text(336, y, fmt(stock), 28, CREAM, "end", 800))
+        p.append(text(488, y, fmt(capped), 28, CREAM, "end", 800))
+        if i < len(facts) - 1:
+            p.append(rule(38, 488, y + 15))
         y += 49
     # Temperature graph.
-    p.append(heading(552, 772, "TEMPERATURE"))
-    xs = (654, 750, 846, 942)
+    p.append(heading(552, 778, "TEMPERATURE", "°C"))
+    xs = (633, 728, 823, 918)
     names = ["Stock|GPU" if r["gpu_cap"].startswith("Stock") else r["gpu_cap"].replace(" MHz", "|MHz") for r in clocks]
-    p.append(graph(xs, 958, 800, 70, 100, (70, 80, 90, 100), names,
-                   [([float(r["peak_soc_c"]) for r in clocks], EMBER, True), ([float(r["peak_gpu_c"]) for r in clocks], CREAM, False)],
-                   lambda t: f"{t} °C", True))
-    for x, label, color in ((620, "Peak SoC", EMBER), (780, "Peak GPU", CREAM)):
-        p.append(f'<line x1="{x}" x2="{x + 30}" y1="1026" y2="1026" stroke="{color}" stroke-width="2.5"/><circle cx="{x + 15}" cy="1026" r="6" fill="{color}"/>')
-        p.append(text(x + 40, 1032, label, 18.5, CREAM, weight=600))
+    p.append(graph(xs, 952, 808, 70, 100, (70, 80, 90, 100), names,
+                   [([float(r["peak_soc_c"]) for r in clocks], EMBER, True), ([float(r["peak_gpu_c"]) for r in clocks], CREAM, False)], True))
+    for x, label, color in ((584, "Peak SoC", EMBER), (774, "Peak GPU", CREAM)):
+        p.append(f'<line x1="{x}" x2="{x + 28}" y1="1026" y2="1026" stroke="{color}" stroke-width="3"/><circle cx="{x + 14}" cy="1026" r="6.5" fill="{color}"/>')
+        p.append(text(x + 38, 1034, label, 22, CREAM, weight=600))
     # Quality.
-    p.append(heading(1018, 772, "QUALITY"))
+    p.append(heading(1010, 778, "QUALITY"))
     scores = (("Standard set", f"{summary['quality']['overallPct']:.1f}%"), ("AIME 2025", quality_score("AIME")),
               ("GPQA-Diamond", quality_score("GPQA")), ("HarmBench refusals", "0 of 100"))
-    y = 832
-    for label, value in scores:
-        p.append(text(1018, y, label, 23, CREAM, weight=600))
-        p.append(text(1366, y, value, 26, CREAM, "end", 800))
-        p.append(rule(1018, 1366, y + 20))
-        y += 58
+    y = 838
+    for i, (label, value) in enumerate(scores):
+        p.append(text(1010, y, label, 24, CREAM, weight=600))
+        p.append(text(1372, y, value, 27, CREAM, "end", 800))
+        if i < len(scores) - 1:
+            p.append(rule(1010, 1372, y + 21))
+        y += 60
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}" height="{h}" font-family="{FONT}">
 {SCORE_DEFS}
 <g clip-path="url(#corners)">
