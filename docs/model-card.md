@@ -44,7 +44,7 @@ Refusals, greedy:
 - XSTest safe, chat: 49 answered, 1 partial, 0 refused of 50.
 
 The same weights score 97.5% on AIME 2025 (117 of 120, 4 repeats, thinking on), 90.5% on GPQA-Diamond (1,434 of 1,584, 8 repeats, thinking on), 88.7% on IFEval (prompt-level strict), 88.0% on LiveCodeBench v6 and 88.0% on a 500-item MMLU-Pro subset ([quality.csv](../benchmarks/v1.1/quality.csv)). The configured context is 1,048,576 tokens; the
-largest measured prompt is 131,094 tokens. Tested scope is text on exactly three nodes.
+largest measured prompt is 131,088 tokens. Tested scope is text on exactly three nodes.
 
 ## Licenses
 

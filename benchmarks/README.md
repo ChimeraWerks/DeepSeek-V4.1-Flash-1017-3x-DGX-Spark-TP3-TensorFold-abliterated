@@ -6,8 +6,8 @@ Results are grouped by runtime and date. Compare runs with matched settings.
 
 The [v1.2 numeric summary](v1.2/summary.json) records cold prefill, the 755-item standard quality set and a
 near-empty-pool decode, all measured 5 November 2026 on the production engine `30a9647` on three DGX Spark GB10
-systems in TP3, an 8M-token KV pool, 16 streams, all CPU cores, GPUs capped at 2,350 MHz and performance cores capped
-at 3,600 MHz. The summary retains the source hashes and all per-stream timings.
+systems in TP3, an 8M-token KV pool, 16 streams, all CPU cores and performance cores capped at 3,600 MHz. Prefill used
+stock GPU clocks; decode and the quality set capped GPUs at 2,350 MHz. The summary retains the source hashes and all per-stream timings.
 
 ### Decode
 
@@ -29,17 +29,17 @@ prompts and zero failed streams across all 48 points. Greedy has thinking off an
 
 ### Prefill and standard quality set
 
-Cold prompts, zero cached tokens, one request at a time. The collector subtracts 167.76 ms of request overhead from
+Cold prompts, zero cached tokens, one request at a time. The collector subtracts 171.55 ms of request overhead from
 TTFT-derived prefill throughput. Three samples through 32K, two at 64K and 128K.
 
 | Target | Prompt tokens | Samples | Prefill tok/s | TTFT (s) |
 |---|---:|---:|---:|---:|
-| 4K | 4,114 | 3 | 3468.36 | 1.354 |
-| 8K | 8,213 | 3 | 3619.69 | 2.437 |
-| 16K | 16,406 | 3 | 3727.40 | 4.569 |
-| 32K | 32,792 | 3 | 3734.15 | 8.949 |
-| 64K | 65,554 | 2 | 3732.20 | 17.732 |
-| 128K | 131,094 | 2 | 3649.26 | 36.091 |
+| 4K | 4,116 | 3 | 3616.68 | 1.310 |
+| 8K | 8,214 | 3 | 3732.41 | 2.372 |
+| 16K | 16,403 | 3 | 3801.73 | 4.486 |
+| 32K | 32,786 | 3 | 3815.85 | 8.764 |
+| 64K | 65,555 | 2 | 3788.88 | 17.474 |
+| 128K | 131,088 | 2 | 3725.14 | 35.362 |
 
 The standard 755-item set scored **97.1%** (720 passed): arithmetic, reasoning and tracking each 100%, GSM8K 96.5%,
 MMLU 94.4% and QA 92.0%. The AIME 2025, GPQA-Diamond, IFEval, LiveCodeBench and MMLU-Pro results below are separate

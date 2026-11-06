@@ -6,7 +6,8 @@
   "decode_date_eastern": "2026-11-05",
   "sources": {
     "decode_summary_sha256": "9d9a7876d4eba14c3da848d11f52e4fdb6977af92586dcf94ecef0be5951ea63",
-    "prefill_quality_summary_sha256": "9d9a7876d4eba14c3da848d11f52e4fdb6977af92586dcf94ecef0be5951ea63"
+    "prefill_summary_sha256": "645352c8afb4155c37a57cc8cde850bb437e98437f62b0cfae4f090c61b70b18",
+    "quality_summary_sha256": "9d9a7876d4eba14c3da848d11f52e4fdb6977af92586dcf94ecef0be5951ea63"
   },
   "runtime": {
     "engine_commit": "30a9647",
@@ -18,11 +19,12 @@
     "spill_gib": 256,
     "engine_top_k": 20,
     "gpu_clock_cap_mhz": 2350,
-    "performance_core_cap_mhz": 3600
+    "performance_core_cap_mhz": 3600,
+    "prefill_gpu_clock_cap_mhz": null
   },
   "conditions": {
     "decode": "Near-empty KV pool; all 48 points had cached short prompts",
-    "prefill": "Cold prompts, one request, zero cached tokens",
+    "prefill": "Cold prompts, one request, zero cached tokens, stock GPU clocks",
     "decode_output_tokens_per_request": 400,
     "greedy": "Thinking off, temperature 0, top_p 1",
     "think": "Thinking on, temperature 0.7, top_p 1"
@@ -4694,57 +4696,57 @@
   "prefill": [
     {
       "targetTokens": 4096,
-      "promptTokens": 4114,
+      "promptTokens": 4116,
       "samples": 3,
       "cachedTokens": 0,
-      "prefillTps": 3468.36,
-      "ttftMs": 1353.91,
-      "overheadMs": 167.76
+      "prefillTps": 3616.68,
+      "ttftMs": 1309.61,
+      "overheadMs": 171.55
     },
     {
       "targetTokens": 8192,
-      "promptTokens": 8213,
+      "promptTokens": 8214,
       "samples": 3,
       "cachedTokens": 0,
-      "prefillTps": 3619.69,
-      "ttftMs": 2436.74,
-      "overheadMs": 167.76
+      "prefillTps": 3732.41,
+      "ttftMs": 2372.27,
+      "overheadMs": 171.55
     },
     {
       "targetTokens": 16384,
-      "promptTokens": 16406,
+      "promptTokens": 16403,
       "samples": 3,
       "cachedTokens": 0,
-      "prefillTps": 3727.4,
-      "ttftMs": 4569.22,
-      "overheadMs": 167.76
+      "prefillTps": 3801.73,
+      "ttftMs": 4486.17,
+      "overheadMs": 171.55
     },
     {
       "targetTokens": 32768,
-      "promptTokens": 32792,
+      "promptTokens": 32786,
       "samples": 3,
       "cachedTokens": 0,
-      "prefillTps": 3734.15,
-      "ttftMs": 8949.4,
-      "overheadMs": 167.76
+      "prefillTps": 3815.85,
+      "ttftMs": 8763.6,
+      "overheadMs": 171.55
     },
     {
       "targetTokens": 65536,
-      "promptTokens": 65554,
+      "promptTokens": 65555,
       "samples": 2,
       "cachedTokens": 0,
-      "prefillTps": 3732.2,
-      "ttftMs": 17732.18,
-      "overheadMs": 167.76
+      "prefillTps": 3788.88,
+      "ttftMs": 17473.5,
+      "overheadMs": 171.55
     },
     {
       "targetTokens": 131072,
-      "promptTokens": 131094,
+      "promptTokens": 131088,
       "samples": 2,
       "cachedTokens": 0,
-      "prefillTps": 3649.26,
-      "ttftMs": 36091.2,
-      "overheadMs": 167.76
+      "prefillTps": 3725.14,
+      "ttftMs": 35361.59,
+      "overheadMs": 171.55
     }
   ],
   "quality": {

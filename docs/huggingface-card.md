@@ -18,18 +18,18 @@ tags:
 - tensor-parallelism
 ---
 
-# DeepSeek V4.1 Flash on 3× DGX Spark: 3,734 tok/s prefill, 124 tok/s code
+# DeepSeek V4.1 Flash on 3× DGX Spark: 3,816 tok/s prefill, 124 tok/s code
 
-**Abliterated 3.84 bpw EXL3 weights on three small desktop machines: up to 3,734 tok/s reading prompts,
+**Abliterated 3.84 bpw EXL3 weights on three small desktop machines: up to 3,816 tok/s reading prompts,
 124 tok/s writing code and 270 tok/s shared across 16 requests.**
 
 <p align="center">
-  <img src="assets/scorecard.png" width="100%" alt="DeepSeek V4.1 Flash abliterated on 3x DGX Spark, TP3, 3.84 bpw EXL3. Headline: 3,734 tok/s prefill. Combined decode tok/s at C1, C2, C4, C8, C12 and C16. Thinking off code: 124.4, 167.2, 191.9, 220.0, 245.2, 253.4; prose: 82.0, 111.2, 161.4, 219.2, 251.7, 270.3. Thinking on code: 82.0, 119.3, 141.9, 175.1, 196.3, 211.3; prose: 68.1, 94.6, 130.9, 173.3, 196.5, 215.4." />
+  <img src="assets/scorecard.png" width="100%" alt="DeepSeek V4.1 Flash abliterated on 3x DGX Spark, TP3, 3.84 bpw EXL3. Headline: 3,816 tok/s prefill. Combined decode tok/s at C1, C2, C4, C8, C12 and C16. Thinking off code: 124.4, 167.2, 191.9, 220.0, 245.2, 253.4; prose: 82.0, 111.2, 161.4, 219.2, 251.7, 270.3. Thinking on code: 82.0, 119.3, 141.9, 175.1, 196.3, 211.3; prose: 68.1, 94.6, 130.9, 173.3, 196.5, 215.4." />
 </p>
 
 ## Why you should care
 
-- **Fast, on three DGX Sparks.** A 128K-token prompt reaches its first token in 36 seconds. One request gets 124 tok/s
+- **Fast, on three DGX Sparks.** A 128K-token prompt reaches its first token in 35 seconds. One request gets 124 tok/s
   on code; 16 requests together reach 270 tok/s on prose.
 - **Uncensored without losing quality.** These weights refused 0 of 100 HarmBench prompts, score 97.5% on AIME 2025
   and 90.5% on GPQA-Diamond, and have the lowest KL to the official model of the eight packs we scored.
@@ -42,14 +42,14 @@ tags:
 
 | | v1.2, measured 5 November 2026 |
 | --- | --- |
-| Prefill | **3,468 / 3,620 / 3,727 / 3,734 / 3,732 / 3,649** tok/s at 4K / 8K / 16K / 32K / 64K / 128K; cold prompts |
-| Time to first token | 1.35 / 2.44 / 4.57 / 8.95 / 17.73 / 36.09 s at 4K / 8K / 16K / 32K / 64K / 128K |
+| Prefill | **3,617 / 3,732 / 3,802 / 3,816 / 3,789 / 3,725** tok/s at 4K / 8K / 16K / 32K / 64K / 128K; cold prompts |
+| Time to first token | 1.31 / 2.37 / 4.49 / 8.76 / 17.47 / 35.36 s at 4K / 8K / 16K / 32K / 64K / 128K |
 | Decode, thinking off | Code **124.4 / 167.2 / 191.9 / 220.0 / 245.2 / 253.4** tok/s; prose **82.0 / 111.2 / 161.4 / 219.2 / 251.7 / 270.3** tok/s at C1 / C2 / C4 / C8 / C12 / C16, combined |
 | Decode, thinking on | Code **82.0 / 119.3 / 141.9 / 175.1 / 196.3 / 211.3** tok/s; prose **68.1 / 94.6 / 130.9 / 173.3 / 196.5 / 215.4** tok/s at C1 / C2 / C4 / C8 / C12 / C16, combined |
 | Fidelity | Mean KL **0.0784** and 92.0% top-1 agreement with official DeepSeek-V4.1-Flash-1017 logits |
 | Quality | **97.1%** on the 755-item standard set; **97.5%** AIME 2025; **90.5%** GPQA-Diamond (1,434 of 1,584); 88.7% IFEval; 88.0% LiveCodeBench v6; 88.0% MMLU-Pro (500-item subset) |
 | Refusals | 0 of 100 HarmBench prompts refused (98 answered, 2 partial); 0 of 250 XSTest safe prompts fully refused |
-| Context | 1,048,576 tokens configured; largest measured prompt 131,094 tokens |
+| Context | 1,048,576 tokens configured; largest measured prompt 131,088 tokens |
 | Quantization | EXL3, 3.8361 bpw over quantized linear layers (output head excluded, 6-bit) |
 | Edit | [mrfakename](https://huggingface.co/mrfakename/DeepSeek-V4.1-Flash-1017-abliterated)'s rank-2 refusal-removal edit, applied in FP32 and re-encoded at 6 bits |
 | Size | About 274 GB: 35 safetensors shards |
@@ -62,21 +62,21 @@ prompt, and a returning chat keeps its saved state while it waits in line, so it
 ## Speed
 
 Measured 5 November 2026 on production engine `30a9647` with [sparkDash](https://github.com/MiaAI-Lab/sparkDash).
-All CPU cores, GPUs capped at 2,350 MHz and performance cores capped at 3,600 MHz.
+All CPU cores and performance cores capped at 3,600 MHz. Prefill used stock GPU clocks; decode capped GPUs at 2,350 MHz.
 
-<p align="center"><img src="assets/chart-prefill.png" width="100%" alt="Two line charts against prompt length from 4K to 128K tokens. Prefill tok/s: 3,468, 3,620, 3,727, 3,734, 3,732 and 3,649. Time to first token: 1.35, 2.44, 4.57, 8.95, 17.73 and 36.09 seconds" /></p>
+<p align="center"><img src="assets/chart-prefill.png" width="100%" alt="Two line charts against prompt length from 4K to 128K tokens. Prefill tok/s: 3,617, 3,732, 3,802, 3,816, 3,789 and 3,725. Time to first token: 1.31, 2.37, 4.49, 8.76, 17.47 and 35.36 seconds" /></p>
 
 | Context | Prompt tokens | Time to first token | Prefill tok/s |
 | ---: | ---: | ---: | ---: |
-| 4K | 4,114 | 1.35 s | 3,468 |
-| 8K | 8,213 | 2.44 s | 3,620 |
-| 16K | 16,406 | 4.57 s | 3,727 |
-| 32K | 32,792 | 8.95 s | **3,734** |
-| 64K | 65,554 | 17.73 s | 3,732 |
-| 128K | 131,094 | 36.09 s | 3,649 |
+| 4K | 4,116 | 1.31 s | 3,617 |
+| 8K | 8,214 | 2.37 s | 3,732 |
+| 16K | 16,403 | 4.49 s | 3,802 |
+| 32K | 32,786 | 8.76 s | **3,816** |
+| 64K | 65,555 | 17.47 s | 3,789 |
+| 128K | 131,088 | 35.36 s | 3,725 |
 
 Cold prompts, zero cached tokens, one request at a time; tok/s comes from time to first token with the collector's
-167.76 ms request overhead subtracted.
+171.55 ms request overhead subtracted.
 
 <p align="center"><img src="assets/chart-decode.png" width="100%" alt="Two line charts of combined decode tok/s against requests at once. Greedy, prose and code: C1 82 and 124, C2 111 and 167, C4 161 and 192, C8 219 and 220, C12 252 and 245, C16 270 and 253. Thinking, prose and code: C1 68 and 82, C2 95 and 119, C4 131 and 142, C8 173 and 175, C12 196 and 196, C16 215 and 211" /></p>
 

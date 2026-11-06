@@ -10,7 +10,7 @@ Production moved from `678ea1b` to `30a9647` with the owner's approval. The weig
 
 - Long chat histories use far less memory when building a prompt.
 - A returning chat keeps its saved state while it waits in line, so it no longer recomputes from zero.
-- Production suite on `30a9647`: 48 decode points, six cold-prefill points and 97.1% (720 of 755) on the standard quality set; peak prefill 3,734 tok/s at 32K.
+- Production suite on `30a9647`: 48 decode points, six cold-prefill points and 97.1% (720 of 755) on the standard quality set; peak prefill 3,816 tok/s at 32K on stock GPU clocks.
 
 ## 2026-11-04 v1.2
 

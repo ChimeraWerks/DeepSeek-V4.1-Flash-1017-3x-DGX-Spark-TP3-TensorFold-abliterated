@@ -2,17 +2,17 @@
 
 > Run abliterated DeepSeek V4.1 Flash 1017 in EXL3 format at 3.84 bits per weight with TensorFold tensor parallelism 3 (TP3) on three NVIDIA DGX Spark GB10 systems.
 
-Why it matters: uncensored DeepSeek V4.1 Flash on three small desktop machines, with 3,734 tok/s peak prefill, 124 tok/s single-stream code, 270 tok/s across 16 requests, 0 of 100 HarmBench prompts refused, 97.5% AIME 2025, 90.5% GPQA-Diamond, and the lowest KL to the official model of the 8 packs scored. Engine source, deploy scripts, API and numeric benchmark data are all in this repository.
+Why it matters: uncensored DeepSeek V4.1 Flash on three small desktop machines, with 3,816 tok/s peak prefill, 124 tok/s single-stream code, 270 tok/s across 16 requests, 0 of 100 HarmBench prompts refused, 97.5% AIME 2025, 90.5% GPQA-Diamond, and the lowest KL to the official model of the 8 packs scored. Engine source, deploy scripts, API and numeric benchmark data are all in this repository.
 
 v1.2 (2026-11-04, engine updated 2026-11-05) is the active release. Engine 30a9647 runs 8M KV, C16, graph cap 128, R48, top_k 20, spill 256 GiB and prefill layer slices with serving API 0.1.5. Historical v1.1 (2026-11-02, the first public release) uses 14803a3. Historical v1 uses 7d5b4d8/10M; its October 30 speed suite used cebcf1e.
 
-Prefill (v1.2, 2026-11-05, cold, one request): 3,468 / 3,620 / 3,727 / 3,734 / 3,732 / 3,649 tok/s at 4K / 8K / 16K / 32K / 64K / 128K; a 131,094-token prompt reaches its first token in 36.09 s.
+Prefill (v1.2, 2026-11-05, cold, one request): 3,617 / 3,732 / 3,802 / 3,816 / 3,789 / 3,725 tok/s at 4K / 8K / 16K / 32K / 64K / 128K; a 131,088-token prompt reaches its first token in 35.36 s.
 
 Decode (v1.2, 2026-11-05, near-empty KV pool, cached short prompts; combined tok/s at C1 / C2 / C4 / C8 / C12 / C16): thinking off code 124.4 / 167.2 / 191.9 / 220.0 / 245.2 / 253.4; prose 82.0 / 111.2 / 161.4 / 219.2 / 251.7 / 270.3. Thinking on code 82.0 / 119.3 / 141.9 / 175.1 / 196.3 / 211.3; prose 68.1 / 94.6 / 130.9 / 173.3 / 196.5 / 215.4. Source: benchmarks/v1.2/summary.json.
 
 Fidelity: mean KL 0.0784 and 92.0% top-1 agreement against official DeepSeek-V4.1-Flash-1017 logits (65 cuts of 2,048 tokens), the lowest of every pack scored on the same panel, including an unedited 3.5 bpw EXL3 quant (0.0872). Refusals: 0 of 100 HarmBench prompts refused in chat (98 answered, 2 partial); 0 of 50 XSTest safe prompts refused. Quality: 97.1% on the 755-item standard set (720 passed); AIME 2025 97.5% (117 of 120, 4 repeats, thinking on); GPQA-Diamond 90.5% (1,434 of 1,584, 8 repeats, thinking on); IFEval 88.7% (prompt-level strict); LiveCodeBench v6 88.0%; MMLU-Pro 88.0% (500-item subset).
 
-Text serving uses a 1,048,576-token context. The native prefill suite measured 131,094 prompt tokens on the production engine. The 3.84 bpw value excludes the output head.
+Text serving uses a 1,048,576-token context. The native prefill suite measured 131,088 prompt tokens on the production engine. The 3.84 bpw value excludes the output head.
 
 Repository code is Apache-2.0; third-party code keeps its own licenses. Weights: https://huggingface.co/ChimeraWerks/DeepSeek-V4.1-Flash-1017-EXL3-3.84bpw-abliterated
 
