@@ -1,0 +1,5 @@
+gpu_cap,performance_core_cap_mhz,prefill_32k_tps,peak_soc_c,peak_gpu_c,decode_gpu_w
+Stock GPU,3600,3815.85,94.1,85,58.2
+"2,400 MHz",3500,3763.75,90.8,82,47.2
+"2,350 MHz",3600,3734.15,89.7,81,43.6
+"2,300 MHz",3300,3711.38,86.2,78,40.7

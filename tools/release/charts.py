@@ -343,14 +343,16 @@ def quality():
                 "90.5%", "GPQA-DIAMOND · 1,584 ANSWERS", 71)
 
 
-EMBER, ROSE, LILAC, PEACH = "#FFA24C", "#FF5C8A", "#C77DF0", "#F3C9A8"
-W_INK, W_SOFT, W_MUTED, W_LINE, W_EDGE = "#FBF3EE", "#D8CCD2", "#A4939F", "#2E1A26", "#3A1E2E"
+GOLD, EMBER, ROSE, CREAM = "#FFC83D", "#FF7A1A", "#FF4F7B", "#FFF1E0"
+TITLE_INK, LABEL_INK, RULE = "#F9B54C", "#E9D8C6", "#6B4A35"
 LOADS = (1, 2, 4, 8, 12, 16)
+GRID_LOADS = (1, 4, 8, 16)
+SERIES = (("prose", "greedy", "Prose Greedy", EMBER), ("prose", "think", "Prose Thinking", ROSE),
+          ("code", "greedy", "Code Greedy", GOLD), ("code", "think", "Code Thinking", CREAM))
 SCORE_DEFS = f"""<defs>
-  <linearGradient id="heat" gradientUnits="userSpaceOnUse" x1="70" y1="0" x2="1330" y2="0"><stop offset="0" stop-color="{EMBER}"/><stop offset="0.55" stop-color="{ROSE}"/><stop offset="1" stop-color="{LILAC}"/></linearGradient>
-  <linearGradient id="floor" gradientUnits="userSpaceOnUse" x1="0" y1="486" x2="0" y2="540"><stop offset="0" stop-color="#07030A" stop-opacity="0"/><stop offset="1" stop-color="#07030A"/></linearGradient>
-  <filter id="numglow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="10"/></filter>
-  <clipPath id="corners"><rect width="1400" height="700" rx="26"/></clipPath>
+  <linearGradient id="heat" gradientUnits="userSpaceOnUse" x1="70" y1="0" x2="1330" y2="0"><stop offset="0" stop-color="{GOLD}"/><stop offset="0.5" stop-color="{EMBER}"/><stop offset="1" stop-color="{ROSE}"/></linearGradient>
+  <filter id="numglow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="9"/></filter>
+  <clipPath id="corners"><rect width="1402" height="1066" rx="26"/></clipPath>
 </defs>"""
 
 
@@ -359,107 +361,137 @@ def tps(v):
     return f"{int(v * 10 + 0.5 + 1e-9) / 10:.1f}"
 
 
-def scorecard(summary):
-    """The banner both cards open with, also the repository's link preview: decode and prefill headlines on the whale art."""
-    w, h = 1400, 700
-    art = base64.b64encode((OUT / "hero.jpg").read_bytes()).decode()
-    rate = lambda prompt, load: next(r["aggregateDecodeTps"] for r in summary["decode"]
-                                     if (r["mode"], r["promptType"], r["concurrency"]) == ("greedy", prompt, load))
-    stats = ((f"{max(r['prefillTps'] for r in summary['prefill']):,.0f}", "TOK/S PREFILL", "32K PROMPT"),
-             (f"{rate('prose', 1):.0f}", "TOK/S PROSE DECODE", "1 REQUEST"),
-             (f"{rate('code', 1):.0f}", "TOK/S CODE DECODE", "1 REQUEST"),
-             (f"{rate('prose', 16):.0f}", "TOK/S COMBINED", "16 REQUESTS"),
-             ("1M", "TOKEN CONTEXT", "8M KV POOL"))
-    p = [f'<image href="data:image/jpeg;base64,{art}" width="{w}" height="{h}"/>',
-         f'<rect y="486" width="{w}" height="{h - 486}" fill="url(#floor)"/>']
-    step = (w - 100) / len(stats)
-    for i, (value, label, note) in enumerate(stats):
-        x = 50 + step * (i + 0.5)
-        if i:
-            p.append(f'<line x1="{x - step / 2:.1f}" x2="{x - step / 2:.1f}" y1="552" y2="664" stroke="{PEACH}" stroke-opacity="0.35"/>')
-        p.append(f'<text x="{x:.1f}" y="618" fill="url(#heat)" font-size="76" font-weight="800" letter-spacing="-2" text-anchor="middle" opacity="0.45" filter="url(#numglow)">{value}</text>')
-        p.append(text(x, 618, value, 76, "url(#heat)", "middle", 800, ' letter-spacing="-2"'))
-        p.append(text(x, 646, label, 17, PEACH, "middle", 700, ' letter-spacing="1.8"'))
-        p.append(text(x, 668, note, 14, W_SOFT, "middle", 600, ' letter-spacing="1.6"'))
-    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}" height="{h}" font-family="{FONT}">
-{SCORE_DEFS}
-<g clip-path="url(#corners)"><rect width="{w}" height="{h}" fill="#07030A"/>
-{chr(10).join(p)}
-</g>
-<rect x="1" y="1" width="{w - 2}" height="{h - 2}" rx="25" fill="none" stroke="{W_EDGE}" stroke-width="2"/>
-</svg>
-"""
-
-
-GRID_LOADS = (1, 4, 8, 16)
-
-
 def quality_score(suite):
     row = next(r for (name, _), r in quality_rows().items() if name.startswith(suite))
     return f"{float(row['score_percent']):.1f}%"
 
 
-def speed_grid(summary):
-    """The panel under the banner, the same width: prefill, decode and quality on one shared row grid."""
-    w, h = 1400, 462
-    head_y, first, row = 110, 160, 49
-    cols = (0, 400, 950, w)
-    rate = {(r["mode"], r["promptType"], r["concurrency"]): r["aggregateDecodeTps"] for r in summary["decode"]}
-    peak = max(r["prefillTps"] for r in summary["prefill"])
+def clock_rows():
+    with open(ROOT / "benchmarks/v1.2/clocks.csv", newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def heading(x, y, title, note=""):
+    out = text(x, y, title, 27, TITLE_INK, weight=800, extra=' letter-spacing="1.6"')
+    if note:
+        out += text(x + 34 + 21 * len(title), y - 1, note, 19, LABEL_INK, weight=500)
+    return out
+
+
+def rule(x0, x1, y, opacity=0.8):
+    return f'<line x1="{x0}" x2="{x1}" y1="{y}" y2="{y}" stroke="{RULE}" stroke-opacity="{opacity}"/>'
+
+
+def graph(xs, y_bottom, y_top, lo, hi, ticks, xlabels, lines, tick_fmt=str, point_labels=False):
+    """A line graph plotted from data: recessive grid, 2.5px lines, round markers."""
+    sy = lambda v: y_bottom - (y_bottom - y_top) * (v - lo) / (hi - lo)
+    p = []
+    for t in ticks:
+        p.append(f'<line x1="{xs[0] - 38}" x2="{xs[-1] + 38}" y1="{sy(t):.1f}" y2="{sy(t):.1f}" stroke="{CREAM}" stroke-opacity="{0.55 if t == lo else 0.16}"/>')
+        p.append(text(xs[0] - 48, sy(t) + 7, tick_fmt(t), 19, LABEL_INK, "end", 600))
+    for x, label in zip(xs, xlabels):
+        p.append(f'<line x1="{x}" x2="{x}" y1="{sy(hi):.1f}" y2="{y_bottom}" stroke="{CREAM}" stroke-opacity="0.10"/>')
+        for i, part in enumerate(label.split("|")):
+            p.append(text(x, y_bottom + 26 + 20 * i, part, 18 if "|" in label else 20, CREAM, "middle", 600))
+    for values, color, above in lines:
+        points = " ".join(f"{x:.1f},{sy(v):.1f}" for x, v in zip(xs, values))
+        p.append(f'<polyline points="{points}" fill="none" stroke="{color}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>')
+        for x, v in zip(xs, values):
+            p.append(f'<circle cx="{x:.1f}" cy="{sy(v):.1f}" r="6" fill="{color}" stroke="#120804" stroke-width="1.5"/>')
+            if point_labels:
+                p.append(text(x, sy(v) + (-13 if above else 27), f"{v:g}", 19, color, "middle", 800))
+    return "".join(p)
+
+
+def scorecard(summary):
+    """The image both cards open with: whale, headline speeds, decode by load, clocks, temperature and quality."""
+    w, h = 1402, 1066
+    art = base64.b64encode((OUT / "card-art.jpg").read_bytes()).decode()
+    rate = {(r["promptType"], r["mode"], r["concurrency"]): r["aggregateDecodeTps"] for r in summary["decode"]}
+    clocks = clock_rows()
     with open(ROOT / "benchmarks/v1/fidelity.csv", newline="") as f:
         ours = next(r for r in csv.DictReader(f) if r["weights"] == "This release")
-    p = []
-    for x, title, note in ((cols[0], "PREFILL", "tok/s · cold prompts"), (cols[1], "DECODE", "combined tok/s · C = requests at once"),
-                           (cols[2], "QUALITY", "abliterated weights")):
-        p.append(text(x + 40, 54, title, 25, PEACH, weight=800, extra=' letter-spacing="2.4"'))
-        p.append(text(x + 40, 82, note, 18, W_MUTED, weight=600))
-    for x in cols[1:3]:
-        p.append(f'<line x1="{x}" x2="{x}" y1="34" y2="{h - 34}" stroke="{PEACH}" stroke-opacity="0.28"/>')
-    for i in range(6):
-        y = first + row * i + 17
-        if i < 5:
-            for x0, x1 in zip(cols, cols[1:]):
-                p.append(f'<line x1="{x0 + 40}" x2="{x1 - 40}" y1="{y}" y2="{y}" stroke="{W_LINE}"/>')
-    # Prefill: prompt, speed, first token.
-    tok_x, ttft_x = cols[0] + 210, cols[1] - 40
-    p.append(text(cols[0] + 40, head_y + 8, "PROMPT", 16, W_MUTED, weight=700, extra=' letter-spacing="1.4"'))
-    p.append(text(tok_x, head_y + 8, "TOK/S", 16, W_MUTED, "end", 700, ' letter-spacing="1.4"'))
-    p.append(text(ttft_x, head_y + 8, "FIRST TOKEN", 16, W_MUTED, "end", 700, ' letter-spacing="1.4"'))
-    for i, r in enumerate(summary["prefill"]):
-        y = first + row * i
-        top = r["prefillTps"] == peak
-        p.append(text(cols[0] + 40, y, f"{r['targetTokens'] // 1024}K", 24, W_SOFT, weight=700))
-        p.append(text(tok_x, y, f"{r['prefillTps']:,.0f}", 27, "url(#heat)" if top else W_INK, "end", 800))
-        p.append(text(ttft_x, y, f"{r['ttftMs'] / 1000:.2f} s", 24, W_SOFT, "end", 600))
-    # Decode: prose above code, greedy above thinking.
-    load_x = [cols[1] + 225 + 95 * i for i in range(len(GRID_LOADS))]
-    for x, load in zip(load_x, GRID_LOADS):
-        p.append(text(x, head_y + 8, f"C{load}", 17, W_MUTED, "end", 700, ' letter-spacing="1.2"'))
-    highlight = {("greedy", "prose", 1), ("greedy", "prose", 16), ("greedy", "code", 1)}
-    i = 0
+    peak = max(r["prefillTps"] for r in summary["prefill"])
+    p = [f'<image href="data:image/jpeg;base64,{art}" width="{w}" height="{h}"/>']
+    # Headline stats.
+    stats = ((f"{peak:,.0f}", "TOK/S PREFILL AT 32K"), (f"{rate['prose', 'greedy', 1]:.0f}", "TOK/S PROSE DECODE"),
+             (f"{rate['code', 'greedy', 1]:.0f}", "TOK/S CODE DECODE"), (f"{rate['prose', 'greedy', 16]:.0f}", "TOK/S AT 16 REQUESTS"),
+             ("1M", "CONTEXT"))
+    step = w / len(stats)
+    for i, (value, label) in enumerate(stats):
+        x = step * (i + 0.5)
+        if i:
+            p.append(f'<line x1="{x - step / 2:.1f}" x2="{x - step / 2:.1f}" y1="338" y2="412" stroke="{TITLE_INK}" stroke-opacity="0.55"/>')
+        p.append(f'<text x="{x:.1f}" y="384" fill="url(#heat)" font-size="68" font-weight="800" letter-spacing="-1.5" text-anchor="middle" opacity="0.4" filter="url(#numglow)">{value}</text>')
+        p.append(text(x, 384, value, 68, "url(#heat)", "middle", 800, ' letter-spacing="-1.5"'))
+        p.append(text(x, 410, label, 17.5, CREAM, "middle", 700, ' letter-spacing="1.3"'))
+    # Decode table.
+    p.append(heading(40, 472, "DECODE", "combined tok/s"))
+    col = (328, 422, 516, 610)
+    for x, load in zip(col, GRID_LOADS):
+        p.append(text(x, 504, f"C{load}", 19, LABEL_INK, "end", 700))
+    p.append(rule(40, 610, 516))
+    highlight = {("prose", "greedy", 1), ("prose", "greedy", 16), ("code", "greedy", 1)}
+    y = 546
     for prompt, name in (("prose", "PROSE"), ("code", "CODE")):
-        p.append(text(cols[1] + 40, first + row * i, name, 19, PEACH, weight=800, extra=' letter-spacing="2"'))
-        i += 1
+        p.append(text(40, y + 19, name, 22, TITLE_INK, weight=800, extra=' letter-spacing="1"'))
         for mode, label in (("greedy", "Greedy"), ("think", "Thinking")):
-            y = first + row * i
-            p.append(text(cols[1] + 40, y, label, 24, W_SOFT, weight=700))
-            for x, load in zip(load_x, GRID_LOADS):
-                top = (mode, prompt, load) in highlight
-                p.append(text(x, y, tps(rate[mode, prompt, load]), 27, "url(#heat)" if top else W_INK, "end", 800))
-            i += 1
+            p.append(text(148, y, label, 23, CREAM, weight=600))
+            for x, load in zip(col, GRID_LOADS):
+                top = (prompt, mode, load) in highlight
+                p.append(text(x, y, tps(rate[prompt, mode, load]), 24, GOLD if top else CREAM, "end", 800))
+            y += 38
+        p.append(rule(40, 610, y - 24))
+        y += 10
+    # Decode graph.
+    p.append(heading(684, 472, "DECODE", "tok/s"))
+    xs = (784, 896, 1008, 1120)
+    p.append(graph(xs, 672, 496, 0, 300, (0, 100, 200, 300), [f"C{n}" for n in GRID_LOADS],
+                   [([rate[prompt, mode, n] for n in GRID_LOADS], color, True) for prompt, mode, _, color in SERIES]))
+    for i, (_, _, label, color) in enumerate(SERIES):
+        y = 532 + 34 * i
+        p.append(f'<line x1="1184" x2="1214" y1="{y - 6}" y2="{y - 6}" stroke="{color}" stroke-width="2.5"/><circle cx="1199" cy="{y - 6}" r="6" fill="{color}"/>')
+        p.append(text(1224, y, label, 18.5, CREAM, weight=600))
+    # Clocks table.
+    p.append(heading(38, 772, "CLOCKS"))
+    heads = ((36, "GPU CAP", "start"), (226, "32K PREFILL", "end"), (322, "PEAK SOC", "end"), (408, "PEAK GPU", "end"), (494, "DECODE W", "end"))
+    for x, label, anchor in heads:
+        p.append(text(x, 808, label, 13.5, LABEL_INK, anchor, 700))
+    p.append(rule(36, 494, 820))
+    y = 858
+    for i, r in enumerate(clocks):
+        p.append(text(36, y, r["gpu_cap"], 22, CREAM, weight=600))
+        p.append(text(226, y, f"{float(r['prefill_32k_tps']):,.0f}", 23, GOLD if i == 0 else CREAM, "end", 800))
+        p.append(text(322, y, f"{float(r['peak_soc_c']):.1f} °C", 21, CREAM, "end", 600))
+        p.append(text(408, y, f"{float(r['peak_gpu_c']):.0f} °C", 21, CREAM, "end", 600))
+        p.append(text(494, y, f"{float(r['decode_gpu_w']):.0f} W", 21, CREAM, "end", 600))
+        p.append(rule(36, 494, y + 16))
+        y += 49
+    # Temperature graph.
+    p.append(heading(552, 772, "TEMPERATURE"))
+    xs = (654, 750, 846, 942)
+    names = ["Stock|GPU" if r["gpu_cap"].startswith("Stock") else r["gpu_cap"].replace(" MHz", "|MHz") for r in clocks]
+    p.append(graph(xs, 958, 800, 70, 100, (70, 80, 90, 100), names,
+                   [([float(r["peak_soc_c"]) for r in clocks], EMBER, True), ([float(r["peak_gpu_c"]) for r in clocks], CREAM, False)],
+                   lambda t: f"{t} °C", True))
+    for x, label, color in ((620, "Peak SoC", EMBER), (780, "Peak GPU", CREAM)):
+        p.append(f'<line x1="{x}" x2="{x + 30}" y1="1026" y2="1026" stroke="{color}" stroke-width="2.5"/><circle cx="{x + 15}" cy="1026" r="6" fill="{color}"/>')
+        p.append(text(x + 40, 1032, label, 18.5, CREAM, weight=600))
     # Quality.
+    p.append(heading(1018, 772, "QUALITY"))
     scores = (("Standard set", f"{summary['quality']['overallPct']:.1f}%"), ("AIME 2025", quality_score("AIME")),
-              ("GPQA-Diamond", quality_score("GPQA")), ("LiveCodeBench v6", quality_score("LiveCodeBench")),
-              ("KL to official", f"{float(ours['mean_kl']):.4f}"), ("HarmBench refusals", "0 of 100"))
-    for i, (label, value) in enumerate(scores):
-        y = first + row * i
-        p.append(text(cols[2] + 40, y, label, 24, W_SOFT, weight=700))
-        p.append(text(cols[3] - 40, y, value, 27, W_INK, "end", 800))
+              ("GPQA-Diamond", quality_score("GPQA")), ("HarmBench refusals", "0 of 100"))
+    y = 832
+    for label, value in scores:
+        p.append(text(1018, y, label, 23, CREAM, weight=600))
+        p.append(text(1366, y, value, 26, CREAM, "end", 800))
+        p.append(rule(1018, 1366, y + 20))
+        y += 58
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}" height="{h}" font-family="{FONT}">
-<defs><linearGradient id="heat" gradientUnits="userSpaceOnUse" x1="70" y1="0" x2="1330" y2="0"><stop offset="0" stop-color="{EMBER}"/><stop offset="0.55" stop-color="{ROSE}"/><stop offset="1" stop-color="{LILAC}"/></linearGradient></defs>
-<rect width="{w}" height="{h}" rx="26" fill="#07030A"/>
+{SCORE_DEFS}
+<g clip-path="url(#corners)">
 {chr(10).join(p)}
-<rect x="1" y="1" width="{w - 2}" height="{h - 2}" rx="25" fill="none" stroke="{W_EDGE}" stroke-width="2"/>
+</g>
 </svg>
 """
 
@@ -468,7 +500,7 @@ def build():
     summary = json.loads((ROOT / "benchmarks/v1.2/summary.json").read_text())
     return {"chart-prefill.svg": prefill(summary), "chart-prefill-climb.svg": climb(),
             "chart-decode.svg": decode(summary), "chart-kl.svg": kl(), "chart-quality.svg": quality(),
-            "scorecard.svg": scorecard(summary), "speed-grid.svg": speed_grid(summary)}
+            "scorecard.svg": scorecard(summary)}
 
 
 def main():

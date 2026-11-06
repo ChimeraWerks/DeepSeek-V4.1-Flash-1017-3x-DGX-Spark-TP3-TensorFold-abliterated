@@ -23,8 +23,7 @@ tags:
 Uncensored, abliterated EXL3 weights of DeepSeek-V4.1-Flash-1017. **[Serving recipe on GitHub](https://github.com/ChimeraWerks/DeepSeek-V4.1-Flash-1017-3x-DGX-Spark-TP3-TensorFold-abliterated)**
 
 <p align="center">
-  <img src="assets/scorecard.png" width="100%" alt="DeepSeek V4.1 Flash abliterated on 3x DGX Spark, 3.84 bpw EXL3, with a glowing mesh whale. 3,816 tok/s prefill at a 32K prompt, 82 tok/s prose decode and 124 tok/s code decode at 1 request, 270 tok/s combined at 16 requests, 1M token context with an 8M KV pool." />
-  <img src="assets/speed-grid.png" width="100%" alt="Prefill tok/s and first token: 4K 3,617 in 1.31 s, 8K 3,732 in 2.37 s, 16K 3,802 in 4.49 s, 32K 3,816 in 8.76 s, 64K 3,789 in 17.47 s, 128K 3,725 in 35.36 s. Combined decode tok/s at C1, C4, C8 and C16. Prose greedy 82.0, 161.4, 219.2, 270.3; prose thinking 68.1, 130.9, 173.3, 215.4; code greedy 124.4, 191.9, 220.0, 253.4; code thinking 82.0, 141.9, 175.1, 211.3. Quality: standard set 97.1%, AIME 2025 97.5%, GPQA-Diamond 90.5%, LiveCodeBench v6 88.0%, KL to official 0.0784, HarmBench refusals 0 of 100." />
+  <img src="assets/scorecard.png" width="100%" alt="DeepSeek V4.1 Flash abliterated on 3x DGX Spark, 3.84 bpw EXL3, with a glowing mesh whale above volcanic rock panels. 3,816 tok/s prefill at 32K, 82 tok/s prose decode, 124 tok/s code decode, 270 tok/s at 16 requests, 1M context. Combined decode tok/s at C1, C4, C8 and C16: prose greedy 82.0, 161.4, 219.2, 270.3; prose thinking 68.1, 130.9, 173.3, 215.4; code greedy 124.4, 191.9, 220.0, 253.4; code thinking 82.0, 141.9, 175.1, 211.3. Clocks, with 32K prefill, peak SoC, peak GPU and decode watts: stock GPU 3,816, 94.1 °C, 85 °C, 58 W; 2,400 MHz 3,764, 90.8 °C, 82 °C, 47 W; 2,350 MHz 3,734, 89.7 °C, 81 °C, 44 W; 2,300 MHz 3,711, 86.2 °C, 78 °C, 41 W. Quality: standard set 97.1%, AIME 2025 97.5%, GPQA-Diamond 90.5%, HarmBench refusals 0 of 100." />
 </p>
 
 **3× DGX Spark** · TP3 · 3.84 bpw EXL3 · about 274 GB · 1M context configured
@@ -91,6 +90,17 @@ What each request gets, mean tok/s per request:
 Near-empty KV pool, short cached prompts, 400 output tokens per request, one run per point, timed at the engine. Greedy
 is temperature 0 with thinking off; thinking is temperature 0.7 with thinking on. All 354 decode streams completed. Every point and
 per-stream timing: [v1.2 benchmarks](https://github.com/ChimeraWerks/DeepSeek-V4.1-Flash-1017-3x-DGX-Spark-TP3-TensorFold-abliterated/blob/main/benchmarks/v1.2/summary.json).
+
+### Clocks
+
+| GPU cap | 32K prefill tok/s | Peak SoC | Peak GPU | Decode GPU power |
+| --- | ---: | ---: | ---: | ---: |
+| Stock GPU | 3,816 | 94.1 °C | 85 °C | 58.2 W |
+| 2,400 MHz | 3,764 | 90.8 °C | 82 °C | 47.2 W |
+| 2,350 MHz | 3,734 | 89.7 °C | 81 °C | 43.6 W |
+| 2,300 MHz | 3,711 | 86.2 °C | 78 °C | 40.7 W |
+
+Each row is one full suite on engine `30a9647`, with performance cores capped at 3,300–3,600 MHz.
 
 ## Run it on three DGX Sparks
 

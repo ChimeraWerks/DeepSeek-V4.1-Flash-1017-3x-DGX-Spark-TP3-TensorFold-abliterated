@@ -33,21 +33,22 @@ def test_quality_chart_matches_quality_csv():
     found = labels(charts.quality())
     assert {"90.5%", "97.5%", "88.7%", "88.0%", "97", "of 250"} <= found
 
-def test_scorecard_shows_the_decode_and_prefill_headlines():
+def test_scorecard_lists_speed_clocks_and_quality():
     found = labels(charts.scorecard(SUMMARY))
-    rate = lambda prompt, load: next(r["aggregateDecodeTps"] for r in SUMMARY["decode"]
-                                     if (r["mode"], r["promptType"], r["concurrency"]) == ("greedy", prompt, load))
     assert f"{max(r['prefillTps'] for r in SUMMARY['prefill']):,.0f}" in found
-    assert {f"{rate('code', 1):.0f}", f"{rate('prose', 1):.0f}", f"{rate('prose', 16):.0f}"} <= found
-
-def test_speed_grid_lists_prefill_decode_and_quality():
-    found = labels(charts.speed_grid(SUMMARY))
-    for r in SUMMARY["prefill"]:
-        assert f"{r['prefillTps']:,.0f}" in found
     for r in SUMMARY["decode"]:
         if r["promptType"] != "structured" and r["concurrency"] in charts.GRID_LOADS:
             assert charts.tps(r["aggregateDecodeTps"]) in found
-    assert {"97.1%", "97.5%", "90.5%", "88.0%", "0.0784", "0 of 100"} <= found
+    for r in charts.clock_rows():
+        assert f"{float(r['prefill_32k_tps']):,.0f}" in found
+        assert f"{float(r['peak_soc_c']):.1f} °C" in found
+    assert {"97.1%", "97.5%", "90.5%", "0 of 100"} <= found
+
+def test_clock_table_is_on_both_cards():
+    for path in ("README.md", "docs/huggingface-card.md"):
+        card = (charts.ROOT / path).read_text()
+        for r in charts.clock_rows():
+            assert f"{float(r['prefill_32k_tps']):,.0f}" in card and f"{float(r['peak_soc_c']):.1f} °C" in card
 
 def test_scorecard_decode_matches_both_cards():
     cards = [(charts.ROOT / path).read_text() for path in ("README.md", "docs/huggingface-card.md")]
