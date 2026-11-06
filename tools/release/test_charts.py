@@ -33,12 +33,12 @@ def test_quality_chart_matches_quality_csv():
     found = labels(charts.quality())
     assert {"90.5%", "97.5%", "88.7%", "88.0%", "97", "of 250"} <= found
 
-def test_scorecard_lists_every_speed():
+def test_scorecard_shows_the_decode_and_prefill_headlines():
     found = labels(charts.scorecard(SUMMARY))
+    rate = lambda prompt, load: next(r["aggregateDecodeTps"] for r in SUMMARY["decode"]
+                                     if (r["mode"], r["promptType"], r["concurrency"]) == ("greedy", prompt, load))
     assert f"{max(r['prefillTps'] for r in SUMMARY['prefill']):,.0f}" in found
-    for r in SUMMARY["decode"]:
-        if r["promptType"] != "structured" and r["concurrency"] in charts.LOADS:
-            assert charts.tps(r["aggregateDecodeTps"]) in found
+    assert {f"{rate('code', 1):.0f}", f"{rate('prose', 1):.0f}", f"{rate('prose', 16):.0f}"} <= found
 
 def test_scorecard_decode_matches_both_cards():
     cards = [(charts.ROOT / path).read_text() for path in ("README.md", "docs/huggingface-card.md")]

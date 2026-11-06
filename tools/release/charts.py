@@ -344,22 +344,13 @@ def quality():
 
 
 EMBER, ROSE, LILAC, PEACH = "#FFA24C", "#FF5C8A", "#C77DF0", "#F3C9A8"
-CODE, PROSE = "#D47834", "#AE70D5"
-W_INK, W_SOFT, W_MUTED, W_LINE, W_EDGE = "#FBF3EE", "#D8CCD2", "#A4939F", "#2E1A26", "#3A1E2E"
+W_SOFT, W_EDGE = "#D8CCD2", "#3A1E2E"
 LOADS = (1, 2, 4, 8, 12, 16)
-TABULAR = ' style="font-variant-numeric:tabular-nums"'
 SCORE_DEFS = f"""<defs>
-  <linearGradient id="sbg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0A0406"/><stop offset="1" stop-color="#0C0610"/></linearGradient>
-  <linearGradient id="heat" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="{EMBER}"/><stop offset="0.55" stop-color="{ROSE}"/><stop offset="1" stop-color="{LILAC}"/></linearGradient>
-  <linearGradient id="spanel" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1A0E15"/><stop offset="1" stop-color="#110913"/></linearGradient>
-  <linearGradient id="srow" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="{EMBER}" stop-opacity="0.20"/><stop offset="1" stop-color="{LILAC}" stop-opacity="0.14"/></linearGradient>
-  <linearGradient id="sink" gradientUnits="userSpaceOnUse" x1="0" y1="270" x2="0" y2="362"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#000"/></linearGradient>
-  <filter id="feather" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="13"/></filter>
-  <filter id="numglow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="16"/></filter>
-  <filter id="lineglow" x="-10%" y="-40%" width="120%" height="180%"><feGaussianBlur stdDeviation="5"/></filter>
-  <mask id="headfade" maskUnits="userSpaceOnUse" x="0" y="0" width="1400" height="430"><path d="M790 -30 Q700 42 622 86 Q600 118 610 150 Q628 190 700 232 L860 330 L860 460 L1440 460 L1440 -30 Z" fill="#fff" filter="url(#feather)"/></mask>
-  <mask id="basefade" maskUnits="userSpaceOnUse" x="0" y="0" width="1400" height="430"><rect width="1400" height="430" fill="url(#sink)"/></mask>
-  <clipPath id="notitle"><path d="M0 0H1117V340H1000V600H0Z"/></clipPath>
+  <linearGradient id="heat" gradientUnits="userSpaceOnUse" x1="70" y1="0" x2="1330" y2="0"><stop offset="0" stop-color="{EMBER}"/><stop offset="0.55" stop-color="{ROSE}"/><stop offset="1" stop-color="{LILAC}"/></linearGradient>
+  <linearGradient id="floor" gradientUnits="userSpaceOnUse" x1="0" y1="486" x2="0" y2="540"><stop offset="0" stop-color="#07030A" stop-opacity="0"/><stop offset="1" stop-color="#07030A"/></linearGradient>
+  <filter id="numglow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="10"/></filter>
+  <clipPath id="corners"><rect width="1400" height="700" rx="26"/></clipPath>
 </defs>"""
 
 
@@ -368,71 +359,33 @@ def tps(v):
     return f"{int(v * 10 + 0.5 + 1e-9) / 10:.1f}"
 
 
-def decode_panel(x, y, title, tag, rates):
-    w = 660
-    p = [f'<rect x="{x}" y="{y}" width="{w}" height="704" rx="20" fill="url(#spanel)" stroke="{W_EDGE}" stroke-width="1.5"/>',
-         text(x + 30, y + 48, title, 29, W_INK, weight=800, extra=' letter-spacing="-0.4"'), text(x + 30, y + 76, tag, 17, PEACH, weight=600)]
-    for dx, name, fill in ((470, "Code", CODE), (556, "Prose", PROSE)):
-        p.append(f'<rect x="{x + dx}" y="{y + 32}" width="16" height="16" rx="4" fill="{fill}"/>' + text(x + dx + 24, y + 46, name, 17, W_SOFT, weight=700))
-    x0, x1, base, top = x + 30, x + w - 30, y + 328, y + 112
-    px = lambda i: x0 + 26 + (x1 - x0 - 78) * i / (len(LOADS) - 1)
-    py = lambda v: base - (base - top) * v / 300
-    for tick in (100, 200, 300):
-        p.append(f'<line x1="{x0}" x2="{x1}" y1="{py(tick):.1f}" y2="{py(tick):.1f}" stroke="{W_LINE}"/>' + text(x1, py(tick) - 6, tick, 14, W_MUTED, "end", 600))
-    for kind, fill in (("prose", PROSE), ("code", CODE)):
-        points = " ".join(f"{px(i):.1f},{py(rates[kind, load]):.1f}" for i, load in enumerate(LOADS))
-        p.append(f'<polyline points="{points}" fill="none" stroke="{fill}" stroke-width="9" opacity="0.4" filter="url(#lineglow)"/>')
-        p.append(f'<polyline points="{points}" fill="none" stroke="{fill}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>')
-        for i, load in enumerate(LOADS):
-            p.append(f'<circle cx="{px(i):.1f}" cy="{py(rates[kind, load]):.1f}" r="6.5" fill="#150B13" stroke="{fill}" stroke-width="3.5"/>')
-    for i, load in enumerate(LOADS):
-        p.append(text(px(i), base + 25, f"C{load}", 16, W_MUTED, "middle", 700))
-    p.append(f'<line x1="{x0}" x2="{x1}" y1="{base}" y2="{base}" stroke="#3A2432"/>')
-    t0, t1, ty, row = x + 18, x + w - 18, y + 392, 46
-    code_x = t0 + (t1 - t0) * 0.62
-    for cx, name, anchor in ((t0 + 18, "LOAD", "start"), (code_x, "CODE", "end"), (t1 - 18, "PROSE", "end")):
-        p.append(text(cx, ty, name, 15, W_MUTED, anchor, 700, ' letter-spacing="1.6"'))
-    ty += 14
-    for load in LOADS:
-        if load == LOADS[-1]:
-            p.append(f'<rect x="{t0}" y="{ty}" width="{t1 - t0}" height="{row}" rx="10" fill="url(#srow)" stroke="{EMBER}" stroke-opacity="0.45"/>')
-        else:
-            p.append(f'<line x1="{t0 + 18}" x2="{t1 - 18}" y1="{ty + row}" y2="{ty + row}" stroke="{W_LINE}"/>')
-        b = ty + row * 0.70
-        p.append(text(t0 + 18, b, f"C{load}", 23, W_INK if load == LOADS[-1] else W_SOFT, weight=700))
-        p.append(text(code_x, b, tps(rates["code", load]), 29, W_INK, "end", 800, TABULAR))
-        p.append(text(t1 - 18, b, tps(rates["prose", load]), 29, W_INK, "end", 800, TABULAR))
-        ty += row
-    return "".join(p)
-
-
 def scorecard(summary):
-    """Every speed on one card; the README opens with it. Quality has its own section."""
-    w, h = 1400, 1158
+    """The banner both cards open with, also the repository's link preview: decode and prefill headlines on the whale art."""
+    w, h = 1400, 700
     art = base64.b64encode((OUT / "hero.jpg").read_bytes()).decode()
-    pre = summary["prefill"]
-    peak = max(r["prefillTps"] for r in pre)
-    rates = {(r["mode"], r["promptType"], r["concurrency"]): r["aggregateDecodeTps"] for r in summary["decode"]}
-    # The hero art without its baked-in title and stats, mirrored so the whale swims toward the headline.
-    p = ['<g mask="url(#headfade)"><g mask="url(#basefade)"><g transform="translate(1436 8) scale(-0.75 0.75)"><g clip-path="url(#notitle)">'
-         f'<image href="data:image/jpeg;base64,{art}" width="1536" height="768"/></g></g></g></g>',
-         text(60, 64, "3× DGX SPARK  ·  TP3  ·  TENSORFOLD", 21, PEACH, weight=700, extra=' letter-spacing="2.6"'),
-         text(58, 128, "DeepSeek V4.1 Flash", 54, W_INK, weight=800, extra=' letter-spacing="-1.4"'),
-         f'<rect x="60" y="150" width="362" height="64" rx="32" fill="{EMBER}" fill-opacity="0.12" stroke="{EMBER}" stroke-opacity="0.7" stroke-width="1.5"/>',
-         text(241, 194, "ABLITERATED", 31, W_INK, "middle", 800, ' letter-spacing="4"'),
-         f'<rect x="440" y="150" width="316" height="64" rx="32" fill="{LILAC}" fill-opacity="0.12" stroke="{LILAC}" stroke-opacity="0.7" stroke-width="1.5"/>',
-         text(598, 194, "3.84 BPW EXL3", 29, W_INK, "middle", 800, ' letter-spacing="2"'),
-         f'<text x="58" y="340" fill="url(#heat)" font-size="150" font-weight="800" letter-spacing="-6" opacity="0.5" filter="url(#numglow)">{peak:,.0f}</text>',
-         text(58, 340, f"{peak:,.0f}", 150, "url(#heat)", weight=800, extra=' letter-spacing="-6"'),
-         text(432, 306, "tok/s prefill", 44, W_INK, weight=800, extra=' letter-spacing="-0.8"')]
-    for x, title, tag, mode in ((30, "Thinking off", "Greedy · temperature 0", "greedy"), (710, "Thinking on", "Non-greedy · temperature 0.7", "think")):
-        p.append(decode_panel(x, 380, title, tag, {(k, c): v for (m, k, c), v in rates.items() if m == mode}))
-    p.append(text(700, 1122, "Combined tok/s across all requests · 400 output tokens each · engine 30a9647 · measured 5 November 2026",
-                  17, W_MUTED, "middle"))
+    rate = lambda prompt, load: next(r["aggregateDecodeTps"] for r in summary["decode"]
+                                     if (r["mode"], r["promptType"], r["concurrency"]) == ("greedy", prompt, load))
+    stats = ((f"{max(r['prefillTps'] for r in summary['prefill']):,.0f}", "TOK/S PREFILL", "32K PROMPT"),
+             (f"{rate('code', 1):.0f}", "TOK/S CODE DECODE", "1 REQUEST"),
+             (f"{rate('prose', 1):.0f}", "TOK/S PROSE DECODE", "1 REQUEST"),
+             (f"{rate('prose', 16):.0f}", "TOK/S COMBINED", "16 REQUESTS"),
+             ("1M", "TOKEN CONTEXT", "8M KV POOL"))
+    p = [f'<image href="data:image/jpeg;base64,{art}" width="{w}" height="{h}"/>',
+         f'<rect y="486" width="{w}" height="{h - 486}" fill="url(#floor)"/>']
+    step = (w - 100) / len(stats)
+    for i, (value, label, note) in enumerate(stats):
+        x = 50 + step * (i + 0.5)
+        if i:
+            p.append(f'<line x1="{x - step / 2:.1f}" x2="{x - step / 2:.1f}" y1="552" y2="664" stroke="{PEACH}" stroke-opacity="0.35"/>')
+        p.append(f'<text x="{x:.1f}" y="618" fill="url(#heat)" font-size="76" font-weight="800" letter-spacing="-2" text-anchor="middle" opacity="0.45" filter="url(#numglow)">{value}</text>')
+        p.append(text(x, 618, value, 76, "url(#heat)", "middle", 800, ' letter-spacing="-2"'))
+        p.append(text(x, 646, label, 17, PEACH, "middle", 700, ' letter-spacing="1.8"'))
+        p.append(text(x, 668, note, 14, W_SOFT, "middle", 600, ' letter-spacing="1.6"'))
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}" height="{h}" font-family="{FONT}">
 {SCORE_DEFS}
-<rect width="{w}" height="{h}" rx="26" fill="url(#sbg)"/>
+<g clip-path="url(#corners)"><rect width="{w}" height="{h}" fill="#07030A"/>
 {chr(10).join(p)}
+</g>
 <rect x="1" y="1" width="{w - 2}" height="{h - 2}" rx="25" fill="none" stroke="{W_EDGE}" stroke-width="2"/>
 </svg>
 """
