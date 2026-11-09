@@ -4,6 +4,10 @@ DeepSeek V4.1 Flash 1017 abliterated EXL3 3.84 bpw runs across three NVIDIA DGX 
 
 v1.2 uses engine base `30a9647` with exactly two non-runtime edits in `zig/src/server/metrics.zig`. A documentation comment and a test name describe external metrics samplers generically. Serving logic is unchanged by them. Rebuild comparison results: `release/build-verification.json`.
 
+## Unreleased
+
+- The engine's `/v1/responses` route accepts `include: ["reasoning.encrypted_content"]` and ignores it. Pi and other Responses API clients send it with every reasoning request, and each such request was refused with a 400. Reasoning already comes as text in its reasoning item, and nothing is encrypted. Any other `include` value is still refused and named. Ported from Mia's AI Lab patch 0058, reported by Unitea (unitea1992).
+
 ## 2026-11-08 exact image counts
 
 Production moved from `30a9647` to `30a9647` plus this change, with the owner's approval. The weights, KV pool, stream count, spill and sampling defaults are unchanged. The rebuilt binaries embed the production fatbins byte for byte.
