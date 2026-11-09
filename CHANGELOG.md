@@ -15,6 +15,16 @@ Not deployed. Production runs the engine from the 2026-11-09 PDF input deploy; t
 - The cache holds at most 256 MiB, counting the pages, their bookkeeping and the map; `TENSORFOLD_PDF_CACHE_MIB` sets it, and `0` turns it off. The least recently used documents are dropped first; a document larger than the whole cache is not kept.
 - Checked on the host with the x64 library: a twelve-page A4 document took 1.0 to 1.1 s a turn to count and render, and 0.3 ms on a hit. Hits match a fresh render byte for byte and start no worker; different modes, limits, documents and libraries miss; the byte bound holds through evictions; eight threads hitting and filling together start at most two workers per document.
 
+## Unreleased: omitted output caps fit the context left
+
+Not deployed. Production runs the API from the 2026-11-09 PDF input deploy; this API change waits for an owner-approved deploy. The engine is unchanged.
+
+- A request that leaves out its output cap (`max_tokens` or `max_completion_tokens` on Chat, `max_output_tokens` on Responses, `max_tokens` on Messages) gets `output_tokens` (32,768), lowered after the prompt is counted to the context left: `context_tokens` minus the prompt and `safety_tokens`. Before, the API filled 32,768 and refused a near-full conversation with 400 `context_length_exceeded`, although it could still answer. With no token left, it is still refused. The engine gets the lowered cap, and admission weighs it.
+- A cap the client gave is kept as before: one that does not fit beside the prompt is still refused with 400. A client cannot mark its own cap for lowering.
+- This follows DeepSeek's reference server: `resolve_max_tokens` in [`deepseek-recipe` `request/mod.rs`](https://github.com/deepseek-ai/deepseek-recipe/blob/935817c66f5d6e64838f419692545f06787e485f/deepseek-recipe/src/request/mod.rs#L155-L234). Its omitted default depends on the mode (8,192 without thinking, 65,536 with it, 131,072 at `max` effort); the API keeps its one documented `output_tokens` default.
+- The engine's own Chat and Responses routes already lower an omitted cap (its `--max-tokens`, 4,096 by default) to its context window and refuse a given one that does not fit; its Messages route requires `max_tokens`. Behind the API it always gets a cap, so its behavior is unchanged.
+- Checked on the host: new serving tests cover Chat, Responses and Messages, streamed and whole, near a full context, with an omitted cap, a given one and no room. The lowering test fails without the change.
+
 ## 2026-11-09 PDF input
 
 The engine part is in production since 2026-11-09, with the owner's approval, on top of the bf16 prefill wire build; `libpdfium.so` sits beside `tensorfold-native` ([runtime assets](docs/runtime-assets.md#pdfium-for-pdf-input)). The API part (counting and gating documents as media) followed the same day. PDF input is on by default; `--no-vision-pdf` turns it off. Checked live: a two-page PDF was counted exactly and read back correctly, through the engine and through the API as a Messages tool result, and a streamed reply running alongside showed no decode stall (longest gap 0.1 s).

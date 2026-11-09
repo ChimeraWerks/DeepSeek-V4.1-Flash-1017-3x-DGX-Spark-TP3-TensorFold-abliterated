@@ -74,12 +74,12 @@ All `/v1/*`, `/tokenize` and `/admin/*` routes listed here require `Authorizatio
 | `input` | Required for Responses. Native rendering handles its contents. |
 | `stream` | Boolean `true` selects SSE. Otherwise the API returns a JSON response. |
 | `n` | Only `1` is supported. |
-| `max_tokens` | Chat output cap. Defaults to `output_tokens`, bounded by `max_output_tokens`. |
-| `max_output_tokens` | Responses output cap, with the same configured default and ceiling. |
+| `max_tokens` | Chat and Messages output cap, at most `max_output_tokens`. When omitted: `output_tokens`, lowered to the context left (see below). |
+| `max_output_tokens` | Responses output cap, with the same ceiling and omitted default. |
 | `previous_response_id` | Accepted only when one client is configured, because stored responses are not tied to a client. The stored history it continues is not counted by admission; send the full `input` when that matters. |
 | `max_completion_tokens` | Fallback output-cap field when the endpoint's primary cap field is absent; removed before forwarding. |
 
-Output caps must be positive integers; a null primary cap uses the configured default. The API sends generation to TensorFold and leaves returned function-tool calls for the client to execute. Sampling and reasoning fields are described below.
+Output caps must be positive integers; a null primary cap counts as omitted. The API sends generation to TensorFold and leaves returned function-tool calls for the client to execute. Sampling and reasoning fields are described below.
 
 ```sh
 curl http://localhost:18002/v1/chat/completions \
@@ -332,7 +332,7 @@ Artifact validation requires `checksums` for `bin/BUILD.json`, both binaries and
 
 Optional capacity features need a matching capacity build receipt and preflight on all three systems. Spill needs private local-disk paths, sufficient free-space reserves and matching model, engine, Engram and rank-cache identities. Optional TP3 KV sharding supports fetch decode only. Each owner part must fit the full window plus round reserve, and the total pool must be divisible by `6144`. The production `8000000` pool fails that divisibility requirement. Spill with `cache_salt` is unsupported. Check these prerequisites against the selected engine; the API does not enforce them.
 
-The API does not shorten prompts. A prompt plus its output reserve must fit `context_tokens`, or the request is refused; clients manage their own context.
+The API does not shorten prompts. A prompt, the output cap the client gave and `safety_tokens` must fit `context_tokens`, or the request is refused with 400 `context_length_exceeded`; clients manage their own context. A cap the client left out is `output_tokens`, lowered after the prompt is counted to the context left (`context_tokens` minus the prompt and `safety_tokens`), so a long conversation still gets a reply; with no token left, it is refused the same way. The engine gets the lowered cap and admission weighs it. This follows DeepSeek's reference server (`resolve_max_tokens` in deepseek-recipe), whose omitted default depends on the mode (8,192 without thinking, 65,536 with it, 131,072 at `max` effort); this API keeps its one configured `output_tokens` default.
 
 ## Vision jobs
 
