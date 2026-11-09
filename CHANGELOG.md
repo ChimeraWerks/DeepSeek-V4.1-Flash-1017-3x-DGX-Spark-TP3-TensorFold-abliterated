@@ -4,9 +4,17 @@ DeepSeek V4.1 Flash 1017 abliterated EXL3 3.84 bpw runs across three NVIDIA DGX 
 
 v1.2 uses engine base `30a9647` with exactly two non-runtime edits in `zig/src/server/metrics.zig`. A documentation comment and a test name describe external metrics samplers generically. Serving logic is unchanged by them. Rebuild comparison results: `release/build-verification.json`.
 
-## Unreleased: PDF page cache
+## 2026-11-09 measured round costs
 
-Not deployed. Production runs the engine from the 2026-11-09 keyed draft deploy; this engine change waits for an owner-approved deploy. The API is unchanged.
+In production since 2026-11-09, with the owner's approval, in the bundled restart: `TF_DS_ROUND_MS` set on every rank to a round-cost table measured on this cluster, in place of the served `ROUND_MS`.
+
+- The draft planner weighs a longer draft against the round it costs, by rows. The served table was 9% high at 8 rows and 9 to 13% low at 32 to 48 rows on this cluster.
+- The new table is a straight fit of fixed-draft sweeps with 2, 4, 6, 9 and 12 requests in flight: 22.79 ms plus 3.823 ms a row, rows 1 to 48, within 4.9% of every measured point.
+- Checked live: sampled decode at one and two requests matched the keyed draft deploy within noise (67 to 70, 45 and 63.5 tok/s against 66 to 70, 45 and 63.2).
+
+## 2026-11-09 PDF page cache
+
+In production since 2026-11-09, with the owner's approval, in the engine of the bundled restart (main `90d6c84`, keyed drafts still on). The API is unchanged. Checked live: the same two-page PDF read twice was counted and read back correctly both times, the second in 3.4 s against 3.9 s.
 
 - The engine keeps the pages it rendered from a PDF, so a document sent again is not rendered again. An agent client resends a PDF it read with every turn, and the count route measures it before each generation; each time, a worker was started and every page measured or drawn again (about 80 ms an A4 page on the x64 host), one document at a time across the server.
 - Pages are keyed by the SHA-256 of the document's bytes, whether they were drawn or only measured, the page limit, the render scale and limits, and the PDFium file's path, inode, size and modification time. Only pages that passed the server's checks of the worker's reply are kept.
@@ -15,9 +23,9 @@ Not deployed. Production runs the engine from the 2026-11-09 keyed draft deploy;
 - The cache holds at most 256 MiB, counting the pages, their bookkeeping and the map; `TENSORFOLD_PDF_CACHE_MIB` sets it, and `0` turns it off. The least recently used documents are dropped first; a document larger than the whole cache is not kept.
 - Checked on the host with the x64 library: a twelve-page A4 document took 1.0 to 1.1 s a turn to count and render, and 0.3 ms on a hit. Hits match a fresh render byte for byte and start no worker; different modes, limits, documents and libraries miss; the byte bound holds through evictions; eight threads hitting and filling together start at most two workers per document.
 
-## Unreleased: omitted output caps fit the context left
+## 2026-11-09 omitted output caps fit the context left
 
-Not deployed. Production runs the API from the 2026-11-09 PDF input deploy; this API change waits for an owner-approved deploy. The engine is unchanged.
+In production since 2026-11-09, with the owner's approval, as API `0.1.5.post8` in the bundled restart. The engine is unchanged. Checked live: a Chat request with no output cap and a Messages tool result holding a PDF both answered through the API.
 
 - A request that leaves out its output cap (`max_tokens` or `max_completion_tokens` on Chat, `max_output_tokens` on Responses, `max_tokens` on Messages) gets `output_tokens` (32,768), lowered after the prompt is counted to the context left: `context_tokens` minus the prompt and `safety_tokens`. Before, the API filled 32,768 and refused a near-full conversation with 400 `context_length_exceeded`, although it could still answer. With no token left, it is still refused. The engine gets the lowered cap, and admission weighs it.
 - A cap the client gave is kept as before: one that does not fit beside the prompt is still refused with 400. A client cannot mark its own cap for lowering.
