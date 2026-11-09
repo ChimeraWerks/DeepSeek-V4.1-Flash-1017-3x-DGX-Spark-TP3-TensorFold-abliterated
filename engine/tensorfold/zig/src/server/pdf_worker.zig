@@ -101,7 +101,7 @@ fn readChildPipe(a: Allocator, fd: c_int, deadline_ns: i96, max_bytes: usize) er
 }
 
 /// The worker's reply, checked as untrusted: each page a PNG of the size its header declares (only that header when
-/// measuring), the page and pixel budgets recomputed here from those headers.
+/// measuring), no side past pdf.max_page_side, the page and pixel budgets recomputed here from those headers.
 pub fn parseChildReply(cx: *Cx, frame: []const u8, mode: pdf.Mode, max_pages: u32, budget: *Budget, out: *std.ArrayList([]const u8)) errors.Refused!void {
     if (frame.len == 0) return cx.refuse(failed);
     switch (frame[0]) {
@@ -122,6 +122,8 @@ pub fn parseChildReply(cx: *Cx, frame: []const u8, mode: pdf.Mode, max_pages: u3
                 if (len == 0 or pos + len > frame.len) return cx.refuse(failed);
                 const page = frame[pos .. pos + len];
                 const s = png.size(page) orelse return cx.refuse(failed);
+                // a side past the worker's clamp is refused before any size math (png.bound, the pixel count)
+                if (s.w > pdf.max_page_side or s.h > pdf.max_page_side) return cx.refuse(failed);
                 if (if (mode == .measure) len != png.header_len else len <= png.header_len or len > png.bound(s.w, s.h)) return cx.refuse(failed);
                 const px = @as(u64, s.w) * s.h;
                 if (next.pixels_used + px > pdf.max_request_pixels) return cx.refuse(pdf.pixel_refusal);
@@ -317,6 +319,19 @@ test "PDF render worker: a reply's pages are checked and the budget recomputed f
         try std.testing.expectError(error.Refused, parseChildReply(&cx, try frameOf(a, &.{case[0]}), case[1], 16, &budget, &pages));
         try std.testing.expectEqualStrings(failed, cx.message);
     }
+    // a header naming a side past the worker's clamp (0xFFFFFFFF square, or one side over): refused before its size
+    // is used, rendered or measured, and nothing kept
+    for ([_][2]u32{ .{ 0xFFFF_FFFF, 0xFFFF_FFFF }, .{ pdf.max_page_side + 1, 28 }, .{ 28, pdf.max_page_side + 1 } }) |side| {
+        const huge = png.header(side[0], side[1]);
+        const huge_tail = try std.mem.concat(a, u8, &.{ &huge, "IDATxxxx" });
+        for ([_]struct { []const u8, pdf.Mode }{ .{ huge_tail, .render }, .{ &huge, .measure } }) |case| {
+            var clean: Budget = .{};
+            try std.testing.expectError(error.Refused, parseChildReply(&cx, try frameOf(a, &.{case[0]}), case[1], 16, &clean, &pages));
+            try std.testing.expectEqualStrings(failed, cx.message);
+            try std.testing.expectEqual(Budget{}, clean);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), pages.items.len);
     // pixels past the request's limit: refused before the page is kept
     var full: Budget = .{ .pixels_used = pdf.max_request_pixels - 1000 };
     try std.testing.expectError(error.Refused, parseChildReply(&cx, try frameOf(a, &.{&head}), .measure, 16, &full, &pages));

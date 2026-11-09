@@ -38,10 +38,10 @@ pub fn size(bytes: []const u8) ?Size {
 }
 
 /// The most bytes `encodeBgrx` writes for w x h: the filtered rows stored uncompressed, with every block, chunk and
-/// trailer around them, and slack.
+/// trailer around them, and slack. Saturating, so a hostile header's size cannot overflow it.
 pub fn bound(w: u32, h: u32) usize {
-    const raw = @as(usize, h) * (1 + 3 * @as(usize, w));
-    return header_len + raw + raw / 256 + 4096;
+    const raw = @as(usize, h) *| (1 +| 3 *| @as(usize, w));
+    return header_len +| raw +| raw / 256 +| 4096;
 }
 
 fn crc(kind: *const [4]u8, body: []const u8) u32 {
@@ -229,4 +229,6 @@ test "size reads only the header encodeBgrx writes" {
     h[20] ^= 1; // the width changed under its CRC
     try std.testing.expectEqual(@as(?Size, null), size(&h));
     try std.testing.expectEqual(@as(?Size, null), size(&header(0, 480)));
+    // the largest size a header can name saturates the bound rather than overflowing it
+    try std.testing.expectEqual(@as(usize, std.math.maxInt(usize)), bound(0xFFFF_FFFF, 0xFFFF_FFFF));
 }

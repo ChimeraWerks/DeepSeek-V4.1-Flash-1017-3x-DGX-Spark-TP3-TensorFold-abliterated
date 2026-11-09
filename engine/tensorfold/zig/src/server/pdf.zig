@@ -23,6 +23,8 @@ pub const default_max_pages: u32 = 16;
 pub const max_pages_cap: u32 = 64;
 pub const render_timeout_ns: i96 = 10 * std.time.ns_per_s;
 pub const max_child_heap_bytes: u64 = 1 << 30;
+/// The most pixels a page side can have (pageDimensions' clamp): a worker's reply naming more is refused unread.
+pub const max_page_side: u32 = 4096;
 pub const off_message = "PDF inputs are off on this server; start the server with --vision-pdf";
 pub const missing_message = library ++ " is required for PDF inputs (--vision-pdf); install PDFium (chromium/7725) in lib/ beside the server or set " ++ env ++ " to its file";
 pub const url_refusal = "URLs are not accepted for PDF inputs; send inline base64 or a data:application/pdf;base64,... URL";
@@ -309,8 +311,8 @@ pub fn pageDimensions(pw_raw: f32, ph_raw: f32) [2]c_int {
     if (pw * scale > max_side) scale = max_side / pw;
     if (ph * scale > max_side) scale = max_side / ph;
     if ((pw * scale) * (ph * scale) > max_area) scale = @sqrt(max_area / (pw * ph));
-    const w: c_int = @max(28, @min(4096, @as(c_int, @intFromFloat(@round(pw * scale)))));
-    const h: c_int = @max(28, @min(4096, @as(c_int, @intFromFloat(@round(ph * scale)))));
+    const w: c_int = @max(28, @min(@as(c_int, max_page_side), @as(c_int, @intFromFloat(@round(pw * scale)))));
+    const h: c_int = @max(28, @min(@as(c_int, max_page_side), @as(c_int, @intFromFloat(@round(ph * scale)))));
     return .{ w, h };
 }
 
