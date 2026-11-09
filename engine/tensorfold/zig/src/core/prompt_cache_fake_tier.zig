@@ -23,6 +23,11 @@ pub const FakeTier = struct {
     polls: u32 = 1,
     /// Deterministic host tests: reject start before reserving anything.
     begin_error: ?anyerror = null,
+    begins: u64 = 0,
+    /// Asked at each begin, on the thread that begins it (the lane host's): a false answer counts in `begins_unbound`
+    /// (the lane thread's enter hook had not run there: a device context would not be current).
+    on_begin: ?Check = null,
+    begins_unbound: u64 = 0,
     /// The next restore fails with this error (on its first poll).
     fail_next: ?anyerror = null,
     /// Shorter states are not written.
@@ -50,6 +55,8 @@ pub const FakeTier = struct {
     pub const Pt = struct { id: u64, key: []u32, at: u32, group: u64, shared: bool, bytes: []u8, parent: ?u64, fork: u32, size: u64, lineage: []pc.Fork = &.{} };
     pub const Pending = struct { id: u64, key: []u32, at: u32, group: u64, shared: bool, saved: pc.Saved, parent: ?u64, fork: u32, size: u64, lineage: []pc.Fork };
     const Job = struct { id: u64, point: u64, left: u32, fail: ?anyerror };
+    /// A question the fake asks a test at a call (on the calling thread).
+    pub const Check = struct { ctx: *anyopaque, check: *const fn (ctx: *anyopaque) bool };
 
     pub fn deinit(t: *FakeTier) void {
         for (t.points.items) |p| {
@@ -129,6 +136,10 @@ pub const FakeTier = struct {
         const t = of(ptr);
         t.lock();
         defer t.unlock();
+        t.begins += 1;
+        if (t.on_begin) |c| if (!c.check(c.ctx)) {
+            t.begins_unbound += 1;
+        };
         if (t.begin_error) |err| return err;
         if (t.find(p.id) == null) {
             t.c.presence_refused += 1;

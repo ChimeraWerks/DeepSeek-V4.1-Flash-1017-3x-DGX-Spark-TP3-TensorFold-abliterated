@@ -255,8 +255,18 @@ const Host = struct {
         h.host.kv_parts = h.kv_parts;
         if (h.spill) |sp| h.host.configure(sp); // (after the cache and its tier: Spill.unbound sees Status.cache)
         if (h.lone != null) h.host.lone = .{ .ctx = h, .run = loneRun, .sampled = true };
+        // the context current on the lane thread from its start: admission reaches the device through the prompt
+        // cache's tier (a restore's begin) before any backend call binds it, and that first restore after a start
+        // failed (cuMemAlloc refused with 709 on the unbound thread, read as a lost context that broke the rank group)
+        if (h.gpu != null) h.host.enter = .{ .ctx = h, .run = enterLane };
         try h.host.start();
         h.host_ready = true;
+    }
+
+    /// The lane thread's first step: its context current (LaneHost.enter). A failed bind is only logged: nothing is
+    /// published for it, device_probe still sees a lost context, and the next wrapped backend call binds again.
+    fn enterLane(p: *anyopaque) void {
+        _ = bind(p) catch |err| std.log.warn("lane thread: making the CUDA context current failed ({s}); the first backend call tries again", .{@errorName(err)});
     }
 
     /// The family's lone driver with the context current on the lane thread.

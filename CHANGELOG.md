@@ -6,7 +6,11 @@ v1.2 uses engine base `30a9647` with exactly two non-runtime edits in `zig/src/s
 
 ## Unreleased
 
+Not deployed. Production stays on `30a9647` plus the exact image count change.
+
 - The engine's `/v1/responses` route accepts `include: ["reasoning.encrypted_content"]` and ignores it. Pi and other Responses API clients send it with every reasoning request, and each such request was refused with a 400. Reasoning already comes as text in its reasoning item, and nothing is encrypted. Any other `include` value is still refused and named. Ported from Mia's AI Lab patch 0058, reported by Unitea (unitea1992).
+- The lane thread makes its CUDA context current as it starts. With the spill tier on, the first request after a restart could resume a saved state from disk before any model call had bound the context on that thread. The restore's `cuMemAlloc` was then refused with 709, read as a lost context, and broke the rank group. The warmups `start.sh` sends after a start hid this; a supervisor restart sends none. Port of Mia's patch 0059 (issue #102, reported by NguyenPhan2810).
+- Checked on the host: a new lane host test in `lane_host_tier_test.zig` fails without the change and passes with it, the other tier tests pass, and `tensorfold-native` builds.
 
 ## 2026-11-08 exact image counts
 
