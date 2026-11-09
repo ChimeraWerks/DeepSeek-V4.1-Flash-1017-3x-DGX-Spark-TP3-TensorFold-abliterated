@@ -46,7 +46,8 @@ pub const Sink = struct {
 };
 
 /// How long a streaming reply may be silent before a sink that has a ping gets one (a long cold prefill).
-const ping_after_ns: i96 = 25 * std.time.ns_per_s;
+/// A var so a host test can shorten it.
+pub var ping_after_ns: i96 = 25 * std.time.ns_per_s;
 
 /// A JSON answer (response_format json_object or json_schema, guided_json, structured_outputs json or json_object) is data:
 /// no call is read out of it, though the offered tools stay in its prompt (SvangenStudios, MiaAI-Lab patch 0042).
