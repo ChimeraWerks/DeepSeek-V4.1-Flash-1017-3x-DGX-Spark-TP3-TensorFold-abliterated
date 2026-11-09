@@ -51,6 +51,31 @@ fn image(cx: *Cx, block: Value) errors.Refused!Value {
     return .{ .object = o };
 }
 
+/// A ``document`` block as the chat ``file`` part pdf.zig renders: base64 application/pdf, or a data: URL; a remote
+/// URL, a file id or a text source is refused (after TensorFold upstream, joernchen, PR #1820).
+fn document(cx: *Cx, block: Value) errors.Refused!Value {
+    const a = cx.a;
+    const source = block.get("source") orelse Value.null;
+    if (source != .object) return cx.refuse("document.source must be an object");
+    var file_data: []const u8 = undefined;
+    if (source.typeIs("base64")) {
+        const media = try string(cx, source.get("media_type"), "document.source.media_type", false);
+        if (!std.mem.eql(u8, media, "application/pdf")) return cx.refuse("unsupported document media_type; only application/pdf is supported");
+        file_data = try std.fmt.allocPrint(a, "data:{s};base64,{s}", .{ media, try string(cx, source.get("data"), "document.source.data", false) });
+    } else if (source.typeIs("url")) {
+        const u = try string(cx, source.get("url"), "document.source.url", false);
+        if (!std.ascii.startsWithIgnoreCase(std.mem.trim(u8, u, " \t\r\n"), "data:")) return cx.refuse(@import("pdf.zig").url_refusal);
+        file_data = u;
+    } else return cx.refuse("document.source.type must be base64 or url; file IDs are unsupported");
+    const inner = try json.newObject(a);
+    if (block.get("title")) |t| if (t == .string) try inner.put(a, "filename", t);
+    try inner.put(a, "file_data", .{ .string = file_data });
+    const o = try json.newObject(a);
+    try o.put(a, "type", .{ .string = "file" });
+    try o.put(a, "file", .{ .object = inner });
+    return .{ .object = o };
+}
+
 fn roleIs(v: Value, names: []const []const u8) bool {
     const r = v.get("role") orelse return false;
     if (r != .string) return false;
@@ -98,6 +123,8 @@ fn messages(cx: *Cx, value: ?Value, system: ?Value) errors.Refused!Value {
                 try content.append(a, try textPart(a, try string(cx, block.get("text"), "text", true)));
             } else if (std.mem.eql(u8, k, "image") and user) {
                 try content.append(a, try image(cx, block));
+            } else if (std.mem.eql(u8, k, "document") and user) {
+                try content.append(a, try document(cx, block));
             } else if (std.mem.eql(u8, k, "thinking") and assistant) {
                 try thoughts.appendSlice(a, try string(cx, block.get("thinking"), "thinking", true));
                 any_thought = true;
@@ -127,6 +154,9 @@ fn messages(cx: *Cx, value: ?Value, system: ?Value) errors.Refused!Value {
                         try result_parts.append(a, try textPart(a, t));
                     } else if (part.typeIs("image")) {
                         try result_parts.append(a, try image(cx, part));
+                        has_image = true;
+                    } else if (part.typeIs("document")) { // Claude Code's Read of a PDF returns one
+                        try result_parts.append(a, try document(cx, part));
                         has_image = true;
                     } else return cx.fail(.request, "unsupported tool_result content type {s}", .{try pyrepr.repr(a, part.get("type"))});
                 }
@@ -324,4 +354,41 @@ test "Messages tool histories use the shared ID validation and preserve strict" 
     try std.testing.expect(good.get("tools").?.array[0].get("function").?.get("strict").?.bool);
     const bad = try translate(&cx, (try json.parse(cx.a, prefix ++ "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"wrong\",\"content\":\"ok\"}]}]}")).ok, false);
     try std.testing.expectError(error.Refused, @import("messages.zig").validateToolHistory(&cx, bad.get("messages")));
+}
+
+test "document blocks become file parts, in user turns and tool results; remote and non-PDF sources are refused" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    const body = (try json.parse(cx.a,
+        \\{"model": "m", "max_tokens": 16, "messages": [
+        \\ {"role": "user", "content": [{"type": "document", "title": "a.pdf", "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0="}}, {"type": "text", "text": "read it"}]},
+        \\ {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "b.pdf"}}]},
+        \\ {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0="}}]}]}]}
+    )).ok;
+    const chat = try translate(&cx, body, false);
+    const msgs = chat.get("messages").?.array;
+    const user_part = msgs[0].get("content").?.array[0];
+    try std.testing.expectEqualStrings("file", user_part.get("type").?.string);
+    try std.testing.expectEqualStrings("data:application/pdf;base64,JVBERi0=", user_part.get("file").?.get("file_data").?.string);
+    try std.testing.expectEqualStrings("a.pdf", user_part.get("file").?.get("filename").?.string);
+    try std.testing.expectEqualStrings("tool", msgs[2].get("role").?.string);
+    const result_part = msgs[2].get("content").?.array[0];
+    try std.testing.expectEqualStrings("file", result_part.get("type").?.string);
+    for ([_][]const u8{
+        \\{"model": "m", "max_tokens": 16, "messages": [{"role": "user", "content": [{"type": "document", "source": {"type": "url", "url": "https://example.com/doc.pdf"}}]}]}
+        ,
+        \\{"model": "m", "max_tokens": 16, "messages": [{"role": "user", "content": [{"type": "document", "source": {"type": "base64", "media_type": "text/plain", "data": "aGk="}}]}]}
+        ,
+        \\{"model": "m", "max_tokens": 16, "messages": [{"role": "user", "content": [{"type": "document", "source": {"type": "file", "file_id": "file_1"}}]}]}
+    }) |raw| {
+        var bad: Cx = .{ .a = cx.a };
+        try std.testing.expectError(error.Refused, translate(&bad, (try json.parse(cx.a, raw)).ok, false));
+    }
+    var url_cx: Cx = .{ .a = cx.a };
+    const remote = (try json.parse(cx.a,
+        \\{"model": "m", "max_tokens": 16, "messages": [{"role": "user", "content": [{"type": "document", "source": {"type": "url", "url": "https://example.com/doc.pdf"}}]}]}
+    )).ok;
+    try std.testing.expectError(error.Refused, translate(&url_cx, remote, false));
+    try std.testing.expect(std.mem.indexOf(u8, url_cx.message, "URLs are not accepted") != null);
 }

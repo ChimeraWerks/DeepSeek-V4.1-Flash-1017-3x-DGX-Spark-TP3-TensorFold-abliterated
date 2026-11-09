@@ -4,7 +4,7 @@ const json = @import("json.zig");
 const Value = json.Value;
 const Allocator = std.mem.Allocator;
 
-/// The body with every image part's URL replaced, the rest kept.
+/// The body with every image part's URL and every file part's data replaced (a PDF's bytes too), the rest kept.
 fn redact(a: Allocator, v: Value) Allocator.Error!Value {
     switch (v) {
         .array => |items| {
@@ -18,6 +18,14 @@ fn redact(a: Allocator, v: Value) Allocator.Error!Value {
                 const url = try json.newObject(a);
                 try url.put(a, "url", .{ .string = "<redacted>" });
                 try copy.put(a, "image_url", .{ .object = url });
+                return .{ .object = copy };
+            }
+            if (v.typeIs("file")) {
+                const copy = try json.copyObject(a, o);
+                const file = try json.newObject(a);
+                if (v.get("file")) |f| if (f == .object) if (f.get("filename")) |name| try file.put(a, "filename", name);
+                try file.put(a, "file_data", .{ .string = "<redacted>" });
+                try copy.put(a, "file", .{ .object = file });
                 return .{ .object = copy };
             }
             const out = try json.newObject(a);
@@ -37,4 +45,17 @@ pub fn append(a: Allocator, path: []const u8, body: Value) void {
     defer _ = std.posix.system.close(fd);
     const framed = std.mem.concat(a, u8, &.{ line, "\n" }) catch return;
     _ = std.posix.system.write(fd, framed.ptr, framed.len);
+}
+
+test "the request log keeps image URLs and PDF bytes out" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const body = (try json.parse(a,
+        \\{"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,c2VjcmV0"}}, {"type": "file", "file": {"filename": "a.pdf", "file_data": "JVBERi1zZWNyZXQ="}}, {"type": "text", "text": "keep me"}]}]}
+    )).ok;
+    const text = try json.stringify(a, try redact(a, body), .{});
+    try std.testing.expect(std.mem.indexOf(u8, text, "c2VjcmV0") == null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "JVBERi1zZWNyZXQ=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "a.pdf") != null and std.mem.indexOf(u8, text, "keep me") != null);
 }

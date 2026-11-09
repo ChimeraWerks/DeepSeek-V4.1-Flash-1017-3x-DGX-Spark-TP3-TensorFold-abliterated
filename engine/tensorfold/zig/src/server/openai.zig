@@ -155,7 +155,7 @@ fn plan(srv: *Server, cx: *Cx, is_chat: bool, raw: Value) errors.Refused!Plan {
         input.cache_namespace = @import("engine_api").prompt_cache.namespaceFor(salt.string);
     };
     // an engine with vision takes image parts: their placeholders in the text, their bytes in input.images
-    var images: messages.Images = .{ .placeholder = if (srv.info.vision) |v| v.placeholder else "" };
+    var images: messages.Images = .{ .placeholder = if (srv.info.vision) |v| v.placeholder else "", .pdf = srv.pdfPages(false) };
     const take: ?*messages.Images = if (srv.info.vision != null) &images else null;
     // the client's text stays text: a control token's spelling in it does not become the token (issue #21)
     if (is_chat) {

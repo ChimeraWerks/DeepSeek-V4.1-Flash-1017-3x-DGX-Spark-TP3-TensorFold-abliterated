@@ -42,7 +42,7 @@ fn tokenize(srv: *Server, cx: *Cx, raw_body: Value) errors.Refused!Value {
     if (body.has("messages")) {
         const generation = try flag(cx, body, "add_generation_prompt", true);
         // images as the chat route takes them: placeholders in the text, each spanned to its image's length below
-        var images: messages.Images = .{ .placeholder = if (srv.info.vision) |v| v.placeholder else "" };
+        var images: messages.Images = .{ .placeholder = if (srv.info.vision) |v| v.placeholder else "", .pdf = srv.pdfPages(true) };
         const take: ?*messages.Images = if (srv.info.vision != null) &images else null;
         const msgs = try messages.normalizeImages(cx, try messages.requestMessages(cx, srv.text, body.get("messages")), "system", srv.needs_user_after_tool, take);
         const tools = tool_specs.active(cx, try messages.maskControls(cx.a, srv.text, body.get("tools")), body.get("tool_choice")) catch |e| switch (e) {
@@ -120,7 +120,7 @@ pub fn post(srv: *Server, conn: *Conn, a: Allocator, detok: bool) void {
     o.put(a, "type", .{ .string = "invalid_request_error" }) catch return;
     const wrapped = json.newObject(a) catch return;
     wrapped.put(a, "error", .{ .object = o }) catch return;
-    routes.sendValue(conn, a, if (cx.kind == .capacity) 503 else 400, .{ .object = wrapped });
+    routes.sendValue(conn, a, if (cx.kind == .capacity) 503 else if (cx.kind == .unimplemented) 501 else 400, .{ .object = wrapped });
 }
 
 test "prepare floor covers chat tokenize raw tokenize and detokenize before allocation" {

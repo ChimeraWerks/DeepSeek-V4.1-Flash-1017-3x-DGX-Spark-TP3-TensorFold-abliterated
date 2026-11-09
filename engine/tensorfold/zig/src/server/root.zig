@@ -38,6 +38,13 @@ test {
     _ = @import("status_routes.zig");
     _ = @import("log.zig");
     _ = @import("messages.zig");
+    _ = @import("png.zig");
+    _ = @import("pdf.zig");
+    _ = @import("pdf_worker.zig");
+    _ = @import("pdf_flags_test.zig");
+    _ = @import("request_log.zig");
+    _ = @import("anthropic_translate.zig");
+    _ = @import("responses_translate.zig");
     _ = @import("stream_preflight_test.zig");
     _ = @import("responses_include_test.zig");
     _ = @import("late_system_test.zig");

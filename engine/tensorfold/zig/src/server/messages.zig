@@ -6,6 +6,7 @@ const fields = @import("fields.zig");
 const Value = json.Value;
 const Cx = errors.Cx;
 const model_text = @import("model_text.zig");
+const pdf = @import("pdf.zig");
 
 /// A request's own text as text, never a control token (MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks#21): every
 /// string in `v`, including rendered schema keys (message text, reasoning, tool results and tools), with the tokenizer's
@@ -107,6 +108,8 @@ fn withField(cx: *Cx, o: *const json.Object, key: []const u8, value: Value) !*js
 pub const Images = struct {
     placeholder: []const u8,
     list: std.ArrayList([]const u8) = .empty,
+    /// PDF parts (pdf.zig): each page an image of `list` and a placeholder; null refuses them (--vision-pdf is off).
+    pdf: ?pdf.Pages = null,
 };
 
 pub const image_text_refusal = "image input: message text must not contain the image placeholder token";
@@ -120,13 +123,18 @@ fn isImagePart(part: Value) bool {
     return t == .string and std.mem.eql(u8, t.string, "image_url");
 }
 
-/// Whether any message's content list holds an image part.
+/// An image part or a PDF part (whose pages become images).
+fn isMediaPart(part: Value) bool {
+    return isImagePart(part) or pdf.isPdfPart(part);
+}
+
+/// Whether any message's content list holds an image or PDF part.
 fn hasImages(list: Value) bool {
     for (list.array) |message| {
         if (message != .object) continue;
         const content = message.get("content") orelse continue;
         if (content != .array) continue;
-        for (content.array) |part| if (isImagePart(part)) return true;
+        for (content.array) |part| if (isMediaPart(part)) return true;
     }
     return false;
 }
@@ -301,10 +309,21 @@ pub fn normalizeImages(cx: *Cx, messages: ?Value, late_system: []const u8, needs
             var item: *json.Object = base;
             if (content != null and content.? == .array) {
                 const r = role.?.string;
-                if (!std.mem.eql(u8, r, "user") and !std.mem.eql(u8, r, "tool")) for (content.?.array) |part| if (isImagePart(part)) return cx.refuse(image_role_refusal);
+                if (!std.mem.eql(u8, r, "user") and !std.mem.eql(u8, r, "tool")) for (content.?.array) |part| if (isMediaPart(part)) return cx.refuse(image_role_refusal);
                 var text: std.ArrayList(u8) = .empty;
                 for (content.?.array, 0..) |part, k| {
                     if (k > 0) try text.appendSlice(cx.a, "\n\n");
+                    if (pdf.isPdfPart(part)) {
+                        // each page as its own image part would be: its placeholder, blank lines between pages
+                        const pages = if (im.pdf) |*p| p else return cx.refuse(pdf.off_message);
+                        const first = im.list.items.len;
+                        try pdf.expandPart(cx, part, pages, &im.list);
+                        for (first..im.list.items.len) |j| {
+                            if (j > first) try text.appendSlice(cx.a, "\n\n");
+                            try text.appendSlice(cx.a, im.placeholder);
+                        }
+                        continue;
+                    }
                     if (isImagePart(part)) {
                         try im.list.append(cx.a, try imageBytes(cx, part));
                         try text.appendSlice(cx.a, im.placeholder);
@@ -661,5 +680,37 @@ test "tool history validates IDs before inference without reordering results" {
         try std.testing.expectError(error.Refused, validateToolHistory(&cx, (try json.parse(cx.a, raw)).ok));
         try std.testing.expectEqual(errors.Kind.request, cx.kind);
         try std.testing.expectEqual(@as(u16, 400), cx.status());
+    }
+}
+
+test "PDF parts: refused by name while --vision-pdf is off, outside user and tool turns, and on a text-only server" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    const req = try std.fmt.allocPrint(cx.a,
+        \\[{{"role": "user", "content": [{{"type": "text", "text": "Analyze this PDF"}}, {{"type": "file", "file": {{"filename": "document.pdf", "file_data": "data:application/pdf;base64,{s}"}}}}]}}]
+    , .{try pdf.base64Of(cx.a, pdf.minimal_two_page_pdf)});
+    const messages = (try json.parse(cx.a, req)).ok;
+    var off: Images = .{ .placeholder = "<img>" };
+    try std.testing.expectError(error.Refused, normalizeImages(&cx, messages, "system", false, &off));
+    try std.testing.expectEqualStrings(pdf.off_message, cx.message);
+    try std.testing.expectError(error.Refused, normalizeImages(&cx, messages, "system", false, null));
+    try std.testing.expectEqualStrings(text_only_refusal, cx.message);
+    const as_assistant = (try json.parse(cx.a, try std.mem.replaceOwned(u8, cx.a, req, "\"user\"", "\"assistant\""))).ok;
+    var on: Images = .{ .placeholder = "<img>", .pdf = .{} };
+    try std.testing.expectError(error.Refused, normalizeImages(&cx, as_assistant, "system", false, &on));
+    try std.testing.expectEqualStrings(image_role_refusal, cx.message);
+    // a data:application/pdf image_url part is a PDF part too, refused while PDFs are off
+    const as_image = (try json.parse(cx.a, try std.fmt.allocPrint(cx.a,
+        \\[{{"role": "user", "content": [{{"type": "image_url", "image_url": {{"url": "data:application/pdf;base64,{s}"}}}}]}}]
+    , .{try pdf.base64Of(cx.a, pdf.minimal_two_page_pdf)}))).ok;
+    try std.testing.expectError(error.Refused, normalizeImages(&cx, as_image, "system", false, &off));
+    try std.testing.expectEqualStrings(pdf.off_message, cx.message);
+    // with PDFs on and no PDFium file, the library is named and the status is 501
+    if (pdf.libraryPath(cx.a, std.testing.io) == null) {
+        try std.testing.expectError(error.Refused, normalizeImages(&cx, messages, "system", false, &on));
+        try std.testing.expectEqual(errors.Kind.unimplemented, cx.kind);
+        try std.testing.expectEqual(@as(u16, 501), cx.status());
+        try std.testing.expect(std.mem.indexOf(u8, cx.message, pdf.library) != null);
     }
 }

@@ -20,6 +20,7 @@ const tool_grammar = @import("tool_grammar.zig");
 const chunk_plan = @import("chunk_plan.zig");
 const log = @import("log.zig");
 const prepare_gate = @import("prepare_gate.zig");
+const pdf = @import("pdf.zig");
 const connection_keep: usize = 1 << 20;
 const Value = json.Value;
 const Cx = errors.Cx;
@@ -46,6 +47,8 @@ pub const Config = struct {
     /// Sampling when a request names none (generation_config.json and the serve flags), or null for greedy.
     default_sampling: ?Value = null,
     use_drafts: bool = true,
+    /// --vision-pdf: PDF parts (file, input_file, Messages documents, data:application/pdf) as page images (pdf.zig).
+    vision_pdf: bool = false,
     /// Rank-0 HTTP presentation only. TF_STREAM_TOOL_CALLS=1 opts into incremental DSML arguments.
     stream_tool_calls: bool = false,
     seed_salt: i64 = 0,
@@ -150,6 +153,15 @@ pub const Server = struct {
     }
 
     /// The effort the template hears: the request's name, or this server's default.
+    /// A request's PDF settings, null when PDF parts are refused (no --vision-pdf, or an engine without images). The
+    /// count routes (`count`) measure each page rather than draw it when the family spans an image from its header,
+    /// as the generation path's PNG pages are spanned from theirs.
+    pub fn pdfPages(srv: *const Server, count: bool) ?pdf.Pages {
+        if (!srv.config.vision_pdf) return null;
+        const v = srv.info.vision orelse return null;
+        return .{ .mode = if (count and v.count != null) .measure else .render, .max_pages = pdf.maxPagesLimit() };
+    }
+
     pub fn effortFor(srv: *const Server, explicit: ?[]const u8) ?[]const u8 {
         const e = explicit orelse srv.config.reasoning_effort orelse return null;
         return fields.coerceEffort(e, srv.effort_levels);
