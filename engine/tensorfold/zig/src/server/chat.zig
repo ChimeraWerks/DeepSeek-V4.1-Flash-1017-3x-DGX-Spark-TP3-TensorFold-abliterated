@@ -48,7 +48,20 @@ pub const Sink = struct {
 /// How long a streaming reply may be silent before a sink that has a ping gets one (a long cold prefill).
 const ping_after_ns: i96 = 25 * std.time.ns_per_s;
 
+/// A JSON answer (response_format json_object or json_schema, guided_json, structured_outputs json or json_object) is data:
+/// no call is read out of it, though the offered tools stay in its prompt (SvangenStudios, MiaAI-Lab patch 0042).
+pub const ResponseChannel = enum { automatic, structured_json };
+
+fn channelOf(structure: ?api.Structure) ResponseChannel {
+    const s = structure orelse return .automatic;
+    return switch (s.kind) {
+        .json, .json_schema => .structured_json,
+        else => .automatic, // a required call's structural tag, a regex, a choice or a grammar
+    };
+}
+
 pub const Reply = struct {
+    response_channel: ResponseChannel = .automatic,
     markup: reply_text.Markup = .{},
     content: []const u8,
     stop_sequence: ?[]const u8,
@@ -135,6 +148,7 @@ fn flag(f: Value, key: []const u8) ?bool {
 
 /// A request rendered and checked but not submitted; it holds the preparing count until generate or release.
 pub const Prepared = struct {
+    response_channel: ResponseChannel,
     input: Input,
     request: api.Request,
     prompt_len: usize,
@@ -217,7 +231,7 @@ pub fn prepare(srv: *Server, cx: *Cx, input: Input, gone: anytype) Failure!Prepa
             request.think_end = srv.think_close_end;
         }
     }
-    return .{ .input = input, .request = request, .prompt_len = rendered.ids.len, .received = received, .thinking = thinking, .effort = effort, .sampled = sampling != null, .drafts = drafts, .stops = stops_opt, .preparing = preparing };
+    return .{ .response_channel = channelOf(request.structure), .input = input, .request = request, .prompt_len = rendered.ids.len, .received = received, .thinking = thinking, .effort = effort, .sampled = sampling != null, .drafts = drafts, .stops = stops_opt, .preparing = preparing };
 }
 
 /// Submit a prepared request and collect its reply; ``sink`` hears the stream (null: not streamed).
@@ -258,13 +272,13 @@ pub fn generate(srv: *Server, cx: *Cx, prepared: Prepared, sink: ?Sink, gone: an
     preparing = false;
     // A grammar's EOS is its required terminator even when the caller ignores ordinary EOS.
     // Apply the same rule to streaming and final decoding, so neither exposes the terminator.
-    var gen: Generation = .{ .last_out_ns = submitted, .srv = srv, .a = a, .box = &box, .id = id, .reply_id = input.id, .sink = sink, .thinking = thinking or reply_text.isChannel(srv.markers), .stops = .{ .strings = stops_opt.strings }, .ignore_eos = effectiveIgnoreEos(stops_opt.ignore_eos, request.structure != null), .max_tokens = request.max_tokens, .tools = input.tools, .token_ids = input.token_ids };
+    var gen: Generation = .{ .last_out_ns = submitted, .srv = srv, .a = a, .box = &box, .id = id, .reply_id = input.id, .sink = sink, .thinking = thinking or reply_text.isChannel(srv.markers), .stops = .{ .strings = stops_opt.strings }, .ignore_eos = effectiveIgnoreEos(stops_opt.ignore_eos, request.structure != null), .max_tokens = request.max_tokens, .tools = if (prepared.response_channel == .structured_json) &.{} else input.tools, .token_ids = input.token_ids, .response_channel = prepared.response_channel };
     defer srv.metrics.noteDiagnostics(io, box.stats);
     defer srv.noteRequest(prepared.prompt_len, gen.collected.items.len, box.stats.drafted, box.stats.accepted, box.stats.rounds, received, gen.first_ns, gen.last_ns, box.stats.prefill_seconds);
     errdefer if (!gen.engine_done) gen.cancel(); // the engine writes to the mailbox until it says finished
     const result: Failure!Reply = blk: {
-        if (sink != null and input.tools.len > 0) {
-            gen.calls = tool_stream.Streamer.init(a, input.tools) catch |e| break :blk e;
+        if (sink != null and gen.tools.len > 0) {
+            gen.calls = tool_stream.Streamer.init(a, gen.tools) catch |e| break :blk e;
             gen.calls.?.dsml.off = !srv.config.stream_tool_calls;
         }
         gen.loop(gone) catch |e| break :blk e;
@@ -363,7 +377,8 @@ const Generation = struct {
     stops: reply_text.Stops,
     ignore_eos: bool,
     max_tokens: u32,
-    tools: []const Value,
+    tools: []const Value, // none for a JSON answer: its calls are never read
+    response_channel: ResponseChannel = .automatic,
     calls: ?tool_stream.Streamer = null,
     collected: std.ArrayList(u32) = .empty,
     token_ids: bool = false, // the request asked for its ids back (Input.token_ids)
@@ -444,7 +459,7 @@ const Generation = struct {
             answer = split.answer;
         }
         const shown = if (g.calls != null) try reply_text.hideIntoWith(g.a, &g.hidden, answer, false, markup) else answer;
-        const visible_content = reply_text.streamingVisibleWith(shown, markup);
+        const visible_content = if (g.response_channel == .structured_json) shown else reply_text.streamingVisibleWith(shown, markup);
         // Hold leading whitespace while a tool-only reply is still possible; later prose sends it intact.
         const vis = if (g.calls != null and g.streamed.text.items.len == 0 and
             reply_text.pyStrip(visible_content).len == 0) "" else visible_content;
@@ -575,7 +590,7 @@ const Generation = struct {
             const r = reply_text.pyStrip(split.reasoning);
             reasoning = if (r.len > 0) r else null;
             content = split.answer;
-        } else {
+        } else if (g.response_channel != .structured_json) {
             const h = reply_text.parseHarmonyWith(text, markup);
             content = h.content;
             reasoning = h.reasoning;
@@ -678,6 +693,7 @@ const Generation = struct {
         if (m.telemetry.len > 0) if ((try json.parse(a, m.telemetry)) == .ok) try spec.put(a, "proposer", (try json.parse(a, m.telemetry)).ok);
         const think_end: ?u32 = if (thinking) g.srv.text.tokenId(g.srv.markers.close) else null;
         const reply: Reply = .{
+            .response_channel = g.response_channel,
             .markup = markup,
             .content = content,
             .stop_sequence = g.stops.matched(raw),

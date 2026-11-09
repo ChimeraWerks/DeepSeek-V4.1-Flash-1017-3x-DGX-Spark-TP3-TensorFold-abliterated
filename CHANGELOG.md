@@ -16,6 +16,7 @@ Not deployed. Production decoding cannot reach this path: the served tokenizer h
 
 - A `<tool_call>` block (or `<|tool_call>`, `<x:tool_call>`) that opens with a DSML opener and is shorter than that opener and its closer together now stays text. The parser cut both from it, a slice past its start that panics in the ReleaseSafe server (Mia 4x patch 0053 and 2x patch 0064, Hector Isaza).
 - Every payload long enough parses exactly as before.
+- When a request offers tools and asks for a JSON answer, the answer stays the answer on Chat, Responses and Messages, streamed or whole. These fields take this path: `response_format` `json_object` and `json_schema`, `guided_json`, and `structured_outputs` `json` and `json_object`; Responses `text.format` and Messages `output_config.format` arrive as `response_format`. Before, an answer shaped like `{"name": <offered tool>, "arguments": {...}}` became a tool call with finish reason `tool_calls` and its content was dropped. Thinking replies still split their reasoning. Ported from SvangenStudios's patch 0042 ([Mia 4x PR 31](https://github.com/MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold/pull/31), [patch file](https://github.com/MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold/blob/6a4d55e8b7a7b492747ccccf6d67389f26c7d5dd/zig/patches/0042-json-answer-channel.patch)).
 
 ## 2026-11-08 exact image counts
 

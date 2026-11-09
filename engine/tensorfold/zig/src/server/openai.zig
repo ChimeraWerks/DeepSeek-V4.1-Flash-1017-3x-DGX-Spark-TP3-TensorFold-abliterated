@@ -362,6 +362,7 @@ const Run = struct {
 
     /// ``ToolCallPolicy.finish``: the reply's calls parsed out of its content.
     fn attachCalls(r: *Run, reply: *chat.Reply) Allocator.Error!?[]Value {
+        if (reply.response_channel == .structured_json) return null; // a JSON answer that looks like a call is the answer
         const tools = r.plan.input.tools;
         if (tools.len == 0) return null;
         const parsed = try tool_parse.parseWith(r.a, reply.content, tools, r.plan.policy.maxCalls(), reply.markup);
@@ -533,21 +534,23 @@ const Run = struct {
 
     fn stream(r: *Run, gone: Gone, field: []const u8) void {
         const a = r.a;
-        const tools = r.plan.input.tools.len > 0;
+        const has_tools = r.plan.input.tools.len > 0;
         var cx: Cx = .{ .a = a };
         // a context-window refusal is reported inside the stream; every other refusal is still a 400 before it opens
         var compaction: ?compact.Stamp = null;
         const prepared = if (r.srv.config.compact_at == null) chat.prepare(r.srv, &cx, r.plan.input, gone) catch |e| {
-            if (e == error.Refused and cx.kind == .context_length) return r.streamedContext(&cx, tools, field);
+            if (e == error.Refused and cx.kind == .context_length) return r.streamedContext(&cx, has_tools, field);
             return r.unsent(&cx, e, field);
         } else blk: {
             const ready = compact.prepare(r.srv, &cx, r.plan.input, gone) catch |e| {
-                if (e == error.Refused and cx.kind == .context_length) return r.streamedContext(&cx, tools, field);
+                if (e == error.Refused and cx.kind == .context_length) return r.streamedContext(&cx, has_tools, field);
                 return r.unsent(&cx, e, field);
             };
             compaction = ready.stamp;
             break :blk ready.prepared;
         };
+        // a JSON answer streams as text: the role first, no call sink
+        const tools = has_tools and prepared.response_channel != .structured_json;
         var handed = false; // generate gives the preparing count back from here on
         defer if (!handed) chat.release(r.srv, prepared.preparing);
         r.out.vt.open(r.out.ctx) catch return;

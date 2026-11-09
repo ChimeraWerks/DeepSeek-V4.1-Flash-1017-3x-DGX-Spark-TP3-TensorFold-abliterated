@@ -69,6 +69,7 @@ const TestText = struct {
 const HiEngine = struct {
     tokens: []const u32 = &.{ 'h', 'i' },
     window: u32 = 8,
+    structures: bool = false,
     submissions: usize = 0,
     fn engine(e: *@This()) api.Engine {
         return .{ .ctx = e, .vtable = &.{ .info = info, .submit = submit, .cancel = cancel, .status = status, .memory = memory } };
@@ -76,7 +77,7 @@ const HiEngine = struct {
 
     fn info(ctx: *anyopaque) api.Info {
         const e: *HiEngine = @ptrCast(@alignCast(ctx));
-        return .{ .context_window = e.window };
+        return .{ .context_window = e.window, .structures = e.structures };
     }
 
     fn submit(ctx: *anyopaque, id: api.Id, _: *const api.Request, sink: api.Sink) api.SubmitError!void {
@@ -107,6 +108,10 @@ const Seen = struct {
     reasoning: [2048]u8 = undefined,
     reasoning_len: usize = 0,
     calls: usize = 0,
+    called: bool = false, // finish_reason "tool_calls"
+    contents: usize = 0, // messages and deltas that carried content
+    structures: bool = false, // the engine enforces grammars (a compiler that takes any)
+    stream_tool_calls: bool = false, // the server's TF_STREAM_TOOL_CALLS
 
     gone_at_open: bool = false, // the client is gone when the stream opens
     opened: bool = false,
@@ -119,6 +124,7 @@ const Seen = struct {
 
     fn capture(c: *Seen, message: json.Value) void {
         if (message.strField("content")) |value| {
+            if (value.len > 0) c.contents += 1;
             const n = @min(value.len, c.answer.len - c.answer_len);
             @memcpy(c.answer[c.answer_len..][0..n], value[0..n]);
             c.answer_len += n;
@@ -130,6 +136,12 @@ const Seen = struct {
         }
         if (message.get("tool_calls")) |calls| if (calls == .array) {
             c.calls += calls.array.len;
+        };
+    }
+
+    fn finished(c: *Seen, choice: json.Value) void {
+        if (choice.strField("finish_reason")) |f| if (std.mem.eql(u8, f, "tool_calls")) {
+            c.called = true;
         };
     }
 
@@ -154,6 +166,7 @@ const Seen = struct {
         }
         const choices = p.get("choices") orelse return;
         if (choices != .array or choices.array.len == 0) return;
+        c.finished(choices.array[0]);
         const delta = choices.array[0].get("delta") orelse return;
         c.capture(delta);
         if (c.events != 1) return;
@@ -164,7 +177,10 @@ const Seen = struct {
     fn reply(ctx: *anyopaque, status: u16, payload: json.Value) void {
         const c: *Seen = @ptrCast(@alignCast(ctx));
         c.status = status;
-        if (payload.get("choices")) |choices| if (choices == .array and choices.array.len > 0) if (choices.array[0].get("message")) |message| c.capture(message);
+        if (payload.get("choices")) |choices| if (choices == .array and choices.array.len > 0) {
+            c.finished(choices.array[0]);
+            if (choices.array[0].get("message")) |message| c.capture(message);
+        };
         if (payload.get("tensorfold")) |t| if (t.get("sampling")) |l| if (l == .string) {
             c.label = if (std.mem.eql(u8, l.string, "exact")) .exact else if (std.mem.eql(u8, l.string, "greedy")) .greedy else null;
         };
@@ -182,6 +198,23 @@ const NoHistory = struct {
     }
 };
 
+/// A grammar compiler that takes every grammar: the route checks what it does around one, not the grammar.
+const AnyGrammar = struct {
+    var handle: u8 = 0;
+    fn compile(_: *anyopaque, _: c_int, _: [*]const u8, _: usize, _: [*]u8, _: usize) callconv(.c) ?*anyopaque {
+        return &handle;
+    }
+    fn free(_: *anyopaque) callconv(.c) void {}
+
+    fn compiler() api.grammar.Compiler {
+        var f: @FieldType(api.grammar.Compiler, "f") = undefined;
+        f.compile = compile;
+        f.free = free;
+        f.close = free;
+        return .{ .f = f, .h = &handle, .words = 0, .stops = &.{} };
+    }
+};
+
 /// `body` through `route`'s translation and the chat handler, as the route runs it; the preparing count after it.
 fn send(route: Route, body: []const u8) !Seen {
     return sendTo(route, body, .{});
@@ -189,7 +222,7 @@ fn send(route: Route, body: []const u8) !Seen {
 
 fn sendTo(route: Route, body: []const u8, start: Seen) !Seen {
     var text: TestText = .{};
-    var backend: HiEngine = .{};
+    var backend: HiEngine = .{ .structures = start.structures };
     if (start.tokens) |tokens| {
         backend.tokens = tokens;
         backend.window = 8192;
@@ -199,8 +232,11 @@ fn sendTo(route: Route, body: []const u8, start: Seen) !Seen {
         .model_ids = &.{"test-model"},
         .enable_thinking = false,
         .use_drafts = false,
+        .stream_tool_calls = start.stream_tool_calls,
     }, null);
     defer srv.deinit();
+    var grammars = AnyGrammar.compiler();
+    if (start.structures) srv.grammars = &grammars;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -418,5 +454,88 @@ test "token markers stay literal through Chat Messages and Responses in streamed
         try std.testing.expectEqualStrings(thought, seen.reasoning[0..seen.reasoning_len]);
         try std.testing.expectEqualStrings(answer, seen.answer[0..seen.answer_len]);
         try std.testing.expectEqual(@as(usize, 0), seen.calls);
+    };
+}
+
+const chat_tools = ",\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"f\",\"parameters\":{\"type\":\"object\"}}}],\"tool_choice\":\"auto\"";
+const call_schema = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"arguments\":{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"integer\"}},\"required\":[\"x\"],\"additionalProperties\":false}},\"required\":[\"name\",\"arguments\"],\"additionalProperties\":false}";
+
+/// `body` with `stream` set, sent to `route` whose engine answers `tokens` and enforces any grammar.
+fn sendStructured(a: std.mem.Allocator, route: Route, body: []const u8, stream: bool, tokens: []const u32) !Seen {
+    const request = (try json.parse(a, body)).ok;
+    try request.object.put(a, "stream", .{ .bool = stream });
+    return sendTo(route, try json.stringify(a, request, .{}), .{ .tokens = tokens, .structures = true });
+}
+
+test "a JSON answer shaped like an offered call stays the answer on Chat, Messages and Responses, streamed and whole" {
+    const answer = "{\"name\":\"f\",\"arguments\":{\"x\":7}}";
+    const cases = [_]struct { Route, []const u8 }{
+        .{ .chat, "{\"model\":\"test-model\",\"max_tokens\":1024,\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]" ++ chat_tools ++ ",\"response_format\":{\"type\":\"json_object\"}}" },
+        .{ .chat, "{\"model\":\"test-model\",\"max_tokens\":1024,\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]" ++ chat_tools ++ ",\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"r\",\"schema\":" ++ call_schema ++ "}}}" },
+        .{ .chat, "{\"model\":\"test-model\",\"max_tokens\":1024,\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]" ++ chat_tools ++ ",\"guided_json\":" ++ call_schema ++ "}" },
+        .{ .messages, "{\"model\":\"test-model\",\"max_tokens\":1024,\"messages\":[{\"role\":\"user\",\"content\":\"x\"}],\"tools\":[{\"name\":\"f\",\"input_schema\":{\"type\":\"object\"}}],\"output_config\":{\"format\":{\"type\":\"json_schema\",\"schema\":" ++ call_schema ++ "}}}" },
+        .{ .responses, "{\"model\":\"test-model\",\"max_output_tokens\":1024,\"input\":\"x\",\"tools\":[{\"type\":\"function\",\"name\":\"f\"}],\"text\":{\"format\":{\"type\":\"json_object\"}}}" },
+    };
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tokens: std.ArrayList(u32) = .empty;
+    for (answer) |byte| try tokens.append(a, byte);
+    for ([_]bool{ false, true }) |stream| for (cases) |case| {
+        const seen = try sendStructured(a, case[0], case[1], stream, tokens.items);
+        try std.testing.expectEqual(@as(?u16, if (stream) null else 200), seen.status);
+        try std.testing.expectEqual(@as(usize, 1), seen.submissions);
+        try std.testing.expectEqualStrings(answer, seen.answer[0..seen.answer_len]);
+        try std.testing.expectEqual(@as(usize, 0), seen.calls);
+        try std.testing.expect(!seen.called);
+    };
+    // with no format the same text is still the offered call
+    for ([_]bool{ false, true }) |stream| {
+        const seen = try sendStructured(a, .chat, "{\"model\":\"test-model\",\"max_tokens\":1024,\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]" ++ chat_tools ++ "}", stream, tokens.items);
+        try std.testing.expect(seen.calls > 0); // a stream counts each delta that carries the call
+        try std.testing.expect(seen.called);
+    }
+}
+
+test "a thinking JSON answer keeps its reasoning split and makes no call" {
+    const thought = "the user wants f's shape.";
+    const answer = "{\"name\":\"f\",\"arguments\":{}}";
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tokens: std.ArrayList(u32) = .empty;
+    for (thought) |byte| try tokens.append(a, byte);
+    try tokens.append(a, 256);
+    for (answer) |byte| try tokens.append(a, byte);
+    for ([_]bool{ false, true }) |stream| {
+        const seen = try sendStructured(a, .chat, "{\"model\":\"test-model\",\"max_tokens\":1024,\"thinking\":{\"type\":\"enabled\"},\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]" ++ chat_tools ++ ",\"response_format\":{\"type\":\"json_object\"}}", stream, tokens.items);
+        try std.testing.expectEqualStrings(thought, seen.reasoning[0..seen.reasoning_len]);
+        try std.testing.expectEqualStrings(answer, seen.answer[0..seen.answer_len]);
+        try std.testing.expectEqual(@as(usize, 0), seen.calls);
+        try std.testing.expect(!seen.called);
+    }
+}
+
+test "a streamed JSON answer beside offered tools streams each token as text, with or without streamed calls" {
+    // chat.zig gives such a reply no call sink: a kept one hides what follows a DSML marker the answer quotes
+    const call_shaped = "{\"name\":\"f\",\"arguments\":{\"x\":7}}";
+    const quoted = "{\"note\":\"<" ++ "\u{ff5c}DSML\u{ff5c}" ++ " calls> opens a call\"}";
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var quoted_tokens: std.ArrayList(u32) = .empty;
+    for ("{\"note\":\"<") |byte| try quoted_tokens.append(a, byte);
+    try quoted_tokens.append(a, 257); // the DSML marker, one special token
+    for (" calls> opens a call\"}") |byte| try quoted_tokens.append(a, byte);
+    var call_tokens: std.ArrayList(u32) = .empty;
+    for (call_shaped) |byte| try call_tokens.append(a, byte);
+    const cases = [_]struct { []const u8, []const u32 }{ .{ call_shaped, call_tokens.items }, .{ quoted, quoted_tokens.items } };
+    const body = "{\"model\":\"test-model\",\"max_tokens\":1024,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]" ++ chat_tools ++ ",\"response_format\":{\"type\":\"json_object\"}}";
+    for (cases) |case| for ([_]bool{ false, true }) |stream_calls| {
+        const seen = try sendTo(.chat, body, .{ .tokens = case[1], .structures = true, .stream_tool_calls = stream_calls });
+        try std.testing.expectEqualStrings(case[0], seen.answer[0..seen.answer_len]);
+        try std.testing.expectEqual(@as(usize, 0), seen.calls);
+        try std.testing.expect(!seen.called);
+        try std.testing.expectEqual(case[1].len, seen.contents); // one delta per token, none held to the end
     };
 }
