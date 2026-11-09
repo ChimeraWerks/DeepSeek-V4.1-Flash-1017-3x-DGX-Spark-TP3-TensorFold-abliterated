@@ -1,5 +1,5 @@
 //! The PDF render worker spawned from the built tensorfold-native, as the server starts it, with PDFium from
-//! TENSORFOLD_LIBPDFIUM (zig build -Dpdfium=FILE sets it) or lib/ beside the server; skipped without one. Its pages
+//! TENSORFOLD_LIBPDFIUM (zig build -Dpdfium=FILE sets it); a library that does not load fails the test. Its pages
 //! decode with the vision family's own PNG decoder, and a count route spans each page as generation holds it.
 const std = @import("std");
 const errors = @import("errors.zig");
@@ -20,10 +20,12 @@ fn useServer() void {
     worker.server_exe = @import("pdf_worker_exe").path;
 }
 
-/// A refusal for a missing PDFium names it, and the test is skipped: there is nothing here to render with.
-fn skipWithoutLibrary(cx: Cx) !void {
-    if (cx.kind == .unimplemented and std.mem.indexOf(u8, cx.message, pdf.library) != null) return error.SkipZigTest;
-    std.debug.print("unexpected refusal: {s}\n", .{cx.message});
+/// A refusal fails the test, a missing PDFium too: -Dpdfium named the library these tests must render with.
+fn refused(cx: Cx) !void {
+    if (cx.kind == .unimplemented and std.mem.indexOf(u8, cx.message, pdf.library) != null)
+        std.debug.print("PDFium did not load from -Dpdfium (TENSORFOLD_LIBPDFIUM): {s}\n", .{cx.message})
+    else
+        std.debug.print("unexpected refusal: {s}\n", .{cx.message});
     return error.Refused;
 }
 
@@ -69,7 +71,7 @@ test "tensorfold-native PDF render worker: renders text and colour in its spawne
     const deadline_ns = std.Io.Clock.awake.now(std.testing.io).toNanoseconds() + pdf.render_timeout_ns;
     worker.render(&cx, try worker.argv(a), doc, .render, 4, deadline_ns, &budget, &pages) catch |err| {
         try std.testing.expectEqual(error.Refused, err);
-        return skipWithoutLibrary(cx);
+        return refused(cx);
     };
     try std.testing.expectEqual(@as(usize, 1), pages.items.len);
     try std.testing.expectEqual(pdf.Budget{ .pdf_pages_used = 1, .pixels_used = 400 * 400 }, budget);
@@ -100,7 +102,7 @@ test "tensorfold-native PDF render worker: libpdfium renders in the spawned work
     var cx: Cx = .{ .a = a };
     var pages: std.ArrayList([]const u8) = .empty;
     var state: pdf.Pages = .{ .max_pages = 4 };
-    pdf.expandBytes(&cx, pdf.minimal_two_page_pdf, &state, &pages) catch return skipWithoutLibrary(cx);
+    pdf.expandBytes(&cx, pdf.minimal_two_page_pdf, &state, &pages) catch return refused(cx);
     try std.testing.expectEqual(@as(usize, 2), pages.items.len);
     try std.testing.expectEqual(pdf.Budget{ .pdf_pages_used = 2, .pixels_used = 2 * 400 * 400 }, state.budget);
     for (pages.items) |p| {
@@ -180,7 +182,7 @@ test "tensorfold-native PDF render worker: a count route spans each PDF page as 
     const msgs = (try json.parse(a, request)).ok;
     var cx: Cx = .{ .a = a };
     var drawn: messages.Images = .{ .placeholder = "<img>", .pdf = .{ .mode = .render } };
-    const generated = messages.normalizeImages(&cx, msgs, "system", false, &drawn) catch return skipWithoutLibrary(cx);
+    const generated = messages.normalizeImages(&cx, msgs, "system", false, &drawn) catch return refused(cx);
     var measured: messages.Images = .{ .placeholder = "<img>", .pdf = .{ .mode = .measure } };
     const counted = try messages.normalizeImages(&cx, msgs, "system", false, &measured);
     // the same text, its placeholders in the same places: seven pages, the image, then two pages
