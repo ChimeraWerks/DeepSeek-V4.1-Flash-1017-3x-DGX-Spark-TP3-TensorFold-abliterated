@@ -11,6 +11,7 @@ import httpx
 
 from . import __version__
 from .laky.media_admission import has_images
+from .laky.media_types import DOCUMENT_BLOCK_TYPES
 from .laky.queue import FairPriorityGate
 from .laky.stream_validation import ChatStreamValidator, MessagesStreamValidator, ResponsesStreamValidator
 from .policy import normalize
@@ -24,6 +25,11 @@ def upstream_message(response):
         return ""
     message = error.get("message") if isinstance(error, dict) else error
     return message if isinstance(message, str) else ""
+
+
+# The engine's default PDF page limit (TensorFold --vision-pdf, TENSORFOLD_MAX_PDF_PAGES): what one document can take
+# when the engine cannot count its pages.
+PDF_PAGE_RESERVE = 16
 
 
 class GatewayError(RuntimeError):
@@ -78,29 +84,36 @@ class Engine:
     async def count_input(self, body, api="chat"):
         """The prompt's tokens as the native engine will hold them, and how they were counted.
 
-        The engine spans each image exactly in its count routes (from the image's header, without decoding it), so
-        images go to the count as they are. An engine that counts text only refuses images there; for it, each image
-        becomes the text "[image]" plus image_token_reserve, the most one image can take on this model.
+        The engine spans each image exactly in its count routes (from the image's header, without decoding it), and
+        each PDF page as generation will hold it (the page's size from PDFium, no pixels drawn), so images and PDF
+        documents go to the count as they are. An engine that counts text only refuses them there; for it, each image
+        becomes the text "[image]" plus image_token_reserve, the most one image can take on this model, and each
+        document "[document]" plus PDF_PAGE_RESERVE such pages.
         """
-        images = []
+        images, documents = [], []
         def text_only(value):
             if isinstance(value, dict):
-                if isinstance(value.get("type"), str) and value["type"] in {"image_url", "input_image", "image"}:
+                kind = value.get("type")
+                if isinstance(kind, str) and kind in {"image_url", "input_image", "image"}:
                     images.append(1)
                     return {"type": "text", "text": "[image]"}
+                if isinstance(kind, str) and kind in DOCUMENT_BLOCK_TYPES:
+                    documents.append(1)
+                    return {"type": "text", "text": "[document]"}
                 return {k: text_only(v) for k, v in value.items()}
             if isinstance(value, list):
                 return [text_only(v) for v in value]
             return value
         legacy_body = text_only(body)
-        if images and self._exact_images_possible():
+        if (images or documents) and self._exact_images_possible():
             data = await self._native_count(body, api, with_images=True)
             if data is not None:
                 self.exact_images, self.exact_images_checked = True, None
                 return self._count_of(data), "native-exact"
             self.exact_images, self.exact_images_checked = False, time.monotonic()
         count = self._count_of(await self._native_count(legacy_body, api))
-        return count + len(images) * self.cfg.image_token_reserve, "native-text+media-reserve"
+        pages = len(images) + len(documents) * PDF_PAGE_RESERVE
+        return count + pages * self.cfg.image_token_reserve, "native-text+media-reserve"
 
     def _exact_images_possible(self):
         # An engine found counting text only is asked again after a while: it may have been upgraded in place.
@@ -124,6 +137,9 @@ class Engine:
                     return None  # an engine that counts text only
                 # the image itself is refused (bad data, too many pixels): generation would refuse it the same way
                 raise GatewayError(400, message or "the engine refused an image", "invalid_request_error")
+            if response.status_code == 501:
+                # an enabled media feature without its runtime library (PDF inputs without libpdfium)
+                raise GatewayError(501, upstream_message(response) or "the engine cannot read this input", "not_implemented")
             if response.is_success and "image_tokens" not in response.json():
                 return None  # counted without spanning its images
         if not response.is_success:

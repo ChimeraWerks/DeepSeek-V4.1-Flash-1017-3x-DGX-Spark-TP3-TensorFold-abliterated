@@ -12,9 +12,9 @@ import logging
 import os
 import time
 try:
-    from .media_types import IMAGE_BLOCK_TYPES
+    from .media_types import DOCUMENT_BLOCK_TYPES, IMAGE_BLOCK_TYPES
 except ImportError:  # Standalone regression test runner.
-    from media_types import IMAGE_BLOCK_TYPES
+    from media_types import DOCUMENT_BLOCK_TYPES, IMAGE_BLOCK_TYPES
 
 _owner = contextvars.ContextVar('media_admission_owner', default=None)
 log = logging.getLogger(__name__)
@@ -29,11 +29,12 @@ def media_concurrency():
 
 
 def has_images(value):
+    """Image or PDF document input: the engine renders each PDF page as an image."""
     if isinstance(value, dict):
         # Traversal also visits JSON Schema properties: a property named
         # "type" may itself contain a dict or a union list, not a block tag.
         kind = value.get('type')
-        if isinstance(kind, str) and kind in IMAGE_BLOCK_TYPES:
+        if isinstance(kind, str) and (kind in IMAGE_BLOCK_TYPES or kind in DOCUMENT_BLOCK_TYPES):
             return True
         # Protocol content only: tools schemas/arguments can contain examples
         # that resemble image blocks but are not model image input.
