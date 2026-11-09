@@ -6,7 +6,7 @@ v1.2 uses engine base `30a9647` with exactly two non-runtime edits in `zig/src/s
 
 ## Unreleased: PDF page cache
 
-Not deployed. Production runs the engine from the 2026-11-09 PDF input deploy; this engine change waits for an owner-approved deploy. The API is unchanged.
+Not deployed. Production runs the engine from the 2026-11-09 keyed draft deploy; this engine change waits for an owner-approved deploy. The API is unchanged.
 
 - The engine keeps the pages it rendered from a PDF, so a document sent again is not rendered again. An agent client resends a PDF it read with every turn, and the count route measures it before each generation; each time, a worker was started and every page measured or drawn again (about 80 ms an A4 page on the x64 host), one document at a time across the server.
 - Pages are keyed by the SHA-256 of the document's bytes, whether they were drawn or only measured, the page limit, the render scale and limits, and the PDFium file's path, inode, size and modification time. Only pages that passed the server's checks of the worker's reply are kept.
@@ -24,6 +24,15 @@ Not deployed. Production runs the API from the 2026-11-09 PDF input deploy; this
 - This follows DeepSeek's reference server: `resolve_max_tokens` in [`deepseek-recipe` `request/mod.rs`](https://github.com/deepseek-ai/deepseek-recipe/blob/935817c66f5d6e64838f419692545f06787e485f/deepseek-recipe/src/request/mod.rs#L155-L234). Its omitted default depends on the mode (8,192 without thinking, 65,536 with it, 131,072 at `max` effort); the API keeps its one documented `output_tokens` default.
 - The engine's own Chat and Responses routes already lower an omitted cap (its `--max-tokens`, 4,096 by default) to its context window and refuse a given one that does not fit; its Messages route requires `max_tokens`. Behind the API it always gets a cap, so its behavior is unchanged.
 - Checked on the host: new serving tests cover Chat, Responses and Messages, streamed and whole, near a full context, with an omitted cap, a given one and no room. The lowering test fails without the change.
+
+## 2026-11-09 keyed drafts
+
+In production since 2026-11-09, with the owner's approval: the PDF input engine plus one fix, built with `-Dkeyed_draft=true` and run with `TF_DS_KEYED_DRAFT=1` on every rank.
+
+- Keyed drafts crashed TP3 on the first sampled request: the graph vote codec refused a draft key carrying the keyed bit, so rank 0 could not encode its start frame and every rank exited with `GraphVoteFatal`. Draft keys now carry `c` 0 or 1, other values are still refused, and the vote protocol version is 2, so old and new ranks refuse to start together.
+- Keyed drafts add keyed Gumbel noise to the draft proposals of unfiltered sampled rows (`top_k` 0, `top_p` 1, `min_p` 0). Target sampling and acceptance are unchanged, so replies are the same token for token. Rows with `top_k` 20, the API default, or greedy rows are not touched.
+- Measured on the three Sparks, one binary with the flag off, on, and off again, thinking on at temperature 1.0: `top_k` 0 decode went from 59.7 to 67.4 tok/s at one request (+13%) and from 28.9 to 31.6 tok/s a stream at four (+9%). Draft acceptance rose from 0.47 to 0.58 at one request. `top_k` 20 and greedy speeds did not change. One-request replies were identical in every arm; at four requests the off-again arm differed from the first by the same rows as the keyed arm (batch order, not keyed drafts).
+- Checked live after the deploy: two seeded `top_k` 0 thinking replies through the engine API were identical, two concurrent `top_k` 0 replies and a `top_k` 20 reply succeeded, and the PDF and upstream fix checks passed.
 
 ## 2026-11-09 PDF input
 
