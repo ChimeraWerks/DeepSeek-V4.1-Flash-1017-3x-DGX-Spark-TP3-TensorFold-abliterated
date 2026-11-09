@@ -113,7 +113,7 @@ Each row is one full suite on engine `30a9647`, with performance cores capped at
 
 These scripts need `cluster.env`; create it first ([Quick start](#quick-start)).
 
-`./scripts/preflight.sh` checks DGX OS, driver, RoCE links, free memory, free disk and SSH on all three and changes
+`./scripts/preflight.sh` checks DGX OS, driver, RoCE links and GID slots, free memory, free disk and SSH on all three and changes
 nothing.
 
 **Free more memory.** What our Sparks run, and what each change gives back per node ([development.csv](benchmarks/dev/development.csv)):

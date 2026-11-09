@@ -51,6 +51,7 @@ Their TP2/TP4 patches ship in this engine, ported to TP3.
 | William J Riley (willjriley), [TensorFold PR 27](https://github.com/bertholomus/TensorFold/pull/27) | PR 27 | RDMA idle backoff. |
 | Mykhailo Tamarin, [Mia PR 26](https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks/pull/26) | PR 26 | Zig-ring port of the idle backoff. |
 | sayyidfareed, Manrique (hashd1ve), Nathan McBride, Jay Leaton, [Mia credits][MC] | Credits `370daf0` | GID/MTU handling, retained prefixes, direct-output templates, append buffers, UTF-8 handling. |
+| Christopher Owen, [christopherowen/spark-ds41f](https://github.com/christopherowen/spark-ds41f) | [`1e9f851`](https://github.com/christopherowen/spark-ds41f/commit/1e9f851ad1c23daa5ef3b9cf490f9c832402cfe9), [`6a4d398`](https://github.com/christopherowen/spark-ds41f/commit/6a4d398e6d3e30df5799e6d13de18330f8756c1c) | RoCE GID slot check in `preflight.sh`, from its doctor's fixed-slot check. |
 
 ## Measurement
 

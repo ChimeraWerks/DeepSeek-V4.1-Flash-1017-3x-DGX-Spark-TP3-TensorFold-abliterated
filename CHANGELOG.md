@@ -4,6 +4,10 @@ DeepSeek V4.1 Flash 1017 abliterated EXL3 3.84 bpw runs across three NVIDIA DGX 
 
 v1.2 uses engine base `30a9647` with exactly two non-runtime edits in `zig/src/server/metrics.zig`. A documentation comment and a test name describe external metrics samplers generically. Serving logic is unchanged by them. Rebuild comparison results: `release/build-verification.json`.
 
+## Unreleased
+
+- `preflight.sh` checks that each RoCE device's `TF_RDMA_GID_INDEX` slot holds its IPv4 RoCE v2 address inside `NCCL_IB_ADDR_RANGE`. When that slot is empty or holds another kind of GID, as after a link flap, it names the slot where the IPv4 RoCE v2 GID now sits; when the slot holds an IPv4 address outside the range, it names that address. A malformed `TF_RDMA_GID_INDEX` or `NCCL_IB_ADDR_RANGE` is listed as a problem. Before, a moved GID showed up only as a failed ring setup at start. Ported from christopherowen/spark-ds41f (Christopher Owen), [`1e9f851`](https://github.com/christopherowen/spark-ds41f/commit/1e9f851ad1c23daa5ef3b9cf490f9c832402cfe9) and [`6a4d398`](https://github.com/christopherowen/spark-ds41f/commit/6a4d398e6d3e30df5799e6d13de18330f8756c1c).
+
 ## 2026-11-08 exact image counts
 
 Production moved from `30a9647` to `30a9647` plus this change, with the owner's approval. The weights, KV pool, stream count, spill and sampling defaults are unchanged. The rebuilt binaries embed the production fatbins byte for byte.

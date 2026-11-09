@@ -43,7 +43,40 @@ def base_data():
     return dict(deploy.SETTINGS)
 
 
-PREFLIGHT = '''import json,pathlib,shutil,subprocess,sys
+# The ring reads one fixed GID slot (TF_RDMA_GID_INDEX). The kernel files a re-added
+# address in the lowest free slot, so a link flap while RDMA resources still hold the
+# old entry moves the IPv4 RoCE v2 GID and the ring would set up its QPs with the wrong
+# GID. Ported from Christopher Owen's christopherowen/spark-ds41f fixed-slot check:
+# https://github.com/christopherowen/spark-ds41f/commit/1e9f851ad1c23daa5ef3b9cf490f9c832402cfe9
+# (first version) and its rewrite
+# https://github.com/christopherowen/spark-ds41f/commit/6a4d398e6d3e30df5799e6d13de18330f8756c1c
+ROCE_GID = '''import ipaddress
+def roce_gid_problems(port,device,index,address_range):
+ if not (index.isascii() and index.isdigit()):return ['TF_RDMA_GID_INDEX is not a GID slot number: '+index]
+ index=str(int(index))
+ try:network=ipaddress.ip_network(address_range,strict=False)
+ except ValueError:return ['NCCL_IB_ADDR_RANGE is not an address range: '+address_range]
+ def read(kind,slot):
+  try:return (port/kind/slot).read_text().strip()
+  except OSError:return ''
+ def ipv4(slot):
+  gid=read('gids',slot)
+  if not gid.startswith('0000:0000:0000:0000:0000:ffff:') or read('gid_attrs/types',slot)!='RoCE v2':return ''
+  return str(ipaddress.IPv4Address(int(gid[-9:].replace(':',''),16)))
+ address=ipv4(index)
+ if address:
+  if ipaddress.ip_address(address) in network:return []
+  return [device+' GID index '+index+' is '+address+', outside NCCL_IB_ADDR_RANGE '+address_range]
+ gid,kind=read('gids',index),read('gid_attrs/types',index)
+ held=kind+' '+gid if kind and gid.strip('0:') else 'empty'
+ found=sorted(int(p.name) for p in (port/'gids').glob('*') if p.name.isdigit() and ipv4(p.name))
+ if not found:return [device+' GID index '+index+' is '+held+'; it has no IPv4 RoCE v2 GID']
+ slot=str(found[0]);ndev=read('gid_attrs/ndevs',slot) or 'its interface'
+ return [device+' GID index '+index+' is '+held+'; its IPv4 RoCE v2 GID '+ipv4(slot)+' is at index '+slot+'; re-activate '+ndev+' with nmcli while nothing uses RDMA']
+'''
+
+
+PREFLIGHT = ROCE_GID + '''import json,pathlib,shutil,subprocess,sys
 x=json.loads(sys.argv[1]);problems=[]
 os_release={}
 for line in pathlib.Path('/etc/os-release').read_text().splitlines():
@@ -60,6 +93,7 @@ for device in x['TF_RDMA_DEVICES'].split(','):
  states=[p.read_text().strip() for p in root.glob('*/state')] if root.is_dir() else []
  links[device]=states
  if not states or not all('ACTIVE' in state for state in states):problems.append('RoCE link not active: '+device)
+ if root.is_dir():problems+=[p for p in roce_gid_problems(root/'1',device,x['TF_RDMA_GID_INDEX'],x['NCCL_IB_ADDR_RANGE']) if p not in problems]
 mem=next(line.split()[1] for line in pathlib.Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemAvailable:'))
 root=pathlib.Path(x['SPARK_ROOT']).resolve()
 while not root.exists() and root!=root.parent:root=root.parent

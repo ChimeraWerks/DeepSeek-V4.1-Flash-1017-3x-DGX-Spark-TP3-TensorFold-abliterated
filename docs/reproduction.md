@@ -88,7 +88,7 @@ Each script enables `set -u`, prints its plan, loads `scripts/_common.sh` and di
 
 `prep-sparks.sh` is the exception to the dispatch above: it runs [`tools/spark/spark_prep.py`](../tools/spark/spark_prep.py) on each Spark over SSH. `status` and `plan` stream it and write nothing; `apply` runs under `sudo` with a confirmation per Spark, stages firmware, kernel and boot changes and never reboots. Apply, reboot and repeat until every item reads applied. The kernel step installs the exact `7.0.0-1019-nvidia-64k` package set from the [memory-saver kernel guide](https://github.com/christopherowen/dgx-spark-memory-saver/blob/ec1b17a8ac713c6357b8f22983ded8503a524849/docs/kernel.md) and refuses if apt would change the NVIDIA driver; the memory saver's Secure Boot key enrollment needs a person at each console.
 
-`preflight.sh` checks DGX OS, driver and GPU visibility, RoCE links, available memory, free disk and head-to-worker SSH on all three Sparks. These checks are read-only.
+`preflight.sh` checks DGX OS, driver and GPU visibility, RoCE links, available memory, free disk and head-to-worker SSH on all three Sparks. It also checks that each RoCE device's `TF_RDMA_GID_INDEX` slot holds its IPv4 RoCE v2 address inside `NCCL_IB_ADDR_RANGE`; a link flap can move that address to another slot, and when the slot is left empty or holds another kind of GID, preflight names the slot the address moved to. These checks are read-only.
 
 ### 2 Prepare local files
 
