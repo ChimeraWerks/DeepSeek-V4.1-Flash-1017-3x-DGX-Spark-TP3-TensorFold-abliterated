@@ -47,7 +47,8 @@ pub const Config = struct {
     /// Sampling when a request names none (generation_config.json and the serve flags), or null for greedy.
     default_sampling: ?Value = null,
     use_drafts: bool = true,
-    /// --vision-pdf: PDF parts (file, input_file, Messages documents, data:application/pdf) as page images (pdf.zig).
+    /// PDF parts (file, input_file, Messages documents, data:application/pdf) as page images (pdf.zig); the CLI turns
+    /// it on unless --no-vision-pdf.
     vision_pdf: bool = false,
     /// Rank-0 HTTP presentation only. TF_STREAM_TOOL_CALLS=1 opts into incremental DSML arguments.
     stream_tool_calls: bool = false,
@@ -152,8 +153,7 @@ pub const Server = struct {
         srv.gpa.destroy(srv);
     }
 
-    /// The effort the template hears: the request's name, or this server's default.
-    /// A request's PDF settings, null when PDF parts are refused (no --vision-pdf, or an engine without images). The
+    /// A request's PDF settings, null when PDF parts are refused (--no-vision-pdf, or an engine without images). The
     /// count routes (`count`) measure each page rather than draw it when the family spans an image from its header,
     /// as the generation path's PNG pages are spanned from theirs.
     pub fn pdfPages(srv: *const Server, count: bool) ?pdf.Pages {
@@ -162,6 +162,7 @@ pub const Server = struct {
         return .{ .mode = if (count and v.count != null) .measure else .render, .max_pages = pdf.maxPagesLimit() };
     }
 
+    /// The effort the template hears: the request's name, or this server's default.
     pub fn effortFor(srv: *const Server, explicit: ?[]const u8) ?[]const u8 {
         const e = explicit orelse srv.config.reasoning_effort orelse return null;
         return fields.coerceEffort(e, srv.effort_levels);

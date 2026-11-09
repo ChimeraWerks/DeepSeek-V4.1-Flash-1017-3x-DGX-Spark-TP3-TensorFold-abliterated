@@ -65,8 +65,8 @@ class DocumentCountTests(unittest.TestCase):
         self.assertEqual(seen[1][1]["messages"][2]["content"][0]["content"][0], {"type": "text", "text": "[document]"})
 
     def test_a_refused_document_keeps_the_engines_words_and_status(self):
-        off = "PDF inputs are off on this server; start the server with --vision-pdf"
-        missing = ("libpdfium.so is required for PDF inputs (--vision-pdf); install PDFium (chromium/7725) in lib/ "
+        off = "PDF inputs are off on this server; start the server without --no-vision-pdf"
+        missing = ("libpdfium.so is required for PDF inputs; install PDFium (chromium/7725) in lib/ "
                    "beside the server or set TENSORFOLD_LIBPDFIUM to its file")
         for status, message in ((400, off), (501, missing), (400, "a PDF may have at most 16 pages (TENSORFOLD_MAX_PDF_PAGES); this request has 20")):
             with self.assertRaises(GatewayError) as caught:

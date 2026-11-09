@@ -108,7 +108,7 @@ fn withField(cx: *Cx, o: *const json.Object, key: []const u8, value: Value) !*js
 pub const Images = struct {
     placeholder: []const u8,
     list: std.ArrayList([]const u8) = .empty,
-    /// PDF parts (pdf.zig): each page an image of `list` and a placeholder; null refuses them (--vision-pdf is off).
+    /// PDF parts (pdf.zig): each page an image of `list` and a placeholder; null refuses them (--no-vision-pdf).
     pdf: ?pdf.Pages = null,
 };
 
@@ -683,7 +683,7 @@ test "tool history validates IDs before inference without reordering results" {
     }
 }
 
-test "PDF parts: refused by name while --vision-pdf is off, outside user and tool turns, and on a text-only server" {
+test "PDF parts: refused by name under --no-vision-pdf, outside user and tool turns, and on a text-only server" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var cx: Cx = .{ .a = arena.allocator() };

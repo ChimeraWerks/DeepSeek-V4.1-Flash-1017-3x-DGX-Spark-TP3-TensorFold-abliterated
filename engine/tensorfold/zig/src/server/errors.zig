@@ -7,7 +7,7 @@ pub const Kind = enum {
     request,
     /// ContextLengthError: as request, plus ``param`` and ``code: context_length_exceeded``.
     context_length,
-    /// A missing optional runtime library for an enabled feature (PDFium for --vision-pdf): 501.
+    /// A missing optional runtime library for an enabled feature (PDFium for PDF input): 501.
     unimplemented,
     /// CapacityError: 503, retry shortly.
     capacity,

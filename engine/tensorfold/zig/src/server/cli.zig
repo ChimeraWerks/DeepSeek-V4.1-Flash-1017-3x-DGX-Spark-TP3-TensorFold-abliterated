@@ -41,6 +41,7 @@ pub const flags = [_]Flag{
     .{ .name = "--vision", .kind = .store_true },
     .{ .name = "--vision-urls", .kind = .store_true },
     .{ .name = "--vision-pdf", .kind = .store_true, .native = true },
+    .{ .name = "--no-vision-pdf", .kind = .store_true, .native = true },
     .{ .name = "--vision-offload", .kind = .store_true },
     .{ .name = "--vision-max-images" },
     .{ .name = "--vision-image-tokens" },
@@ -121,7 +122,9 @@ pub const Args = struct {
     api_key_file: ?[]const u8 = null,
     metrics_open: bool = false,
     dashboard: bool = false,
-    vision_pdf: bool = false, // PDF parts as page images, rendered by PDFium in a bounded worker (pdf.zig)
+    /// PDF parts as page images, rendered by PDFium in a bounded worker (pdf.zig): on unless --no-vision-pdf; null
+    /// when neither flag is given, true when --vision-pdf (upstream's opt-in) names it.
+    vision_pdf: ?bool = null,
     context: ?i64 = null,
     speed_up: ?[]const u8 = null, // speed-up mode: this Mac's settings for the two-Mac link (Flash Next)
     prompt_cache_gib: ?f64 = null, // kept prompt states' budget (0: none; null: what 70% of RAM leaves past the loaded server)
@@ -242,7 +245,7 @@ fn apply(a: Allocator, out: *Args, name: []const u8, value: ?[]const u8, u: *Usa
         const p = try int(u, a, name, v);
         if (p < 0 or p > 65535) return fail(u, a, "argument --port: invalid port: '{s}'", .{v});
         out.port = @intCast(p);
-    } else if (is(name, "--name")) out.name = v else if (is(name, "--alias")) try alias.append(a, v) else if (is(name, "--api-key")) try keys.append(a, v) else if (is(name, "--api-key-file")) out.api_key_file = v else if (is(name, "--metrics-open")) out.metrics_open = true else if (is(name, "--dashboard")) out.dashboard = true else if (is(name, "--vision-pdf")) out.vision_pdf = true else if (is(name, "--context")) out.context = try int(u, a, name, v) else if (is(name, "--speed-up")) out.speed_up = v else if (is(name, "--prompt-cache-gib")) out.prompt_cache_gib = try gib(u, a, name, v) else if (is(name, "--prompt-cache-over-cap")) out.prompt_cache_over_cap = true else if (is(name, "--learn")) out.learn = true else if (is(name, "--learn-dir")) {
+    } else if (is(name, "--name")) out.name = v else if (is(name, "--alias")) try alias.append(a, v) else if (is(name, "--api-key")) try keys.append(a, v) else if (is(name, "--api-key-file")) out.api_key_file = v else if (is(name, "--metrics-open")) out.metrics_open = true else if (is(name, "--dashboard")) out.dashboard = true else if (is(name, "--vision-pdf")) out.vision_pdf = true else if (is(name, "--no-vision-pdf")) out.vision_pdf = false else if (is(name, "--context")) out.context = try int(u, a, name, v) else if (is(name, "--speed-up")) out.speed_up = v else if (is(name, "--prompt-cache-gib")) out.prompt_cache_gib = try gib(u, a, name, v) else if (is(name, "--prompt-cache-over-cap")) out.prompt_cache_over_cap = true else if (is(name, "--learn")) out.learn = true else if (is(name, "--learn-dir")) {
         out.learn = true;
         out.learn_dir = v;
     } else if (is(name, "--learn-gib")) {
@@ -408,9 +411,11 @@ test "parse and capabilities share the table" {
     try std.testing.expectError(error.Usage, parse(a, &.{ "m", "--compact-at", "0" }, &u));
     try std.testing.expectError(error.Usage, parse(a, &.{ "m", "--compact-at", "2" }, &u));
     try std.testing.expectError(error.Usage, parse(a, &.{ "m", "--compact-keep", "-1" }, &u));
-    try std.testing.expect((try parse(a, &.{ "m", "--vision-pdf" }, &u)).vision_pdf);
-    try std.testing.expect(!(try parse(a, &.{"m"}, &u)).vision_pdf);
+    try std.testing.expectEqual(@as(?bool, null), (try parse(a, &.{"m"}, &u)).vision_pdf); // on: the default
+    try std.testing.expectEqual(@as(?bool, true), (try parse(a, &.{ "m", "--vision-pdf" }, &u)).vision_pdf);
+    try std.testing.expectEqual(@as(?bool, false), (try parse(a, &.{ "m", "--no-vision-pdf" }, &u)).vision_pdf);
     try std.testing.expect(std.mem.indexOf(u8, doc, "\"--vision-pdf\": {}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, doc, "\"--no-vision-pdf\": {}") != null);
     try std.testing.expect(std.mem.indexOf(u8, doc, "\"TENSORFOLD_LIBPDFIUM\"") != null);
 }
 

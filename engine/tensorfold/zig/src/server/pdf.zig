@@ -1,6 +1,7 @@
-//! PDF document input (--vision-pdf): each page rendered by PDFium in a bounded worker process (pdf_worker.zig) into a
-//! PNG the vision family decodes itself, so no Pillow is needed. The count routes ask the same worker for each page's
-//! size at the render scale (no pixels drawn) and span the page from its PNG header, which is the rendered page's own.
+//! PDF document input (on unless --no-vision-pdf): each page rendered by PDFium in a bounded worker process
+//! (pdf_worker.zig) into a PNG the vision family decodes itself, so no Pillow is needed. The count routes ask the
+//! same worker for each page's size at the render scale (no pixels drawn) and span the page from its PNG header,
+//! which is the rendered page's own.
 //! Ported from TensorFold upstream (joernchen, PR #1820; ashhart, PRs #2387 and #2393), JPEG pages made PNG.
 const std = @import("std");
 const builtin = @import("builtin");
@@ -25,8 +26,8 @@ pub const render_timeout_ns: i96 = 10 * std.time.ns_per_s;
 pub const max_child_heap_bytes: u64 = 1 << 30;
 /// The most pixels a page side can have (pageDimensions' clamp): a worker's reply naming more is refused unread.
 pub const max_page_side: u32 = 4096;
-pub const off_message = "PDF inputs are off on this server; start the server with --vision-pdf";
-pub const missing_message = library ++ " is required for PDF inputs (--vision-pdf); install PDFium (chromium/7725) in lib/ beside the server or set " ++ env ++ " to its file";
+pub const off_message = "PDF inputs are off on this server; start the server without --no-vision-pdf";
+pub const missing_message = library ++ " is required for PDF inputs; install PDFium (chromium/7725) in lib/ beside the server or set " ++ env ++ " to its file";
 pub const url_refusal = "URLs are not accepted for PDF inputs; send inline base64 or a data:application/pdf;base64,... URL";
 
 /// A request's PDF pages so far, across all its PDFs: the page and pixel limits are request-wide.
@@ -101,16 +102,16 @@ pub fn loadPdfium(a: Allocator, io: std.Io) ?PdfiumFns {
     return f; // kept loaded until the worker exits
 }
 
-/// Logs the PDFium file and its SHA-256 at startup with --vision-pdf, or that it is missing. The server only reads the
-/// file: PDFium is loaded by each render worker, never by the server process.
+/// Logs the PDFium file and its SHA-256 at startup while PDF input is on, or that it is missing. The server only
+/// reads the file: PDFium is loaded by each render worker, never by the server process.
 pub fn logStartup(a: Allocator, io: std.Io) void {
-    const path = libraryPath(a, io) orelse return log.line("--vision-pdf: {s}", .{missing_message});
-    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(128 << 20)) catch return log.line("PDF inputs (--vision-pdf): {s}", .{path});
+    const path = libraryPath(a, io) orelse return log.line("PDF inputs: {s}", .{missing_message});
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(128 << 20)) catch return log.line("PDF inputs: {s}", .{path});
     defer a.free(bytes);
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
     const hex = std.fmt.bytesToHex(digest, .lower);
-    log.line("PDF inputs (--vision-pdf): {s} (sha256 {s}); at most {d} pages a request", .{ path, &hex, maxPagesLimit() });
+    log.line("PDF inputs: {s} (sha256 {s}); at most {d} pages a request", .{ path, &hex, maxPagesLimit() });
 }
 
 /// The page limit across a request's PDFs: 16, or TENSORFOLD_MAX_PDF_PAGES from 1 up to max_pages_cap.
