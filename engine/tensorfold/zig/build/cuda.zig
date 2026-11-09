@@ -347,9 +347,27 @@ pub fn hostTests(b: *std.Build, draft_ids: *std.Build.Module, step: *std.Build.S
     const template = b.createModule(.{ .root_source_file = b.path("zig/src/core/template/template.zig"), .target = host, .optimize = .debug, .link_libc = true });
     const server_tests = b.createModule(.{ .root_source_file = b.path("zig/src/server/root.zig"), .target = host, .optimize = .debug, .link_libc = true, .imports = &.{ .{ .name = "engine_api", .module = eng.api }, .{ .name = "tokenizer", .module = mods.tokenizer }, .{ .name = "template", .module = template } } });
     step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = server_tests })).step);
-    const image_count_tests = b.step("test-image-count", "Image spans from headers and the count routes' exact image counts, CPU only");
+    const image_count_tests = b.step("test-image-count", "Image spans from headers and the count routes' exact image and PDF page counts, CPU only");
     image_count_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{ "header size", "header sizes", "a header past" } })).step);
     image_count_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = server_tests, .filters = &.{"a count route"} })).step);
+    // The PDF render worker as tensorfold-native starts it (a test runner cannot be the worker): this host's CUDA
+    // server, after TensorFold upstream's cuda_server_host.zig (ashhart, PR #2599). PDFium comes from -Dpdfium=FILE
+    // or TENSORFOLD_LIBPDFIUM; without one the worker tests skip.
+    const worker_options = b.addOptions();
+    worker_options.addOption([]const u8, "version", "pdf-worker-test");
+    const worker_server = nativeServer(b, host, .debug, cuda, mods.lanes, mods.nemotron, mods.core, mods.tokenizer, worker_options, false);
+    const worker_exe = b.addOptions();
+    worker_exe.addOptionPath("path", worker_server.getEmittedBin());
+    const pdf_worker = b.createModule(.{ .root_source_file = b.path("zig/src/server/pdf_worker_test.zig"), .target = host, .optimize = .debug, .link_libc = true });
+    for (server_tests.import_table.keys(), server_tests.import_table.values()) |name, module| pdf_worker.addImport(name, module);
+    pdf_worker.addImport("dsv41_picture", b.createModule(.{ .root_source_file = b.path("zig/src/families/dsv41/picture.zig"), .target = host, .optimize = .debug, .link_libc = true }));
+    pdf_worker.addOptions("pdf_worker_exe", worker_exe);
+    const pdfium = b.option([]const u8, "pdfium", "libpdfium.so for the PDF render worker tests (else TENSORFOLD_LIBPDFIUM)");
+    const pdf_worker_run = b.addRunArtifact(b.addTest(.{ .root_module = pdf_worker, .filters = &.{"tensorfold-native PDF render worker:"} }));
+    const pdf_count_run = b.addRunArtifact(b.addTest(.{ .root_module = pdf_worker, .filters = &.{"a count route spans each PDF page"} }));
+    if (pdfium) |path| for ([_]*std.Build.Step.Run{ pdf_worker_run, pdf_count_run }) |run| run.setEnvironmentVariable("TENSORFOLD_LIBPDFIUM", path);
+    b.step("test-pdf-worker", "The PDF render worker spawned from tensorfold-native, rendering where libpdfium is found").dependOn(&pdf_worker_run.step);
+    image_count_tests.dependOn(&pdf_count_run.step);
     const room_tests = b.step("test-restore-room", "Bounded nonsharded restore-start wait, tier lifecycle, CLI and metrics");
     for ([_]*std.Build.Module{ eng.api, eng.dsv41, server_tests }) |m| {
         room_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m, .filters = &.{ "restore room", "parked", "restore", "aggregate tier", "spill flags", "spill CLI", "cache metrics" } })).step);
