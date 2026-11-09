@@ -41,6 +41,7 @@ test {
     _ = @import("png.zig");
     _ = @import("pdf.zig");
     _ = @import("pdf_worker.zig");
+    _ = @import("pdf_cache.zig");
     _ = @import("pdf_flags_test.zig");
     _ = @import("request_log.zig");
     _ = @import("anthropic_translate.zig");

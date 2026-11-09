@@ -14,6 +14,8 @@ const Allocator = std.mem.Allocator;
 pub const arg = "--pdf-render-worker";
 /// The binary started as the worker when set: tests name the server binary, since a test runner cannot be the worker.
 pub var server_exe: ?[]const u8 = null;
+/// Workers started by render(), for tests: a page cache hit starts none.
+pub var spawned: std.atomic.Value(u64) = .init(0);
 const failed = "PDF rendering exceeded resource limits or failed";
 
 /// The parent's request on the worker's stdin, ahead of the PDF bytes; both ends are the same build.
@@ -33,6 +35,7 @@ pub fn argv(a: Allocator) ![]const []const u8 {
 pub fn render(cx: *Cx, cmd: []const []const u8, pdf_bytes: []const u8, mode: pdf.Mode, max_pages: u32, deadline_ns: i96, budget: *Budget, out: *std.ArrayList([]const u8)) errors.Refused!void {
     const io = log.io();
     var child = std.process.spawn(io, .{ .argv = cmd, .stdin = .pipe, .stdout = .pipe }) catch return cx.refuse("PDF rendering worker process could not be started");
+    _ = spawned.fetchAdd(1, .monotonic);
     defer if (child.id) |pid| {
         std.posix.kill(pid, .KILL) catch {};
         _ = child.wait(io) catch {};
@@ -283,7 +286,7 @@ test "PDF render worker: a worker past its deadline is killed and reported as ti
 }
 
 /// A reply frame of `pages` as the worker writes it.
-fn frameOf(a: Allocator, pages: []const []const u8) ![]u8 {
+pub fn frameOf(a: Allocator, pages: []const []const u8) ![]u8 {
     var f: std.ArrayList(u8) = .empty;
     try f.append(a, 0);
     var b: [4]u8 = undefined;

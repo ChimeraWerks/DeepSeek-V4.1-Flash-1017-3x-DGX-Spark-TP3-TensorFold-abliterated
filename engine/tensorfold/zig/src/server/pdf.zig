@@ -10,6 +10,7 @@ const errors = @import("errors.zig");
 const log = @import("log.zig");
 const png = @import("png.zig");
 const worker = @import("pdf_worker.zig");
+const pdf_cache = @import("pdf_cache.zig");
 const Value = json.Value;
 const Cx = errors.Cx;
 const Allocator = std.mem.Allocator;
@@ -26,6 +27,10 @@ pub const render_timeout_ns: i96 = 10 * std.time.ns_per_s;
 pub const max_child_heap_bytes: u64 = 1 << 30;
 /// The most pixels a page side can have (pageDimensions' clamp): a worker's reply naming more is refused unread.
 pub const max_page_side: u32 = 4096;
+/// pageDimensions' render scale (2 pixels a point: 144 DPI), and the side and area a page is fitted within.
+pub const render_scale: f32 = 2.0;
+pub const max_render_side: f32 = 2048.0;
+pub const max_render_area: f32 = 3_600_000.0;
 pub const off_message = "PDF inputs are off on this server; start the server without --no-vision-pdf";
 pub const missing_message = library ++ " is required for PDF inputs; install PDFium (chromium/7725) in lib/ beside the server or set " ++ env ++ " to its file";
 pub const url_refusal = "URLs are not accepted for PDF inputs; send inline base64 or a data:application/pdf;base64,... URL";
@@ -111,7 +116,7 @@ pub fn logStartup(a: Allocator, io: std.Io) void {
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
     const hex = std.fmt.bytesToHex(digest, .lower);
-    log.line("PDF inputs: {s} (sha256 {s}); at most {d} pages a request", .{ path, &hex, maxPagesLimit() });
+    log.line("PDF inputs: {s} (sha256 {s}); at most {d} pages a request; rendered pages cached up to {d} MiB ({s})", .{ path, &hex, maxPagesLimit(), page_cache.cap(io) >> 20, pdf_cache.env });
 }
 
 /// The page limit across a request's PDFs: 16, or TENSORFOLD_MAX_PDF_PAGES from 1 up to max_pages_cap.
@@ -202,16 +207,49 @@ pub fn decodeFileData(cx: *Cx, raw: []const u8) errors.Refused![]const u8 {
 /// One PDF renders (or is measured) at a time: each worker is a whole process with its own address-space limit.
 var render_mutex: std.Io.Mutex = .init;
 
-/// `pdf_bytes`'s pages appended to `out` by a fresh worker, within the request-wide `pages.budget`.
+/// Rendered pages kept across requests (pdf_cache.zig), up to TENSORFOLD_PDF_CACHE_MIB.
+pub var page_cache: pdf_cache.Cache = .{ .gpa = std.heap.c_allocator };
+
+/// Everything the render settings and limits built into this binary change in a document's pages: part of each
+/// cache key (pdf_cache.Key).
+pub const render_fingerprint: u64 = blk: {
+    const parts = [_]u64{ @as(u32, @bitCast(render_scale)), @as(u32, @bitCast(max_render_side)), @as(u32, @bitCast(max_render_area)), max_page_side, max_request_pixels, @as(u32, @bitCast(render_flags)), png.header_len };
+    break :blk std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(&parts));
+};
+
+/// What a cache miss runs: a fresh worker rendering (or measuring) the document (spawnWorker). Tests pass their own.
+pub const Spawn = *const fn (cx: *Cx, pdf_bytes: []const u8, mode: Mode, max_pages: u32, deadline_ns: i96, budget: *Budget, out: *std.ArrayList([]const u8)) errors.Refused!void;
+
+/// The cache a document's pages are looked up in and kept in, and their key there.
+pub const Cached = struct { cache: *pdf_cache.Cache, key: pdf_cache.Key };
+
+/// `pdf_bytes`'s pages appended to `out`, within the request-wide `pages.budget`: from the page cache when it holds
+/// them, else from a fresh worker.
 pub fn expandBytes(cx: *Cx, pdf_bytes: []const u8, pages: *Pages, out: *std.ArrayList([]const u8)) errors.Refused!void {
     if (comptime builtin.os.tag == .windows) return cx.fail(.unimplemented, "{s}", .{"PDF inputs need the POSIX render worker"});
     const io = log.io();
-    _ = libraryPath(cx.a, io) orelse return cx.fail(.unimplemented, "{s}", .{missing_message});
+    const lib = libraryPath(cx.a, io) orelse return cx.fail(.unimplemented, "{s}", .{missing_message});
+    const cached: ?Cached = if (page_cache.cap(io) == 0) null else if (pdf_cache.Key.of(io, pdf_bytes, pages.mode, pages.max_pages, lib)) |key| .{ .cache = &page_cache, .key = key } else null;
+    try expandCached(cx, cached, pdf_bytes, pages, out, spawnWorker);
+}
+
+/// expandBytes past the library check: a hit is served without the render lock; a miss takes it, looks again (the
+/// same document may have been rendered while it waited), runs `spawn`, and keeps the pages that passed its checks.
+pub fn expandCached(cx: *Cx, cached: ?Cached, pdf_bytes: []const u8, pages: *Pages, out: *std.ArrayList([]const u8), spawn: Spawn) errors.Refused!void {
+    const io = log.io();
+    if (cached) |c| if (try c.cache.admit(cx, c.key, &pages.budget, out)) return;
     render_mutex.lockUncancelable(io);
     defer render_mutex.unlock(io);
+    if (cached) |c| if (try c.cache.admit(cx, c.key, &pages.budget, out)) return;
     const deadline_ns = std.Io.Clock.awake.now(io).toNanoseconds() + render_timeout_ns;
+    const first = out.items.len;
+    try spawn(cx, pdf_bytes, pages.mode, pages.max_pages, deadline_ns, &pages.budget, out);
+    if (cached) |c| c.cache.put(c.key, out.items[first..]);
+}
+
+fn spawnWorker(cx: *Cx, pdf_bytes: []const u8, mode: Mode, max_pages: u32, deadline_ns: i96, budget: *Budget, out: *std.ArrayList([]const u8)) errors.Refused!void {
     const cmd = worker.argv(cx.a) catch return cx.refuse("PDF rendering worker process could not be started");
-    try worker.render(cx, cmd, pdf_bytes, pages.mode, pages.max_pages, deadline_ns, &pages.budget, out);
+    try worker.render(cx, cmd, pdf_bytes, mode, max_pages, deadline_ns, budget, out);
 }
 
 const PauseState = struct {
@@ -306,9 +344,9 @@ pub fn renderDocument(cx: *Cx, f: PdfiumFns, pdf_bytes: []const u8, mode: Mode, 
 pub fn pageDimensions(pw_raw: f32, ph_raw: f32) [2]c_int {
     const pw: f32 = if (std.math.isFinite(pw_raw) and pw_raw > 1.0) pw_raw else 595.0;
     const ph: f32 = if (std.math.isFinite(ph_raw) and ph_raw > 1.0) ph_raw else 842.0;
-    var scale: f32 = 2.0; // 144 DPI baseline
-    const max_side: f32 = 2048.0;
-    const max_area: f32 = 3_600_000.0;
+    var scale: f32 = render_scale; // 144 DPI baseline
+    const max_side: f32 = max_render_side;
+    const max_area: f32 = max_render_area;
     if (pw * scale > max_side) scale = max_side / pw;
     if (ph * scale > max_side) scale = max_side / ph;
     if ((pw * scale) * (ph * scale) > max_area) scale = @sqrt(max_area / (pw * ph));
