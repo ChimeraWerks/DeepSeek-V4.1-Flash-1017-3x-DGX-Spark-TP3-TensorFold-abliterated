@@ -100,7 +100,7 @@ The kit does not include the optional grammar library (`libtfgrammar.so`). `prep
 
 ## PDFium for PDF input
 
-PDF input (`tensorfold-native serve ... --vision-pdf`) renders pages with PDFium. The build is [bblanchon/pdfium-binaries `chromium/7725`](https://github.com/bblanchon/pdfium-binaries/releases/tag/chromium%2F7725) (PDFium 147.0.7725.0), pinned under `pdfium` in [release/runtime-assets.json](../release/runtime-assets.json). The library is not in this repository.
+PDF input (on in `tensorfold-native serve` unless `--no-vision-pdf`) renders pages with PDFium. The build is [bblanchon/pdfium-binaries `chromium/7725`](https://github.com/bblanchon/pdfium-binaries/releases/tag/chromium%2F7725) (PDFium 147.0.7725.0), pinned under `pdfium` in [release/runtime-assets.json](../release/runtime-assets.json). The library is not in this repository.
 
 | Asset | Archive bytes | Archive SHA-256 | `lib/libpdfium.so` SHA-256 |
 |---|---|---|---|
@@ -113,7 +113,7 @@ The engine looks for the library in this order and never on the loader's search 
 2. `lib/libpdfium.so` in the parent of the server's directory.
 3. `libpdfium.so` beside `tensorfold-native`.
 
-Only rank 0's `tensorfold-native` reads PDFs, and the server process never loads the library: each document's render worker loads it after it sets its limits. At startup with `--vision-pdf`, the server logs the file it found and its SHA-256, or that it is missing. A missing library makes PDF parts return HTTP 501 that names `libpdfium.so`.
+Only rank 0's `tensorfold-native` reads PDFs, and the server process never loads the library: each document's render worker loads it after it sets its limits. At startup with PDF input on, the server logs the file it found and its SHA-256, or that it is missing. A missing library makes PDF parts return HTTP 501 that names `libpdfium.so`. The direct launcher (`native_launch.py --run`) finds the same file and refuses to start rank 0 unless the rank's `checksums` pin its SHA-256, as they pin the binaries.
 
 `prepare.sh` stages it with the engine binaries: it reuses `OUT/lib/libpdfium.so` when that is the pinned file, or downloads the pinned archive into `OUT/downloads`. It checks the archive's and the library's SHA-256 and copies the library into `BIN_DIR` on each Spark, beside `tensorfold-native`. A file that differs from its pin stops `prepare.sh`; without network it warns and stages the engine without the library. To stage it by hand on the head:
 

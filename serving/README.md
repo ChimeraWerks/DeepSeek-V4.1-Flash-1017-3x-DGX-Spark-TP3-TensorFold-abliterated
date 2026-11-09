@@ -338,7 +338,7 @@ The API does not shorten prompts. A prompt plus its output reserve must fit `con
 
 **Vision is not tested with these weights.**
 
-PDF documents count as images here: an engine started with `--vision-pdf` renders each page as one, so Messages `document` blocks, Chat `file` parts and Responses `input_file` parts take the media gate, and their count comes from the engine as exactly as an image's.
+PDF documents count as images here: the engine renders each page as one (unless it is started with `--no-vision-pdf`), so Messages `document` blocks, Chat `file` parts and Responses `input_file` parts take the media gate, and their count comes from the engine as exactly as an image's.
 
 `POST /v1/vision/jobs` accepts one standalone user image question without assistant history or tools. It rejects repetitive incoming reasoning. After validation and job acceptance, the API returns HTTP `202`. Standalone image questions sent to Chat Completions use the same job path; other Chat requests use ordinary native generation.
 

@@ -28,7 +28,7 @@ Repository code is Apache-2.0 ([LICENSE](LICENSE)); third-party code keeps its o
 | Mia's AI Lab, [TP2 recipe credits][MC], [TP4 recipe](https://github.com/MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold) | Credits `370daf0cc38f348516a98ebab38f6053858eab1f` | Apache-2.0 TP2/TP4 patches, image prompt caching and the required/named tool-call gate. |
 | DeepSeek, [`deepseek-recipe`](https://github.com/deepseek-ai/deepseek-recipe/tree/935817c66f5d6e64838f419692545f06787e485f), [MIT license](https://github.com/deepseek-ai/deepseek-recipe/blob/935817c66f5d6e64838f419692545f06787e485f/LICENSE) | 0.2.0 at `935817c66f5d6e64838f419692545f06787e485f` | Reference for the v1.2 prompt rendering, Responses, tool validation and output parsing behavior. Behavior was matched. |
 | xgrammar authors, [engine attribution][BA] | v0.2.8 | Structured-output library. |
-| PDFium authors; Benoît Blanchon, [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases/tag/chromium%2F7725) | `chromium/7725` (147.0.7725.0) | PDF rendering for `--vision-pdf`: the pinned prebuilt library `prepare.sh` stages (PDFium BSD-3-Clause, packaging MIT; [runtime assets](docs/runtime-assets.md#pdfium-for-pdf-input)). |
+| PDFium authors; Benoît Blanchon, [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases/tag/chromium%2F7725) | `chromium/7725` (147.0.7725.0) | PDF rendering for PDF input: the pinned prebuilt library `prepare.sh` stages (PDFium BSD-3-Clause, packaging MIT; [runtime assets](docs/runtime-assets.md#pdfium-for-pdf-input)). |
 
 ## Patch authors
 

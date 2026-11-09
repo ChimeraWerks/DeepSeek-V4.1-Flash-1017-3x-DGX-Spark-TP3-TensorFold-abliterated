@@ -64,7 +64,7 @@ In the source, off in production:
 | Area | What changed |
 |---|---|
 | Lifetime fixes | the lane thread makes its CUDA context current as it starts (`LaneHost.enter`), so the first spill restore after a restart no longer runs on an unbound thread. Mia's patch 0059 (issue #102, NguyenPhan2810) |
-| PDF input | `--vision-pdf`: PDF parts (Messages `document`, Chat `file`, Responses `input_file`) become page images, rendered by PDFium `chromium/7725` in a limited worker process (`zig/src/server/pdf.zig`, `pdf_worker.zig`) as PNG pages the dsv41 decoder reads without Pillow; the count routes span each page from its size alone. TensorFold PRs 1820 (joernchen), 2387, 2393 and 2599 (ashhart) |
+| PDF input | on unless `--no-vision-pdf` (upstream's opt-in `--vision-pdf` is accepted): PDF parts (Messages `document`, Chat `file`, Responses `input_file`) become page images, rendered by PDFium `chromium/7725` in a limited worker process (`zig/src/server/pdf.zig`, `pdf_worker.zig`) as PNG pages the dsv41 decoder reads without Pillow; the count routes span each page from its size alone. TensorFold PRs 1820 (joernchen), 2387, 2393 and 2599 (ashhart) |
 
 ## CPU-only cross-build
 
@@ -135,14 +135,15 @@ Engram constants and token map, RoPE tables) and each rank's Engram tables.
 assets](../docs/runtime-assets.md) lists every file with its pinned source and
 SHA-256, and the manual commands. The optional grammar library
 (`libtfgrammar.so`) is staged with the binaries when the build output has one.
-PDF input (`--vision-pdf`) loads PDFium's `libpdfium.so` from `TENSORFOLD_LIBPDFIUM`
+PDF input (on unless `--no-vision-pdf`) loads PDFium's `libpdfium.so` from `TENSORFOLD_LIBPDFIUM`
 or `lib/` beside `tensorfold-native` (its directory's `../lib`, then the directory
 itself); `prepare.sh` stages the pinned arm64 build into `BIN_DIR`. The server never
 loads it: each PDF's render worker does.
 
 `zig build test-pdf-worker -Dpdfium=/path/to/x64/libpdfium.so` spawns that worker
-from a host `tensorfold-native` and renders real PDFs; `test-image-count` includes
-its exact page count. Without the library both skip.
+from a host `tensorfold-native` and renders real PDFs; `test-image-count` with the
+same `-Dpdfium` includes its exact page count. Without `-Dpdfium` both steps fail
+and say so; `-Dpdfium=none` leaves the PDF tests out.
 
 ## Weight tools
 
