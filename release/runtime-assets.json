@@ -364,5 +364,24 @@
         "serving_source_sha256": "d172db6972c746068e276aa8ca4fb613fe55fe2658a58bf1129442eb45fa4d9d"
       }
     ]
+  },
+  "pdfium": {
+    "repo": "bblanchon/pdfium-binaries",
+    "release": "chromium/7725",
+    "version": "147.0.7725.0",
+    "archive": "pdfium-linux-arm64.tgz",
+    "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7725/pdfium-linux-arm64.tgz",
+    "archive_bytes": 3555478,
+    "archive_sha256": "a0dab89cdbee57832292034eaad27e010f84dea1c367e1e0535730933ead2315",
+    "member": "lib/libpdfium.so",
+    "library_sha256": "5cfe82b0f16d33c0117d9df10790ba83b47d0b10deb74b1e7f540e607452a752",
+    "library_bytes": 7752328,
+    "host_test_archive": {
+      "archive": "pdfium-linux-x64.tgz",
+      "archive_sha256": "4f16da3f9c8e5790b9d59959f789bceff6eb8fdc7980e800d93b83392eb9cee4",
+      "library_sha256": "fccddaf6adda2b435074dd88fad5398d7221cbc369d994cf561e7bfa84d7cf7b",
+      "library_bytes": 7551304
+    },
+    "license": "PDFium BSD-3-Clause; bundled libraries under licenses/ in the archive; packaging MIT (Benoit Blanchon)"
   }
 }
