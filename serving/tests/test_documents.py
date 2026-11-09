@@ -14,7 +14,7 @@ MODEL = "deepseek-v4.1-flash"
 DOCUMENT = {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0xLjQK"}}
 FILE = {"type": "file", "file": {"filename": "a.pdf", "file_data": "data:application/pdf;base64,JVBERi0xLjQK"}}
 INPUT_FILE = {"type": "input_file", "filename": "a.pdf", "file_data": "JVBERi0xLjQK"}
-# Claude Code's Read of a PDF: the document arrives in the tool_result
+# An agent client's file read of a PDF: the document arrives in the tool_result
 READ = {"model": MODEL, "max_tokens": 64000, "messages": [
     {"role": "user", "content": "summarize the paper"},
     {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "a.pdf"}}]},

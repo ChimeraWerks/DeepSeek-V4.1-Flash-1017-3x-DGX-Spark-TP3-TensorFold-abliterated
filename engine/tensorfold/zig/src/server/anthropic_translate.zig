@@ -155,7 +155,7 @@ fn messages(cx: *Cx, value: ?Value, system: ?Value) errors.Refused!Value {
                     } else if (part.typeIs("image")) {
                         try result_parts.append(a, try image(cx, part));
                         has_image = true;
-                    } else if (part.typeIs("document")) { // Claude Code's Read of a PDF returns one
+                    } else if (part.typeIs("document")) { // an agent client's file read of a PDF returns one
                         try result_parts.append(a, try document(cx, part));
                         has_image = true;
                     } else return cx.fail(.request, "unsupported tool_result content type {s}", .{try pyrepr.repr(a, part.get("type"))});
