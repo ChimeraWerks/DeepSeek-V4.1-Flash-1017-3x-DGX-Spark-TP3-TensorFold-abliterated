@@ -113,7 +113,9 @@ def normalize(raw, cfg, client="default", api="chat", profile=None):
     if body.get("n", 1) != 1:
         raise PolicyError("only n=1 is supported")
     field = "max_output_tokens" if api == "responses" else "max_tokens"
-    cap = body.get(field, body.get("max_completion_tokens"))
+    cap = body.get(field)
+    if cap is None:
+        cap = body.get("max_completion_tokens")
     # An omitted cap is the configured default until the prompt is counted; Engine.check_count then lowers it to the
     # context left, as DeepSeek's resolve_max_tokens does (deepseek-recipe request/mod.rs). A cap the client gave is kept.
     body.pop(CAP_OMITTED, None)

@@ -172,9 +172,16 @@ class Engine:
         """
         field = "max_output_tokens" if api == "responses" else "max_tokens"
         cap = body[field]
-        room = self.cfg.context_tokens - count - self.cfg.safety_tokens
-        if cap_omitted and 1 <= room < cap:
-            body, cap = {**body, field: room}, room
+        if cap_omitted:
+            # The engine's own window can be fitted below context_tokens; lower to whichever is smaller.
+            window = min(self.cfg.context_tokens, self.native_window or self.cfg.context_tokens)
+            room = window - count - self.cfg.safety_tokens
+            if 1 <= room < cap:
+                body, cap = {**body, field: room}, room
+                thinking = body.get("thinking")
+                budgets = [body.get("thinking_budget"), thinking.get("budget_tokens") if isinstance(thinking, dict) else None]
+                if any(isinstance(b, int) and not isinstance(b, bool) and b >= cap for b in budgets):
+                    raise GatewayError(400, "the thinking budget does not fit the context left; compact the conversation explicitly", "context_length_exceeded")
         if count + cap + self.cfg.safety_tokens > self.cfg.context_tokens:
             raise GatewayError(400, "input and output reserve exceed recipe context; compact the conversation explicitly", "context_length_exceeded")
         return {"body": body, "count": count, "weight": count + cap, "token_method": method}

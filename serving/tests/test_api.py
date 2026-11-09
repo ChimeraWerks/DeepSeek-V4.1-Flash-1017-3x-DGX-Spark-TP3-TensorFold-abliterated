@@ -132,6 +132,9 @@ class PolicyTests(unittest.TestCase):
             self.assertNotIn(CAP_OMITTED, normalize({"messages": messages, **given, CAP_OMITTED: True}, cfg))
         self.assertNotIn(CAP_OMITTED, normalize({"input": "hi", "max_output_tokens": 64, CAP_OMITTED: True}, cfg, api="responses"))
         self.assertNotIn(CAP_OMITTED, normalize_messages({"messages": messages, "max_tokens": 64, CAP_OMITTED: True}, cfg))
+        # a null primary cap falls back to max_completion_tokens instead of counting as omitted
+        both = normalize({"messages": messages, "max_tokens": None, "max_completion_tokens": 64}, cfg)
+        self.assertEqual((both["max_tokens"], CAP_OMITTED in both), (64, False))
 
     def test_bad_settings_and_internal_ownership(self):
         base = {"messages": [{"role": "user", "content": "hello"}]}
@@ -357,6 +360,16 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         for path, body, field in self.ROUTES:
             await self.client.post(path, json={**body, field: 500})
             self.assertEqual(self.seen[-1][field], 500, path)
+
+    async def test_lowered_cap_still_refuses_a_thinking_budget_that_no_longer_fits(self):
+        self.near_full_context(500)
+        answer = await self.client.post("/v1/messages", json={**self.ROUTES[2][1], "thinking": {"type": "enabled", "budget_tokens": 600}})
+        self.assertEqual((answer.status_code, answer.json()["error"]["code"]), (400, "context_length_exceeded"))
+        answer = await self.client.post("/v1/chat/completions", json={**self.ROUTES[0][1], "thinking_budget": 600})
+        self.assertEqual((answer.status_code, answer.json()["error"]["code"]), (400, "context_length_exceeded"))
+        self.assertEqual(self.seen, [])
+        await self.client.post("/v1/messages", json={**self.ROUTES[2][1], "thinking": {"type": "enabled", "budget_tokens": 400}})
+        self.assertEqual(self.seen[-1]["max_tokens"], 500)
 
     async def test_omitted_cap_with_no_room_left_is_refused(self):
         self.near_full_context(0)
