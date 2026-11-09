@@ -7,7 +7,7 @@ W=${W:-"$ROOT/engine/tensorfold"}
 ZIG=${ZIG:-"$ROOT/engine/build/toolchains/zig/zig"}
 FATBINS=${FATBINS:-"$ROOT/engine/build/fatbins-samplecand"}
 OUT=${OUT:-"$ROOT/engine/build/out"}
-C=${C:-"$ROOT/engine/build/zig-cache"}
+C=${C:-"${XDG_CACHE_HOME:-$HOME/.cache}/tensorfold-zig/$(tr -d '\r\n' < "$W/.zig-version" 2>/dev/null || echo default)"}
 JOBS=${JOBS:-8}
 # KEYED_DRAFT: true embeds the isolated dsv41_keyed.fatbin; default false.
 #              Runtime still requires TF_DS_KEYED_DRAFT=1 on every rank.
