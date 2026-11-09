@@ -138,7 +138,10 @@ SHA-256, and the manual commands. The optional grammar library
 PDF input (on unless `--no-vision-pdf`) loads PDFium's `libpdfium.so` from `TENSORFOLD_LIBPDFIUM`
 or `lib/` beside `tensorfold-native` (its directory's `../lib`, then the directory
 itself); `prepare.sh` stages the pinned arm64 build into `BIN_DIR`. The server never
-loads it: each PDF's render worker does.
+loads it: each PDF's render worker does. `TENSORFOLD_MAX_PDF_PAGES` sets a request's
+page limit (16 by default, 1 to 64). The server keeps rendered pages for documents
+sent again (`zig/src/server/pdf_cache.zig`), up to `TENSORFOLD_PDF_CACHE_MIB`
+(256 by default; `0` turns it off).
 
 `zig build test-pdf-worker -Dpdfium=/path/to/x64/libpdfium.so` spawns that worker
 from a host `tensorfold-native` and renders real PDFs; `test-image-count` with the

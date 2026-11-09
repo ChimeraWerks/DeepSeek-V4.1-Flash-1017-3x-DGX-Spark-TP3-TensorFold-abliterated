@@ -183,6 +183,7 @@ test "tensorfold-native PDF render worker: a count route spans each PDF page as 
     var cx: Cx = .{ .a = a };
     var drawn: messages.Images = .{ .placeholder = "<img>", .pdf = .{ .mode = .render } };
     const generated = messages.normalizeImages(&cx, msgs, "system", false, &drawn) catch return refused(cx);
+    pdf.page_cache.clear(log.io()); // the worker measures, not the page cache from the pages just drawn
     var measured: messages.Images = .{ .placeholder = "<img>", .pdf = .{ .mode = .measure } };
     const counted = try messages.normalizeImages(&cx, msgs, "system", false, &measured);
     // the same text, its placeholders in the same places: seven pages, the image, then two pages
@@ -205,4 +206,41 @@ test "tensorfold-native PDF render worker: a count route spans each PDF page as 
     try std.testing.expectEqualSlices(u32, by_decode.ids, by_header.ids);
     try std.testing.expectEqual(by_decode.image_tokens, by_header.image_tokens);
     try std.testing.expect(by_decode.image_tokens > 9 * 100);
+}
+
+test "tensorfold-native PDF render worker: a document sent again comes from the page cache, byte for byte, with no worker" {
+    useServer();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    pdf.page_cache.clear(log.io());
+    var a4: [6]Page = undefined;
+    for (&a4, 0..) |*p, i| p.* = .{ .w = 595, .h = 842, .content = try std.fmt.allocPrint(a, "BT /F1 18 Tf 72 720 Td (page {d}) Tj ET 0 0 1 rg 72 {d} 200 100 re f", .{ i + 1, 100 + 50 * i }) };
+    const doc = try buildPdf(a, &a4);
+    // a fresh render, straight from a worker
+    var cx: Cx = .{ .a = a };
+    var fresh_budget: pdf.Budget = .{};
+    var fresh: std.ArrayList([]const u8) = .empty;
+    const deadline_ns = std.Io.Clock.awake.now(std.testing.io).toNanoseconds() + pdf.render_timeout_ns;
+    worker.render(&cx, try worker.argv(a), doc, .render, 16, deadline_ns, &fresh_budget, &fresh) catch return refused(cx);
+    // an agent client's turns: the first renders, the next two are hits that start no worker
+    const before = worker.spawned.load(.monotonic);
+    for (0..3) |turn| {
+        var state: pdf.Pages = .{ .max_pages = 16 };
+        var pages: std.ArrayList([]const u8) = .empty;
+        pdf.expandBytes(&cx, doc, &state, &pages) catch return refused(cx);
+        try std.testing.expectEqual(before + 1, worker.spawned.load(.monotonic));
+        try std.testing.expectEqual(fresh_budget, state.budget);
+        try std.testing.expectEqual(@as(usize, 6), pages.items.len);
+        for (fresh.items, pages.items) |f, p| try std.testing.expectEqualSlices(u8, f, p);
+        if (turn == 0) try std.testing.expectEqual(@as(u64, 0), pdf.page_cache.hits);
+    }
+    try std.testing.expectEqual(@as(u64, 2), pdf.page_cache.hits);
+    // the count route on a hit: each page's header, the same budget, no worker
+    var counted: pdf.Pages = .{ .mode = .measure, .max_pages = 16 };
+    var heads: std.ArrayList([]const u8) = .empty;
+    pdf.expandBytes(&cx, doc, &counted, &heads) catch return refused(cx);
+    try std.testing.expectEqual(before + 1, worker.spawned.load(.monotonic));
+    try std.testing.expectEqual(fresh_budget, counted.budget);
+    for (fresh.items, heads.items) |f, h| try std.testing.expectEqualSlices(u8, f[0..png.header_len], h);
 }

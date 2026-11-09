@@ -4,6 +4,17 @@ DeepSeek V4.1 Flash 1017 abliterated EXL3 3.84 bpw runs across three NVIDIA DGX 
 
 v1.2 uses engine base `30a9647` with exactly two non-runtime edits in `zig/src/server/metrics.zig`. A documentation comment and a test name describe external metrics samplers generically. Serving logic is unchanged by them. Rebuild comparison results: `release/build-verification.json`.
 
+## Unreleased: PDF page cache
+
+Not deployed. Production runs the engine from the 2026-11-09 PDF input deploy; this engine change waits for an owner-approved deploy. The API is unchanged.
+
+- The engine keeps the pages it rendered from a PDF, so a document sent again is not rendered again. An agent client resends a PDF it read with every turn, and the count route measures it before each generation; each time, a worker was started and every page drawn again (about 80 ms an A4 page on the x64 host), one document at a time across the server.
+- Pages are keyed by the SHA-256 of the document's bytes, whether they were drawn or only measured, the page limit, the render scale and limits, and the PDFium file's path, inode, size and modification time. Only pages that passed the server's checks of the worker's reply are kept.
+- A hit starts no worker and takes no render lock: its pages are copied into the request and count against its page and pixel limits as a worker's reply does, with the same refusals. A count is also answered from the rendered pages' PNG headers. Two requests waiting on the same document render it once.
+- Refusals (encrypted, corrupt, too many pages, timed out) are not kept: some depend on what else the request holds.
+- The cache holds at most 256 MiB, counting the pages, their bookkeeping and the map; `TENSORFOLD_PDF_CACHE_MIB` sets it, and `0` turns it off. The least recently used documents are dropped first; a document larger than the whole cache is not kept.
+- Checked on the host with the x64 library: a twelve-page A4 document took 1.0 to 1.1 s a turn to count and render, and 0.3 ms on a hit. Hits match a fresh render byte for byte and start no worker; different modes, limits, documents and libraries miss; the byte bound holds through evictions; eight threads hitting and filling together render each document once.
+
 ## 2026-11-09 PDF input
 
 The engine part is in production since 2026-11-09, with the owner's approval, on top of the bf16 prefill wire build; `libpdfium.so` sits beside `tensorfold-native` ([runtime assets](docs/runtime-assets.md#pdfium-for-pdf-input)). The API part (counting and gating documents as media) followed the same day. PDF input is on by default; `--no-vision-pdf` turns it off. Checked live: a two-page PDF was counted exactly and read back correctly, through the engine and through the API as a Messages tool result, and a streamed reply running alongside showed no decode stall (longest gap 0.1 s).
