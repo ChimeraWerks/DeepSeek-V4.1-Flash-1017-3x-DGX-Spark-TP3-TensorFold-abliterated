@@ -46,7 +46,8 @@ class Config:
     max_body_bytes: int = 64 * 1024 * 1024
     max_response_bytes: int = 64 * 1024 * 1024
     media_concurrency: int = 2
-    image_token_reserve: int = 16384
+    # Per image, only for an engine whose count routes cannot span images: the model's max_image_tokens (1,024).
+    image_token_reserve: int = 1024
     request_timeout: float = 3590.0
     queue_timeout: float = 1800.0
     heartbeat: float = 15.0

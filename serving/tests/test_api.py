@@ -66,6 +66,61 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(asyncio.run(run())[0], 7)
         self.assertEqual(seen[0]["api"], "responses")
 
+    def test_images_are_counted_by_the_engine_not_reserved(self):
+        image = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+        body = {"model": "deepseek-v4.1-flash", "max_tokens": 64000,
+                "messages": [{"role": "user", "content": [image, image, {"type": "text", "text": "what is this"}]}]}
+        def count(engine_reply):
+            seen = []
+            def native(request):
+                seen.append(json.loads(request.content))
+                return engine_reply(seen[-1])
+            async def run():
+                from chimera_sparks.engine import Engine
+                engine = Engine(Config(), httpx.MockTransport(native))
+                try:
+                    return await engine.count_input(body, "messages"), engine.exact_images
+                finally:
+                    await engine.close()
+            return asyncio.run(run()), seen
+        # an engine that spans images: one count of the request as it is, the images in it
+        (result, exact), seen = count(lambda _: httpx.Response(200, json={"input_tokens": 2100, "image_tokens": 2000}))
+        self.assertEqual(result, (2100, "native-exact"))
+        self.assertTrue(exact)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0]["messages"][0]["content"][0]["type"], "image")
+        # an engine that counts text only: refused, then text with the per-image reserve (this model's largest span)
+        text_only = {"type": "error", "error": {"type": "invalid_request_error",
+                     "message": "this server accepts text parts only; image, audio and video inputs are unsupported"}}
+        def old_engine(sent):
+            if any(part.get("type") == "image" for part in sent["messages"][0]["content"]):
+                return httpx.Response(400, json=text_only)
+            return httpx.Response(200, json={"input_tokens": 30})
+        (result, exact), seen = count(old_engine)
+        self.assertEqual(result, (30 + 2 * 1024, "native-text+media-reserve"))
+        self.assertIs(exact, False)
+        self.assertEqual(seen[1]["messages"][0]["content"][0], {"type": "text", "text": "[image]"})
+        # an image the engine refuses is the client's error, in the engine's words, not an unavailable tokenizer
+        refused = {"error": {"message": "image input: cannot identify image file"}}
+        from chimera_sparks.engine import GatewayError
+        with self.assertRaises(GatewayError) as caught:
+            count(lambda _: httpx.Response(400, json=refused))
+        self.assertEqual((caught.exception.status_code, str(caught.exception)), (400, "image input: cannot identify image file"))
+
+    def test_an_engine_found_counting_text_only_is_asked_again_later(self):
+        from chimera_sparks.engine import Engine
+        async def run():
+            engine = Engine(Config(), httpx.MockTransport(lambda _: httpx.Response(200, json={"count": 1})))
+            try:
+                engine.exact_images, engine.exact_images_checked = False, 0.0
+                engine.exact_recheck_seconds = 1e12
+                fresh = engine._exact_images_possible()
+                engine.exact_recheck_seconds = 0.0
+                return fresh, engine._exact_images_possible()
+            finally:
+                await engine.close()
+        self.assertEqual(asyncio.run(run()), (False, True))
+
     def test_bad_settings_and_internal_ownership(self):
         base = {"messages": [{"role": "user", "content": "hello"}]}
         for bad in [{"temperature": float("nan")}, {"top_k": True}, {"top_p": 0}, {"max_tokens": -1}]:

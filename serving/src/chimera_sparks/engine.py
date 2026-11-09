@@ -5,6 +5,7 @@ import asyncio
 from dataclasses import dataclass
 import json
 import os
+import time
 import uuid
 import httpx
 
@@ -13,6 +14,16 @@ from .laky.media_admission import has_images
 from .laky.queue import FairPriorityGate
 from .laky.stream_validation import ChatStreamValidator, MessagesStreamValidator, ResponsesStreamValidator
 from .policy import normalize
+
+
+def upstream_message(response):
+    """The error message in an engine reply (OpenAI's or Anthropic's shape), or ""."""
+    try:
+        error = response.json().get("error")
+    except ValueError:
+        return ""
+    message = error.get("message") if isinstance(error, dict) else error
+    return message if isinstance(message, str) else ""
 
 
 class GatewayError(RuntimeError):
@@ -52,6 +63,10 @@ class Engine:
         self.media_gate = asyncio.Semaphore(cfg.media_concurrency)
         self.requests = 0
         self.errors = 0
+        self.native_window = None
+        # Whether the engine's count routes span images exactly: None until an image request shows it.
+        self.exact_images, self.exact_images_checked = None, None
+        self.exact_recheck_seconds = 300.0
 
     async def close(self):
         await self.client.aclose()
@@ -61,19 +76,40 @@ class Engine:
         return normalize(body, self.cfg), None, 0, "default", True
 
     async def count_input(self, body, api="chat"):
-        # Admission must never fetch or decode image bytes. Use bounded reserves.
-        images = 0
+        """The prompt's tokens as the native engine will hold them, and how they were counted.
+
+        The engine spans each image exactly in its count routes (from the image's header, without decoding it), so
+        images go to the count as they are. An engine that counts text only refuses images there; for it, each image
+        becomes the text "[image]" plus image_token_reserve, the most one image can take on this model.
+        """
+        images = []
         def text_only(value):
-            nonlocal images
             if isinstance(value, dict):
                 if isinstance(value.get("type"), str) and value["type"] in {"image_url", "input_image", "image"}:
-                    images += 1
+                    images.append(1)
                     return {"type": "text", "text": "[image]"}
                 return {k: text_only(v) for k, v in value.items()}
             if isinstance(value, list):
                 return [text_only(v) for v in value]
             return value
-        token_body = text_only(body)
+        legacy_body = text_only(body)
+        if images and self._exact_images_possible():
+            data = await self._native_count(body, api, with_images=True)
+            if data is not None:
+                self.exact_images, self.exact_images_checked = True, None
+                return self._count_of(data), "native-exact"
+            self.exact_images, self.exact_images_checked = False, time.monotonic()
+        count = self._count_of(await self._native_count(legacy_body, api))
+        return count + len(images) * self.cfg.image_token_reserve, "native-text+media-reserve"
+
+    def _exact_images_possible(self):
+        # An engine found counting text only is asked again after a while: it may have been upgraded in place.
+        if self.exact_images is not False:
+            return True
+        return time.monotonic() - self.exact_images_checked >= self.exact_recheck_seconds
+
+    async def _native_count(self, body, api, *, with_images=False):
+        token_body = body
         if api == "chat":
             token_body = {k: v for k, v in token_body.items() if k in {"model", "messages", "tools", "tool_choice", "chat_template_kwargs", "reasoning_effort", "thinking_budget"}}
             token_body.update(add_generation_prompt=True, return_token_strs=False)
@@ -81,16 +117,29 @@ class Engine:
             token_body = {**token_body, "api": "responses", "stream": False, "store": False}
         path = "/v1/messages/count_tokens" if api == "messages" else "/tokenize"
         response = await self.control_client.post(path, json=token_body, timeout=30)
+        if with_images:
+            if response.status_code == 400:
+                message = upstream_message(response)
+                if "accepts text" in message:
+                    return None  # an engine that counts text only
+                # the image itself is refused (bad data, too many pixels): generation would refuse it the same way
+                raise GatewayError(400, message or "the engine refused an image", "invalid_request_error")
+            if response.is_success and "image_tokens" not in response.json():
+                return None  # counted without spanning its images
         if not response.is_success:
             raise GatewayError(503, "native tokenizer is unavailable; no generation dispatched")
         data = response.json()
-        self.native_window = data.get("max_model_len")
+        self.native_window = data.get("max_model_len", self.native_window)
+        return data
+
+    @staticmethod
+    def _count_of(data):
         count = data.get("count", data.get("num_tokens", data.get("input_tokens")))
         if count is None and isinstance(data.get("tokens"), list):
             count = len(data["tokens"])
         if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
             raise GatewayError(503, "native tokenizer did not return a valid count")
-        return count + images * self.cfg.image_token_reserve, "native-text+media-reserve"
+        return count
 
     async def prepare(self, body, api="chat"):
         count, method = await self.count_input(body, api)

@@ -4,6 +4,15 @@ DeepSeek V4.1 Flash 1017 abliterated EXL3 3.84 bpw runs across three NVIDIA DGX 
 
 v1.2 uses engine base `30a9647` with exactly two non-runtime edits in `zig/src/server/metrics.zig`. A documentation comment and a test name describe external metrics samplers generically. Serving logic is unchanged by them. Rebuild comparison results: `release/build-verification.json`.
 
+## Unreleased: exact image counts
+
+Not yet in production. It needs an engine rebuilt from this source on all three Sparks.
+
+- The engine's `/tokenize` and Messages `count_tokens` routes count each image as the span generation gives it, read from the image's header without decoding it. Before, they counted one token per image. Replies to requests with images add `image_tokens`.
+- The API sends images to those routes as they are. Before, it charged 16,384 tokens per image, while an image on this model takes 180 to 1,024. Chats with about 50 images were refused as over context while holding about 140K tokens.
+- With an engine that cannot count images, the API falls back to `[image]` text plus `image_token_reserve` per image, now 1,024 by default (the model's `max_image_tokens`).
+- An image the engine refuses while counting now returns that 400 to the client, not a 503.
+
 ## 2026-11-06 GPU clock cap
 
 - Added `GPU_CLOCK_CAP_MHZ` (default 2300, `0` for stock clocks): `start.sh` applies it to every Spark, matching the cap production serves with.

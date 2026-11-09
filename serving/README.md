@@ -318,7 +318,7 @@ The engine uses `TF_DS_SPILL_DIR` and `TF_DS_SPILL_GIB=256`, with rank 0 options
 | `safety_tokens` | `1024` | Positive integer context reserve. `max_output_tokens + safety_tokens` must be strictly less than `context_tokens`. |
 | `max_body_bytes` | `67108864` (64 MiB) | Positive integer request-body byte limit. |
 | `max_response_bytes` | `67108864` (64 MiB) | Positive integer limit for native responses read into memory by the API. |
-| `image_token_reserve` | `16384` | Positive integer image reserve configured for the engine adapter. |
+| `image_token_reserve` | `1024` | Positive integer tokens per image, used only with an engine that cannot count images (its count routes refuse them). The default is the model's `max_image_tokens`. An engine that counts images makes admission exact. |
 
 Fit input, output and safety reservations within native context. The engine adapter calculates input accounting and admitted tokens. API validators check configuration values. The output ceiling and admitted-token budget stay independent of KV pool size.
 
