@@ -61,6 +61,10 @@ pub const LaneHost = struct {
     live_generated: u64 = 0,
     lone: ?api.Lone = null, // the backend's driver for a lone greedy stream; null: every stream in the lane core
     lone_job: ?*Job = null, // the job that driver holds now
+    /// Runs first on the lane thread, before anything else there: the backend makes its device context current (CUDA
+    /// binds a context per thread, and admission can reach the device through the prompt cache's tier, a restore,
+    /// before any backend call has bound it). null: nothing to do.
+    enter: ?Enter = null,
     cache: ?*pc.Store = null, // kept prompt states (engine thread only); the backend restores and saves them
     memory: ?api.MemorySource = null, // the backend's memory counts; null: Engine.memory reports none
     explain: ?api.Explain = null, // the backend's words for a request it refuses; null: the error's name
@@ -105,6 +109,9 @@ pub const LaneHost = struct {
     const lone_pump_commits: u32 = 16;
 
     const Load = struct { job: *Job, restore: *pc.Restore, since: i96 };
+
+    /// The backend's hook for the lane thread's start.
+    pub const Enter = struct { ctx: *anyopaque, run: *const fn (ctx: *anyopaque) void };
 
     /// How parked work is serviced (LaneHost.configure; the defaults are off).
     pub const TierPolicy = struct {
@@ -1272,6 +1279,7 @@ pub const LaneHost = struct {
     }
 
     fn run(h: *LaneHost) void {
+        if (h.enter) |e| e.run(e.ctx);
         while (h.runIteration()) {}
     }
 

@@ -107,6 +107,11 @@ const Rig = struct {
     }
 
     fn create(sp: api.Spill) !*Rig {
+        return createWith(sp, null);
+    }
+
+    /// `pre` runs on the built rig just before its host starts (hooks the lane thread must see from its start).
+    fn createWith(sp: api.Spill, pre: ?*const fn (r: *Rig) void) !*Rig {
         const r = try gpa.create(Rig);
         errdefer gpa.destroy(r);
         r.* = .{ .cfg = undefined, .target = .{ .gpa = gpa }, .core = undefined, .store = undefined, .tier = .{ .gpa = gpa, .codec = .{ .ctx = r, .pack = pack, .unpack = unpack } }, .host = undefined };
@@ -118,6 +123,7 @@ const Rig = struct {
         r.host.interleave_ns = 0;
         r.host.cache = &r.store;
         r.host.configure(sp);
+        if (pre) |f| f(r);
         try r.host.start();
         return r;
     }
@@ -437,4 +443,35 @@ test "spill switches a backend never bound are refused, not ignored" {
     store.setTier(tier.tier(), 0);
     host.configure(disk);
     try std.testing.expect(!disk.unbound(host.engine()));
+}
+
+threadlocal var lane_entered: bool = false;
+
+fn enterLane(_: *anyopaque) void {
+    lane_entered = true;
+}
+
+fn enteredHere(_: *anyopaque) bool {
+    return lane_entered;
+}
+
+test "the lane thread runs its enter hook before the tier's first restore: a restore that is the first device work finds the context current" {
+    const r = try Rig.createWith(.{ .load_ms = 5, .flush_ms = 1000 }, struct {
+        fn pre(rig: *Rig) void {
+            rig.host.enter = .{ .ctx = rig, .run = enterLane };
+            rig.tier.on_begin = .{ .ctx = rig, .check = enteredHere };
+        }
+    }.pre);
+    defer r.destroy();
+    _ = try r.point(&t2, 8);
+    var b: Box = .{};
+    defer b.deinit();
+    const req: Request = .{ .prompt = &t2, .max_tokens = 6, .history_len = 14 };
+    try r.host.engine().submit(1, &req, b.sink());
+    try std.testing.expectEqual(Reason.length, b.wait());
+    try std.testing.expectEqual(@as(?u32, 8), b.cached); // it resumed the restored state, nothing prefilled from 0
+    try b.exact(&t2);
+    r.stop();
+    try std.testing.expect(r.tier.begins >= 1);
+    try std.testing.expectEqual(@as(u64, 0), r.tier.begins_unbound); // every begin ran where the hook had run
 }

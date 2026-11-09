@@ -47,6 +47,7 @@ Their TP2/TP4 patches ship in this engine, ported to TP3.
 | hecisaza, [Mia 4x PR 49](https://github.com/MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold/pull/49) | Patch 0052 | DSML tool calls stay whole when a parameter value holds the block's closer. |
 | Keenni, [Mia 4x PR 41](https://github.com/MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold/pull/41) | PR 41 | Template strings grow in place, reducing head memory on long histories. |
 | marknx, [Mia 2x PR 112](https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks/pull/112) | Patch 0056 | Each picture is prepared in its own scratch memory. |
+| MiaAI-Lab, [Mia 2x `8f19f56`](https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks/commit/8f19f56ac12eaa538a430cfbbc98aa93e3710e7d); reported by Phan Quý Nguyên ([NguyenPhan2810](https://github.com/NguyenPhan2810)), [issue 102](https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks/issues/102) | Patch 0059 | The lane thread makes its CUDA context current as it starts, so the first spill restore after a start finds it bound. |
 | laudney, [TensorFold](https://github.com/ashhart/TensorFold) | `ed39acc5` (#1945) | Release of a first-token finish when its trace fails. |
 | William J Riley (willjriley), [TensorFold PR 27](https://github.com/bertholomus/TensorFold/pull/27) | PR 27 | RDMA idle backoff. |
 | Mykhailo Tamarin, [Mia PR 26](https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks/pull/26) | PR 26 | Zig-ring port of the idle backoff. |

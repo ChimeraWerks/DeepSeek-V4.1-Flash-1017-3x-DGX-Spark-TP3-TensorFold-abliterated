@@ -4,6 +4,13 @@ DeepSeek V4.1 Flash 1017 abliterated EXL3 3.84 bpw runs across three NVIDIA DGX 
 
 v1.2 uses engine base `30a9647` with exactly two non-runtime edits in `zig/src/server/metrics.zig`. A documentation comment and a test name describe external metrics samplers generically. Serving logic is unchanged by them. Rebuild comparison results: `release/build-verification.json`.
 
+## Unreleased
+
+Not deployed. Production stays on `30a9647` plus the exact image count change.
+
+- The lane thread makes its CUDA context current as it starts. With the spill tier on, the first request after a restart could resume a saved state from disk before any model call had bound the context on that thread. The restore's `cuMemAlloc` was then refused with 709, read as a lost context, and broke the rank group. The warmups `start.sh` sends after a start hid this; a supervisor restart sends none. Port of Mia's patch 0059 (issue #102, reported by NguyenPhan2810).
+- Checked on the host: a new lane host test in `lane_host_tier_test.zig` fails without the change and passes with it, the other tier tests pass, and `tensorfold-native` builds.
+
 ## 2026-11-08 exact image counts
 
 Production moved from `30a9647` to `30a9647` plus this change, with the owner's approval. The weights, KV pool, stream count, spill and sampling defaults are unchanged. The rebuilt binaries embed the production fatbins byte for byte.

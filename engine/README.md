@@ -59,6 +59,12 @@ In the source, off in production:
 | `TF_DS_GRAPH_TELEMETRY` | CUDA graph hit, capture and pressure counters | ChimeraWerks |
 | `TF_STREAM_TOOL_CALLS` | streams DSML tool calls as they decode; rank 0 only | Mia's patch 0048 (nuk3s) |
 
+### After `30a9647`, not yet deployed
+
+| Area | What changed |
+|---|---|
+| Lifetime fixes | the lane thread makes its CUDA context current as it starts (`LaneHost.enter`), so the first spill restore after a restart no longer runs on an unbound thread. Mia's patch 0059 (issue #102, NguyenPhan2810) |
+
 ## CPU-only cross-build
 
 Run from the repository root on Linux. Install Bash, Python 3, GNU coreutils,
