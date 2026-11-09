@@ -155,6 +155,82 @@ pub fn pixels(data: []const u8) ?usize {
     return @as(usize, std.mem.readInt(u32, data[16..20], .big)) * std.mem.readInt(u32, data[20..24], .big);
 }
 
+pub const Size = struct { w: usize, h: usize };
+
+/// The width and height an image's header declares, read without decoding it: PNG's IHDR, JPEG's frame header, GIF's
+/// logical screen, WebP's canvas (VP8X) or frame (VP8, VP8L). These are the sizes decodePng and Pillow's
+/// open(...).convert("RGB") give the pixels (Pillow applies no EXIF rotation there). Null when the header is not one
+/// of these, is cut short, or declares no pixels; the caller then decodes to learn the size.
+pub fn size(data: []const u8) ?Size {
+    const s: Size = sizeOf(data) orelse return null;
+    if (s.w == 0 or s.h == 0) return null;
+    return s;
+}
+
+fn le16(b: []const u8) usize {
+    return std.mem.readInt(u16, b[0..2], .little);
+}
+
+fn sizeOf(data: []const u8) ?Size {
+    if (data.len >= 24 and std.mem.eql(u8, data[0..8], signature) and std.mem.eql(u8, data[12..16], "IHDR"))
+        return .{ .w = std.mem.readInt(u32, data[16..20], .big), .h = std.mem.readInt(u32, data[20..24], .big) };
+    if (data.len >= 10 and (std.mem.eql(u8, data[0..6], "GIF87a") or std.mem.eql(u8, data[0..6], "GIF89a")))
+        return .{ .w = le16(data[6..8]), .h = le16(data[8..10]) };
+    if (data.len >= 3 and data[0] == 0xff and data[1] == 0xd8 and data[2] == 0xff) return jpegSize(data);
+    if (data.len >= 30 and std.mem.eql(u8, data[0..4], "RIFF") and std.mem.eql(u8, data[8..12], "WEBP")) {
+        const chunk = data[12..16];
+        if (std.mem.eql(u8, chunk, "VP8X")) return .{
+            .w = 1 + @as(usize, std.mem.readInt(u24, data[24..27], .little)),
+            .h = 1 + @as(usize, std.mem.readInt(u24, data[27..30], .little)),
+        };
+        if (std.mem.eql(u8, chunk, "VP8 ")) {
+            if (!std.mem.eql(u8, data[23..26], "\x9d\x01\x2a")) return null;
+            return .{ .w = le16(data[26..28]) & 0x3fff, .h = le16(data[28..30]) & 0x3fff };
+        }
+        if (std.mem.eql(u8, chunk, "VP8L")) {
+            if (data[20] != 0x2f) return null;
+            const bits = std.mem.readInt(u32, data[21..25], .little);
+            return .{ .w = (bits & 0x3fff) + 1, .h = ((bits >> 14) & 0x3fff) + 1 };
+        }
+    }
+    return null;
+}
+
+/// A JPEG's size from its first frame header (SOF0-SOF15 but DHT, JPG and DAC), walking the marker segments.
+fn jpegSize(data: []const u8) ?Size {
+    var at: usize = 2;
+    while (at + 4 <= data.len) {
+        if (data[at] != 0xff) return null;
+        const marker = data[at + 1];
+        if (marker == 0xff) { // fill byte before a marker
+            at += 1;
+            continue;
+        }
+        if (marker == 0x01 or (marker >= 0xd0 and marker <= 0xd8)) { // no length: TEM, RSTn, SOI
+            at += 2;
+            continue;
+        }
+        if (marker == 0xd9 or marker == 0xda) return null; // EOI or scan data before any frame header
+        const len = std.mem.readInt(u16, data[at + 2 ..][0..2], .big);
+        if (len < 2) return null;
+        const sof = marker >= 0xc0 and marker <= 0xcf and marker != 0xc4 and marker != 0xc8 and marker != 0xcc;
+        if (sof) {
+            if (at + 9 > data.len) return null;
+            return .{ .w = std.mem.readInt(u16, data[at + 7 ..][0..2], .big), .h = std.mem.readInt(u16, data[at + 5 ..][0..2], .big) };
+        }
+        at += 2 + len;
+    }
+    return null;
+}
+
+/// The span plan gives an image of the header's size, when the header gives one and the pixels pass the decoder's
+/// limit; null otherwise (decode it: a refusal then comes in the decoder's words).
+pub fn spanFromHeader(data: []const u8, cfg: Config) ?usize {
+    const s = size(data) orelse return null;
+    if (s.w > max_pixels or s.h > max_pixels or s.w * s.h > max_pixels) return null;
+    return plan(s.w, s.h, cfg).spanTokens();
+}
+
 /// PNG bytes to RGB as PIL's open(...).convert("RGB") gives them: 8-bit samples as they are, 16-bit ones by their high
 /// byte, grey of 1, 2 and 4 bits scaled to 0..255 (0 / 255, x 85, x 17), 16-bit grey clipped at 255 (PIL's I;16 to L),
 /// palette indices through PLTE (missing entries black), alpha dropped. Chunk CRCs are checked, as PIL does.
@@ -632,4 +708,103 @@ test "a span's token types" {
     var t: [10]Type = undefined;
     spanTypes(g, &t);
     try std.testing.expectEqualSlices(Type, &.{ .start, .image, .image, .image, .newline, .image, .image, .image, .newline, .end }, &t);
+}
+
+/// A grey 8-bit PNG of w x h (zlib's stored blocks), for the header tests.
+fn testPng(a: Allocator, w: usize, h: usize) ![]u8 {
+    var raw: std.ArrayList(u8) = .empty;
+    defer raw.deinit(a);
+    for (0..h) |y| {
+        try raw.append(a, 0); // filter: none
+        for (0..w) |x| try raw.append(a, @truncate(x +% y));
+    }
+    var z: std.ArrayList(u8) = .empty;
+    defer z.deinit(a);
+    try z.appendSlice(a, &.{ 0x78, 0x01 });
+    var at: usize = 0;
+    while (true) {
+        const n = @min(raw.items.len - at, 65535);
+        const last = at + n == raw.items.len;
+        try z.append(a, @intFromBool(last));
+        var len: [4]u8 = undefined;
+        std.mem.writeInt(u16, len[0..2], @intCast(n), .little);
+        std.mem.writeInt(u16, len[2..4], ~@as(u16, @intCast(n)), .little);
+        try z.appendSlice(a, &len);
+        try z.appendSlice(a, raw.items[at..][0..n]);
+        at += n;
+        if (last) break;
+    }
+    var adler: [4]u8 = undefined;
+    std.mem.writeInt(u32, &adler, std.hash.Adler32.hash(raw.items), .big);
+    try z.appendSlice(a, &adler);
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(a);
+    try out.appendSlice(a, signature);
+    var ihdr: [13]u8 = undefined;
+    std.mem.writeInt(u32, ihdr[0..4], @intCast(w), .big);
+    std.mem.writeInt(u32, ihdr[4..8], @intCast(h), .big);
+    @memcpy(ihdr[8..], &[_]u8{ 8, 0, 0, 0, 0 }); // 8-bit grey, no interlace
+    try testChunk(a, &out, "IHDR", &ihdr);
+    try testChunk(a, &out, "IDAT", z.items);
+    try testChunk(a, &out, "IEND", "");
+    return out.toOwnedSlice(a);
+}
+
+fn testChunk(a: Allocator, out: *std.ArrayList(u8), kind: *const [4]u8, body: []const u8) !void {
+    var be: [4]u8 = undefined;
+    std.mem.writeInt(u32, &be, @intCast(body.len), .big);
+    try out.appendSlice(a, &be);
+    try out.appendSlice(a, kind);
+    try out.appendSlice(a, body);
+    var crc = std.hash.Crc32.init();
+    crc.update(kind);
+    crc.update(body);
+    std.mem.writeInt(u32, &be, crc.final(), .big);
+    try out.appendSlice(a, &be);
+}
+
+test "an image's header size is the size its decode gives" {
+    const a = std.testing.allocator;
+    const cfg: Config = .{};
+    // small (scaled up to min_pixels), within the budget, over it (resized down), tall and wide
+    for ([_][2]usize{ .{ 64, 48 }, .{ 700, 500 }, .{ 1920, 1080 }, .{ 90, 2400 }, .{ 2400, 90 } }) |wh| {
+        const png = try testPng(a, wh[0], wh[1]);
+        defer a.free(png);
+        try std.testing.expectEqual(Size{ .w = wh[0], .h = wh[1] }, size(png).?);
+        var rgb = try decodePng(a, png);
+        defer rgb.deinit(a);
+        try std.testing.expectEqual(wh[0], rgb.w);
+        try std.testing.expectEqual(wh[1], rgb.h);
+        var pic = try fromRgb(a, rgb, cfg);
+        defer pic.deinit(a);
+        try std.testing.expectEqual(pic.grid.spanTokens(), spanFromHeader(png, cfg).?);
+        try std.testing.expect(pic.grid.spanTokens() <= cfg.max_tokens);
+    }
+}
+
+test "header sizes of JPEG, GIF and WebP" {
+    // JPEG: SOI, an APP0 segment, then SOF2 (progressive) declaring 480 high, 640 wide
+    const jpeg = "\xff\xd8\xff\xe0\x00\x04ab" ++ "\xff\xff\xc2\x00\x11\x08\x01\xe0\x02\x80\x03";
+    try std.testing.expectEqual(Size{ .w = 640, .h = 480 }, size(jpeg).?);
+    // DHT (0xc4) is not a frame header; a scan before any frame header gives no size
+    try std.testing.expectEqual(@as(?Size, null), size("\xff\xd8\xff\xc4\x00\x04ab\xff\xda\x00\x02"));
+    try std.testing.expectEqual(@as(?Size, null), size("\xff\xd8\xff\xc0\x00\x11\x08")); // cut short
+    try std.testing.expectEqual(Size{ .w = 300, .h = 2 }, size("GIF89a\x2c\x01\x02\x00").?);
+    const riff = "RIFF\x00\x00\x00\x00WEBP";
+    try std.testing.expectEqual(Size{ .w = 1920, .h = 1080 }, size(riff ++ "VP8X\x0a\x00\x00\x00\x10\x00\x00\x00" ++ "\x7f\x07\x00\x37\x04\x00").?);
+    try std.testing.expectEqual(Size{ .w = 800, .h = 600 }, size(riff ++ "VP8 \x00\x00\x00\x00\x00\x00\x00\x9d\x01\x2a\x20\x03\x58\x02").?);
+    // VP8L: 14 bits of width - 1 (99), then 14 of height - 1 (49)
+    try std.testing.expectEqual(Size{ .w = 100, .h = 50 }, size(riff ++ "VP8L\x00\x00\x00\x00\x2f\x63\x40\x0c\x00\x00\x00\x00\x00\x00").?);
+    try std.testing.expectEqual(@as(?Size, null), size("GIF89a\x00\x00\x02\x00")); // no pixels
+    try std.testing.expectEqual(@as(?Size, null), size("not an image at all, just text"));
+}
+
+test "a header past the decoder's pixel limit is left to the decoder" {
+    var png: [24]u8 = undefined;
+    @memcpy(png[0..8], signature);
+    @memcpy(png[8..16], "\x00\x00\x00\x0dIHDR");
+    std.mem.writeInt(u32, png[16..20], 20000, .big);
+    std.mem.writeInt(u32, png[20..24], 20000, .big); // 400M pixels
+    try std.testing.expectEqual(Size{ .w = 20000, .h = 20000 }, size(&png).?);
+    try std.testing.expectEqual(@as(?usize, null), spanFromHeader(&png, .{}));
 }

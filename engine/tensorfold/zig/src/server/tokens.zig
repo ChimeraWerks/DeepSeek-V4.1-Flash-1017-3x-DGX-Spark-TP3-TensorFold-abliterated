@@ -38,9 +38,13 @@ fn tokenize(srv: *Server, cx: *Cx, raw_body: Value) errors.Refused!Value {
     if (body != .object) return cx.refuse("the request body must be a JSON object");
     const strings = try flag(cx, body, "return_token_strs", false);
     var ids: []const u32 = undefined;
+    var image_tokens: usize = 0;
     if (body.has("messages")) {
         const generation = try flag(cx, body, "add_generation_prompt", true);
-        const msgs = try messages.normalize(cx, try messages.requestMessages(cx, srv.text, body.get("messages")), "system", srv.needs_user_after_tool);
+        // images as the chat route takes them: placeholders in the text, each spanned to its image's length below
+        var images: messages.Images = .{ .placeholder = if (srv.info.vision) |v| v.placeholder else "" };
+        const take: ?*messages.Images = if (srv.info.vision != null) &images else null;
+        const msgs = try messages.normalizeImages(cx, try messages.requestMessages(cx, srv.text, body.get("messages")), "system", srv.needs_user_after_tool, take);
         const tools = tool_specs.active(cx, try messages.maskControls(cx.a, srv.text, body.get("tools")), body.get("tool_choice")) catch |e| switch (e) {
             error.Refused => return cx.refuse(cx.message), // a ValueError here is a RequestError
             else => |x| return x,
@@ -51,6 +55,9 @@ fn tokenize(srv: *Server, cx: *Cx, raw_body: Value) errors.Refused!Value {
             error.Refused => return cx.other(cx.message),
             else => |x| return x,
         };
+        const counted = try prompt.countedIds(cx, srv.gpa, srv.info.vision, ids, images.list.items);
+        ids = counted.ids;
+        image_tokens = counted.image_tokens;
     } else {
         const text = body.get("prompt");
         if (text == null or text.? != .string) return cx.refuse("prompt must be a string (or send messages)");
@@ -62,6 +69,8 @@ fn tokenize(srv: *Server, cx: *Cx, raw_body: Value) errors.Refused!Value {
     }
     const o = try json.newObject(a);
     try o.put(a, "count", try json.intValue(a, ids.len));
+    // with images, their share of count, each span as generation lays it out (text-only replies keep vLLM's shape)
+    if (image_tokens > 0) try o.put(a, "image_tokens", try json.intValue(a, image_tokens));
     try o.put(a, "max_model_len", if (srv.info.context_window > 0) try json.intValue(a, srv.info.context_window) else .null);
     const list = try a.alloc(Value, ids.len);
     for (ids, list) |t, *slot| slot.* = try json.intValue(a, t);

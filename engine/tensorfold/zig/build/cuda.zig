@@ -347,6 +347,9 @@ pub fn hostTests(b: *std.Build, draft_ids: *std.Build.Module, step: *std.Build.S
     const template = b.createModule(.{ .root_source_file = b.path("zig/src/core/template/template.zig"), .target = host, .optimize = .debug, .link_libc = true });
     const server_tests = b.createModule(.{ .root_source_file = b.path("zig/src/server/root.zig"), .target = host, .optimize = .debug, .link_libc = true, .imports = &.{ .{ .name = "engine_api", .module = eng.api }, .{ .name = "tokenizer", .module = mods.tokenizer }, .{ .name = "template", .module = template } } });
     step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = server_tests })).step);
+    const image_count_tests = b.step("test-image-count", "Image spans from headers and the count routes' exact image counts, CPU only");
+    image_count_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{ "header size", "header sizes", "a header past" } })).step);
+    image_count_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = server_tests, .filters = &.{"a count route"} })).step);
     const room_tests = b.step("test-restore-room", "Bounded nonsharded restore-start wait, tier lifecycle, CLI and metrics");
     for ([_]*std.Build.Module{ eng.api, eng.dsv41, server_tests }) |m| {
         room_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m, .filters = &.{ "restore room", "parked", "restore", "aggregate tier", "spill flags", "spill CLI", "cache metrics" } })).step);

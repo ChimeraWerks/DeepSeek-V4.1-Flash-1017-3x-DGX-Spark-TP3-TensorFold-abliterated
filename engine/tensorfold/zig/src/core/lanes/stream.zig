@@ -126,8 +126,17 @@ pub const Vision = struct {
     placeholder: []const u8,
     token: u32,
     prepare: *const fn (ctx: *anyopaque, a: Allocator, bytes: []const u8, problem: *[]const u8) PrepareError!Prepared,
+    /// The span `prepare` would give the image, without making its payload (the token count routes); null: count by
+    /// `prepare` itself.
+    count: ?*const fn (ctx: *anyopaque, a: Allocator, bytes: []const u8, problem: *[]const u8) PrepareError!u32 = null,
 
     pub const Prepared = struct { tokens: u32, payload: []const u8 };
+
+    /// The image's span length as `prepare` makes it, by `count` when the family has one.
+    pub fn spanTokens(v: Vision, a: Allocator, bytes: []const u8, problem: *[]const u8) PrepareError!u32 {
+        if (v.count) |f| return f(v.ctx, a, bytes, problem);
+        return (try v.prepare(v.ctx, a, bytes, problem)).tokens;
+    }
     pub const PrepareError = error{ BadImage, OutOfMemory };
 };
 

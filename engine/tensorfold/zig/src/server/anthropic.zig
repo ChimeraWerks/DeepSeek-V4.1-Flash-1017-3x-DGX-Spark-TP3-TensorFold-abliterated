@@ -46,21 +46,23 @@ fn sendError(conn: *Conn, a: Allocator, message: []const u8, status: u16) void {
     routes.sendValue(conn, a, status, errorValue(a, message, status) catch return);
 }
 
-/// Rendered like the chat route renders, without generating: the prompt's token count.
-fn countTokens(srv: *Server, cx: *Cx, chat: Value) errors.Refused!usize {
+/// Rendered like the chat route renders, without generating: the prompt's token count, each image its span.
+fn countTokens(srv: *Server, cx: *Cx, chat: Value) errors.Refused!prompt.Counted {
     const thinking = try fields.thinkingFields(cx, chat, srv.effort_levels);
     const on = thinking.enable orelse srv.config.enable_thinking;
     // masked as the chat route masks them (issue #21), so the count is the prompt that route serves
     const tools = try tool_specs.active(cx, try messages_mod.maskControls(cx.a, srv.text, chat.get("tools")), chat.get("tool_choice"));
-    const msgs = try messages_mod.normalize(cx, try messages_mod.requestMessages(cx, srv.text, chat.get("messages")), "system", srv.needs_user_after_tool);
+    var images: messages_mod.Images = .{ .placeholder = if (srv.info.vision) |v| v.placeholder else "" };
+    const take: ?*messages_mod.Images = if (srv.info.vision != null) &images else null;
+    const msgs = try messages_mod.normalizeImages(cx, try messages_mod.requestMessages(cx, srv.text, chat.get("messages")), "system", srv.needs_user_after_tool, take);
     const ids_ = prompt.renderRequest(srv, cx, msgs, tools, on, srv.effortFor(thinking.effort), true, prompt.responseFormat(chat)) catch |e| switch (e) {
         error.Refused => return cx.other(cx.message),
         else => |x| return x,
     };
-    return ids_.len;
+    return prompt.countedIds(cx, srv.gpa, srv.info.vision, ids_, images.list.items);
 }
 
-fn countRequest(srv: *Server, cx: *Cx, body: Value, gone: anytype) errors.Refused!usize {
+fn countRequest(srv: *Server, cx: *Cx, body: Value, gone: anytype) errors.Refused!prompt.Counted {
     const ticket = try srv.gate.request(srv.io, cx, body, gone);
     defer srv.gate.leave(srv.io, ticket);
     return countTokens(srv, cx, try translate(cx, body, true));
@@ -81,7 +83,9 @@ pub fn post(srv: *Server, conn: *Conn, a: Allocator) void {
         if (count) {
             const n = countRequest(srv, &cx, body, openai.Gone{ .conn = conn }) catch return sendError(conn, a, cx.message, if (cx.kind == .capacity) 503 else 400);
             const o = json.newObject(a) catch return;
-            o.put(a, "input_tokens", json.intValue(a, n) catch return) catch return;
+            o.put(a, "input_tokens", json.intValue(a, n.ids.len) catch return) catch return;
+            // with images, their share of input_tokens, each span as generation lays it out
+            if (n.image_tokens > 0) o.put(a, "image_tokens", json.intValue(a, n.image_tokens) catch return) catch return;
             return routes.sendValue(conn, a, 200, .{ .object = o });
         }
         const ticket = srv.gate.request(srv.io, &cx, body, openai.Gone{ .conn = conn }) catch return sendError(conn, a, cx.message, cx.status());

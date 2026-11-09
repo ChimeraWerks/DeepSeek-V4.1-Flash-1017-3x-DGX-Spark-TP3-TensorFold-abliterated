@@ -82,7 +82,14 @@ pub const Vision = struct {
 
     /// The server's view: the placeholder the template renders for each image and the picture it prepares.
     pub fn hook(v: *Vision) lanes.stream.Vision {
-        return .{ .ctx = v, .placeholder = placeholder, .token = v.m.cfg.image_token.?, .prepare = prepareFn };
+        return .{ .ctx = v, .placeholder = placeholder, .token = v.m.cfg.image_token.?, .prepare = prepareFn, .count = countFn };
+    }
+
+    /// prepareFn's span length: from the image's header when it declares a size (no decode), else by preparing it.
+    fn countFn(ctx: *anyopaque, a: std.mem.Allocator, bytes: []const u8, problem: *[]const u8) lanes.stream.Vision.PrepareError!u32 {
+        const v: *Vision = @ptrCast(@alignCast(ctx));
+        if (picture.spanFromHeader(bytes, v.cfg)) |n| return @intCast(n);
+        return (try prepareFn(ctx, a, bytes, problem)).tokens;
     }
 
     pub const placeholder = "<\u{ff5c}deepseek_image\u{ff5c}>";

@@ -152,6 +152,40 @@ fn spans(srv: *Server, cx: *Cx, ids: []const u32, history_len: usize, images: []
     return .{ .ids = out.items, .images = placed.items, .cache_key = key.items, .media = media.items, .history_len = if (history_len > 0) history_len + history_extra else 0 };
 }
 
+/// A count route's prompt: the rendered ids with each image placeholder repeated to its image's span length, as
+/// `spans` lays them out for generation, and the spans' tokens together.
+pub const Counted = struct { ids: []const u32, image_tokens: usize = 0 };
+
+/// `ids` (a rendered prompt) with its image placeholders spanned like `spans` spans them, by Vision.spanTokens (the
+/// span's length, no payload), so a count route agrees with what generation will hold; the images in prompt order.
+pub fn countedIds(cx: *Cx, gpa: std.mem.Allocator, vision: ?api.Vision, ids: []const u32, images: []const []const u8) errors.Refused!Counted {
+    if (images.len == 0) return .{ .ids = ids };
+    const v = vision orelse return cx.refuse("this server accepts text only; image, audio and video inputs are unsupported");
+    var out: std.ArrayList(u32) = .empty;
+    var scratch: std.heap.ArenaAllocator = .init(gpa); // a decode's scratch, emptied before the next image, as in spans
+    defer scratch.deinit();
+    var placed: usize = 0;
+    var total: usize = 0;
+    for (ids) |id| {
+        if (id != v.token) {
+            try out.append(cx.a, id);
+            continue;
+        }
+        if (placed >= images.len) return cx.refuse("image input: the prompt holds more image placeholders than images");
+        var problem: []const u8 = "";
+        _ = scratch.reset(.retain_capacity);
+        const n = v.spanTokens(scratch.allocator(), images[placed], &problem) catch |e| switch (e) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.BadImage => return cx.refuse(try cx.a.dupe(u8, problem)), // the message may live in the scratch
+        };
+        try out.appendNTimes(cx.a, v.token, n);
+        total += n;
+        placed += 1;
+    }
+    if (placed != images.len) return cx.refuse("image input: the prompt holds fewer image placeholders than images");
+    return .{ .ids = out.items, .image_tokens = total };
+}
+
 /// An image span as the cache key spells it: ids past every vocabulary's, one a position, from the payload's digest.
 fn spellImage(a: std.mem.Allocator, key: *std.ArrayList(u32), payload: []const u8, tokens: u32) !void {
     var digest: [32]u8 = undefined;
@@ -194,4 +228,54 @@ pub fn systemPrefixLen(srv: *Server, cx: *Cx, messages: Value, tools: []const Va
     var shared: usize = 0;
     while (shared < @min(prompt_ids.len, other.len) and prompt_ids[shared] == other[shared]) shared += 1;
     return if (shared >= 512) shared else 0;
+}
+
+const TestVision = struct {
+    /// A fake family: an image's span is its byte count, the count hook (when given) a hundred more, so a test sees
+    /// which one ran; "bad" is refused.
+    fn prepareImage(_: *anyopaque, _: std.mem.Allocator, bytes: []const u8, problem: *[]const u8) api.Vision.PrepareError!api.Vision.Prepared {
+        if (std.mem.eql(u8, bytes, "bad")) {
+            problem.* = "image input: cannot identify image file";
+            return error.BadImage;
+        }
+        return .{ .tokens = @intCast(bytes.len), .payload = &.{} };
+    }
+    fn countImage(_: *anyopaque, _: std.mem.Allocator, bytes: []const u8, _: *[]const u8) api.Vision.PrepareError!u32 {
+        return @intCast(bytes.len + 100);
+    }
+    var ctx: u8 = 0;
+    fn hook(with_count: bool) api.Vision {
+        return .{ .ctx = &ctx, .placeholder = "<img>", .token = 9, .prepare = prepareImage, .count = if (with_count) countImage else null };
+    }
+};
+
+test "a count route spans each image placeholder to its image's span length" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    const ids = [_]u32{ 1, 9, 2, 9, 3 };
+    const images = [_][]const u8{ "abc", "hello" };
+    const by_prepare = try countedIds(&cx, std.testing.allocator, TestVision.hook(false), &ids, &images);
+    try std.testing.expectEqualSlices(u32, &.{ 1, 9, 9, 9, 2, 9, 9, 9, 9, 9, 3 }, by_prepare.ids);
+    try std.testing.expectEqual(@as(usize, 8), by_prepare.image_tokens);
+    const by_count = try countedIds(&cx, std.testing.allocator, TestVision.hook(true), &ids, &images);
+    try std.testing.expectEqual(@as(usize, 208), by_count.image_tokens);
+    try std.testing.expectEqual(ids.len - 2 + 208, by_count.ids.len);
+    // no images: the rendered ids as they are
+    const plain = [_]u32{ 4, 5 };
+    try std.testing.expectEqualSlices(u32, &plain, (try countedIds(&cx, std.testing.allocator, null, &plain, &.{})).ids);
+}
+
+test "a count route refuses what generation refuses" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    const one = [_][]const u8{"abc"};
+    try std.testing.expectError(error.Refused, countedIds(&cx, std.testing.allocator, TestVision.hook(false), &.{ 1, 9, 9 }, &one));
+    try std.testing.expectEqualStrings("image input: the prompt holds more image placeholders than images", cx.message);
+    try std.testing.expectError(error.Refused, countedIds(&cx, std.testing.allocator, TestVision.hook(false), &.{1}, &one));
+    try std.testing.expectEqualStrings("image input: the prompt holds fewer image placeholders than images", cx.message);
+    try std.testing.expectError(error.Refused, countedIds(&cx, std.testing.allocator, TestVision.hook(false), &.{ 1, 9 }, &.{"bad"}));
+    try std.testing.expectEqualStrings("image input: cannot identify image file", cx.message);
+    try std.testing.expectError(error.Refused, countedIds(&cx, std.testing.allocator, null, &.{ 1, 9 }, &one));
 }
