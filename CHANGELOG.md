@@ -4,6 +4,10 @@ DeepSeek V4.1 Flash 1017 abliterated EXL3 3.84 bpw runs across three NVIDIA DGX 
 
 v1.2 uses engine base `30a9647` with exactly two non-runtime edits in `zig/src/server/metrics.zig`. A documentation comment and a test name describe external metrics samplers generically. Serving logic is unchanged by them. Rebuild comparison results: `release/build-verification.json`.
 
+## Unreleased
+
+- When a request offers tools and asks for a JSON answer, the answer stays the answer on Chat, Responses and Messages, streamed or whole. These fields take this path: `response_format` `json_object` and `json_schema`, `guided_json`, and `structured_outputs` `json` and `json_object`; Responses `text.format` and Messages `output_config.format` arrive as `response_format`. Before, an answer shaped like `{"name": <offered tool>, "arguments": {...}}` became a tool call with finish reason `tool_calls` and its content was dropped. Thinking replies still split their reasoning. Ported from SvangenStudios's patch 0042 ([Mia 4x PR 31](https://github.com/MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold/pull/31), [patch file](https://github.com/MiaAI-Lab/DeepSeek-V4.1-Flash-1017-4x-DGX-Sparks-TensorFold/blob/6a4d55e8b7a7b492747ccccf6d67389f26c7d5dd/zig/patches/0042-json-answer-channel.patch)).
+
 ## 2026-11-08 exact image counts
 
 Production moved from `30a9647` to `30a9647` plus this change, with the owner's approval. The weights, KV pool, stream count, spill and sampling defaults are unchanged. The rebuilt binaries embed the production fatbins byte for byte.
