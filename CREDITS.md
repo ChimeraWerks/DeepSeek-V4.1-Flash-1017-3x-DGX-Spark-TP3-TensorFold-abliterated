@@ -54,6 +54,7 @@ Their TP2/TP4 patches ship in this engine, ported to TP3.
 | hecisaza, [Mia 2x PR 126](https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks/pull/126) | Patch 0065 (`4217bdb`) | Keepalive ping on Responses streams. |
 | Chad Hurley (chadhurley25075-png), [TensorFold](https://github.com/ashhart/TensorFold) | `ceb6f4d3` | Control bytes in access-log lines written as `\xNN`. |
 | Christopher Owen, [christopherowen/spark-ds41f](https://github.com/christopherowen/spark-ds41f) | [`1e9f851`](https://github.com/christopherowen/spark-ds41f/commit/1e9f851ad1c23daa5ef3b9cf490f9c832402cfe9), [`6a4d398`](https://github.com/christopherowen/spark-ds41f/commit/6a4d398e6d3e30df5799e6d13de18330f8756c1c) | RoCE GID slot check in `preflight.sh`, from its doctor's fixed-slot check. |
+| Jürgen Schmied (jschmied) and ashhart, [TensorFold](https://github.com/ashhart/TensorFold) | `460a2868`, `46ce6dfd` | Safetensors header length bounded before allocating; the pattern for our Engram table check. |
 | laudney, [TensorFold](https://github.com/ashhart/TensorFold) | `ed39acc5` (#1945) | Release of a first-token finish when its trace fails. |
 | William J Riley (willjriley), [TensorFold PR 27](https://github.com/bertholomus/TensorFold/pull/27) | PR 27 | RDMA idle backoff. |
 | Mykhailo Tamarin, [Mia PR 26](https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks/pull/26) | PR 26 | Zig-ring port of the idle backoff. |

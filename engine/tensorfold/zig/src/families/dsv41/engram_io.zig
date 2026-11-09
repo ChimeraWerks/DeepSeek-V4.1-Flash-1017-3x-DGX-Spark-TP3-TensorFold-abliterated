@@ -5,6 +5,7 @@
 //! a decode round's rows as kernel AIO on the same descriptors.
 const std = @import("std");
 const dio = @import("core").direct_io;
+const st = @import("core").safetensors;
 
 /// One layer's table: [rows, row_w] FP8 weights and [rows, row_s] E8M0 scales, by file and offset; fd_wd / fd_sd the same
 /// files through O_DIRECT (-1 where the file system refuses it: the buffered ones serve).
@@ -34,7 +35,8 @@ pub const Tables = struct {
             defer file.close(io);
             var head: [8]u8 = undefined;
             if (try file.readPositionalAll(io, &head, 0) != 8) return error.BadSafetensors;
-            const n: usize = @intCast(std.mem.readInt(u64, &head, .little));
+            // the length checked against the file and the 100 MB cap before the allocation (upstream TensorFold 460a2868)
+            const n = try st.headerSize(std.mem.readInt(u64, &head, .little), try file.length(io));
             const json = try a.alloc(u8, n);
             if (try file.readPositionalAll(io, json, 8) != n) return error.BadSafetensors;
             // the header read here (not core.safetensors: the tables are F8_E4M3 values and F8_E8M0 scales)
@@ -304,4 +306,42 @@ test "rows of a toy table by id, on the pool" {
     try std.testing.expectEqualSlices(u8, &.{ 20, 21, 22, 23, 0, 1, 2, 3, 8, 9, 10, 11 }, &w);
     try std.testing.expectEqualSlices(u8, &.{ 29, 24, 26 }, &s);
     try std.testing.expectError(error.ReadFailed, pool.gather(tab, &.{6}, w[0..4], s[0..1]));
+}
+
+test "a table file's header length is checked before the allocation: past the file, past 100 MB or the u64 maximum is refused" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    // a [2, 4] FP8 weight table and its [2, 1] E8M0 scales for layer 0
+    const json = "{\"layers.0.engram.embed.weight\":{\"dtype\":\"F8_E4M3\",\"shape\":[2,4],\"data_offsets\":[0,8]}," ++
+        "\"layers.0.engram.embed.scale\":{\"dtype\":\"F8_E8M0\",\"shape\":[2,1],\"data_offsets\":[8,10]}}";
+    var good: std.ArrayList(u8) = .empty;
+    defer good.deinit(a);
+    var len: [8]u8 = undefined;
+    std.mem.writeInt(u64, &len, json.len, .little);
+    try good.appendSlice(a, &len);
+    try good.appendSlice(a, json);
+    try good.appendNTimes(a, 0x38, 10);
+    const lengths = [_]?u64{ null, good.items.len - 7, st.max_header_bytes + 1, std.math.maxInt(u64), std.math.maxInt(u64) - 7 };
+    for (lengths) |length| {
+        var tmp = std.testing.tmpDir(.{ .iterate = true });
+        defer tmp.cleanup();
+        const bytes = try a.dupe(u8, good.items);
+        defer a.free(bytes);
+        if (length) |n| std.mem.writeInt(u64, bytes[0..8], n, .little);
+        try tmp.dir.writeFile(io, .{ .sub_path = "engram.safetensors", .data = bytes });
+        if (length == st.max_header_bytes + 1) { // a sparse file long enough to hold that header
+            const f = try tmp.dir.openFile(io, "engram.safetensors", .{ .mode = .read_write });
+            defer f.close(io);
+            try f.setLength(io, st.max_header_bytes + 16);
+        }
+        const dir = try std.fs.path.join(a, &.{ ".zig-cache", "tmp", &tmp.sub_path });
+        defer a.free(dir);
+        if (length == null) {
+            var t = try Tables.open(a, io, dir);
+            defer t.close();
+            const tab = t.layers.get(0).?;
+            try std.testing.expectEqual(@as(usize, 4), tab.row_w);
+            try std.testing.expectEqual(@as(u64, 2), tab.rows);
+        } else try std.testing.expectError(error.BadSafetensors, Tables.open(a, io, dir));
+    }
 }
