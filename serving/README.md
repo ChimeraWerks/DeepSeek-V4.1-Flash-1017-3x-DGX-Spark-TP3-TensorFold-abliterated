@@ -318,7 +318,7 @@ The engine uses `TF_DS_SPILL_DIR` and `TF_DS_SPILL_GIB=256`, with rank 0 options
 | `safety_tokens` | `1024` | Positive integer context reserve. `max_output_tokens + safety_tokens` must be strictly less than `context_tokens`. |
 | `max_body_bytes` | `67108864` (64 MiB) | Positive integer request-body byte limit. |
 | `max_response_bytes` | `67108864` (64 MiB) | Positive integer limit for native responses read into memory by the API. |
-| `image_token_reserve` | `1024` | Positive integer tokens per image, used only with an engine that cannot count images (its count routes refuse them). The default is the model's `max_image_tokens`. An engine that counts images makes admission exact. |
+| `image_token_reserve` | `1024` | Positive integer tokens per image, used only with an engine that cannot count images (its count routes refuse them). The default is the model's `max_image_tokens`. An engine that counts images makes admission exact. Without one, each PDF document reserves 16 times this. |
 
 Fit input, output and safety reservations within native context. The engine adapter calculates input accounting and admitted tokens. API validators check configuration values. The output ceiling and admitted-token budget stay independent of KV pool size.
 
@@ -337,6 +337,8 @@ The API does not shorten prompts. A prompt plus its output reserve must fit `con
 ## Vision jobs
 
 **Vision is not tested with these weights.**
+
+PDF documents count as images here: an engine started with `--vision-pdf` renders each page as one, so Messages `document` blocks, Chat `file` parts and Responses `input_file` parts take the media gate, and their count comes from the engine as exactly as an image's.
 
 `POST /v1/vision/jobs` accepts one standalone user image question without assistant history or tools. It rejects repetitive incoming reasoning. After validation and job acceptance, the API returns HTTP `202`. Standalone image questions sent to Chat Completions use the same job path; other Chat requests use ordinary native generation.
 
