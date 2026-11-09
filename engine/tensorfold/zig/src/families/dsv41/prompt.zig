@@ -123,6 +123,14 @@ pub var owned_on = false;
 pub var index_rows_on = false;
 pub var front_rows_on = false;
 pub var embed_rows_on = false;
+/// TF_DS_PREFILL_BF16_WIRE=1 (with TF_DS_PREFILL_OWNED, every rank alike): the owned layers' attention and MoE
+/// partials cross the links as bf16 (half the bytes), the owner widening its peers' rows back to fp32 and adding all
+/// three in rank order as before; its own rows stay fp32. Not bitwise: each peer partial is rounded once to bf16.
+pub var bf16_wire_on = false;
+/// TF_DS_PREFILL_OWNED_ROUTER=1 (with TF_DS_PREFILL_OWNED, every rank alike): each rank runs the MoE gate's fp32 GEMM
+/// and the routing on its own third of the rows, then the picks and weights are all-gathered in place. Its cuBLAS
+/// calls start at the third's first row, not the chunk's 2K grid, so the logits can differ in their last bits.
+pub var owned_router_on = false;
 /// The fewest rows a chunk runs owned (a third of them still a prompt GEMM's 128 rows).
 pub const owned_min: usize = 384;
 
@@ -310,6 +318,8 @@ pub const Chunk = struct {
     head_g: u64 = 0, // fp32 [world, 1, columns]: their gather (the prompt's logits, rank after rank)
     pending: bool = false, // gm holds a MoE gather whose post is not in h yet
     own: ?Own = null, // TF_DS_PREFILL_OWNED: this rank's third (ga, gm, ekg then hold its rows' partials, [world, own.n, .])
+    wire_s: u64 = 0, // TF_DS_PREFILL_BF16_WIRE: bf16 [pc, D], the partial narrowed for sending
+    wire_r: u64 = 0, // bf16 [pc, D]: every rank's narrowed rows of this rank's third, [world, own.n, D]
     // TF_DS_KV_SHARD (useShard): a prompt block's fetched rows (sf_rows of them: codes [sf_rows, head_dim / 2], scales
     // [sf_rows, head_dim / 16]; the owner packs into them and sends, the other rank receives into them) and the block's
     // picks renumbered to them (int64 [cap, index_topk + 16])
@@ -364,6 +374,8 @@ pub const Chunk = struct {
         ch.start = 0;
         ch.pending = false;
         ch.own = null;
+        ch.wire_s = 0;
+        ch.wire_r = 0;
         ch.ids = try a.take(cap * 8);
         ch.pos0 = try a.take(cap * 8);
         ch.pos = ch.pos0;
@@ -400,8 +412,12 @@ pub const Chunk = struct {
         try rg.take(a, .xf, &ch.xf, cap * d * 4);
         ch.gate_f = try a.take(c.experts * d * 4);
         ch.logits = try a.take(cap * c.experts * 4);
-        ch.pick = try a.take(cap * sl * 4);
-        ch.wts = try a.take(cap * sl * 4);
+        ch.pick = try a.take(pc * sl * 4);
+        ch.wts = try a.take(pc * sl * 4);
+        if (bf16_wire_on and owned_on and e.world == 3) {
+            ch.wire_s = try a.take(pc * d * 2);
+            ch.wire_r = try a.take(pc * d * 2);
+        }
         ch.pick_vl = try a.take(cap * sl * 4);
         ch.wts_vl = try a.take(cap * sl * 4);
         try rg.take(a, .pm, &ch.pm, cap * d * 4);
@@ -929,6 +945,31 @@ fn scatterOwn(e: *const Engine, ch: *const Chunk, o: Own, src: u64, dst: u64, wi
     if (bytes[r] > 0) try e.d.check(e.d.api.cuMemcpyDtoDAsync_v2(dst + r * bytes[r], src + offs[r], bytes[r], e.s.handle), "cuMemcpyDtoDAsync");
 }
 
+/// scatterOwn with bf16 on the wire (TF_DS_PREFILL_BF16_WIRE): `src` [n, width] fp32 narrowed to bf16, rank j's
+/// rows to rank j; the peers' rows widened back into `dst` [world, own.n, width] fp32 in their rank slots, this rank's
+/// own rows copied in fp32 unchanged. The consumers then add the three slots in rank order exactly as before.
+fn scatterOwnBf16(e: *const Engine, ch: *const Chunk, o: Own, src: u64, dst: u64, width: usize) !void {
+    if (ch.wire_s == 0 or ch.wire_r == 0) return error.NoWireBuffers;
+    const row2 = width * 2;
+    var offs: [3]usize = undefined;
+    var bytes: [3]usize = undefined;
+    for (0..3) |j| {
+        offs[j] = j * o.m * row2;
+        bytes[j] = ownRows(o.m, ch.n, j) * row2;
+    }
+    const r: usize = @intCast(e.comm.rank);
+    try e.ops.toBf16(e.s, src, ch.wire_s, ch.n * width);
+    try e.comm.scatterRows(ch.wire_s, &offs, &bytes, ch.wire_r, e.s);
+    if (o.n == 0) return;
+    const mine16 = o.n * row2; // = bytes[r]: each peer's block in wire_r
+    const mine32 = o.n * width * 4; // each rank's slot in dst
+    for (0..3) |j| {
+        if (j == r) continue;
+        try e.ops.toF32(e.s, ch.wire_r + j * mine16, dst + j * mine32, o.n * width);
+    }
+    try e.d.check(e.d.api.cuMemcpyDtoDAsync_v2(dst + r * mine32, src + o.r0 * width * 4, mine32, e.s.handle), "cuMemcpyDtoDAsync");
+}
+
 /// The end of the owned layers (the decoder's replay cut keeps rows on): every rank's third of the streams and their
 /// pre to every rank, in place, and the chunk whole again.
 fn unown(e: *const Engine, ch: *Chunk) !void {
@@ -1434,7 +1475,10 @@ pub fn scale(hd: usize) f32 {
 
 /// Comm.gather: [world, n, D] fp32 of every rank's partial, in rank order.
 pub fn gather(e: *const Engine, ch: *const Chunk, src: u64, dst: u64) !void {
-    if (ch.own) |o| return scatterOwn(e, ch, o, src, dst, e.c.hidden); // owned: [world, own.n, D], this rank's rows
+    if (ch.own) |o| {
+        if (bf16_wire_on) return scatterOwnBf16(e, ch, o, src, dst, e.c.hidden); // the same layout, bf16 on the wire
+        return scatterOwn(e, ch, o, src, dst, e.c.hidden); // owned: [world, own.n, D], this rank's rows
+    }
     if (e.two) |t| return t.quarters(e, src, dst, ch.n, t.ow, 4); // 2D: the same [2, n, D] from the four quarters
     try e.comm.allGather(src, dst, ch.n * e.c.hidden, .f32, e.s);
 }
@@ -1468,6 +1512,18 @@ pub fn moe(e: *const Engine, ch: *Chunk, li: usize) !void {
         // a decode-sized chunk: the row-invariant gate (rowmm_gate's chunk sums) and its routing
         kc = try tri_norm.rowmmGate(e.t, ch.x, d, lay.gate_w, ch.gl, n, d, c.experts);
         try tri_norm.route(e.t, ch.gl, kc, lay.gate_b, c.top_k, c.routed_scaling, shared_id, ch.pick, ch.wts, n, c.experts, sl);
+    } else if (owned_router_on and ch.own != null and ch.spans.len == 0 and e.two == null) {
+        // TF_DS_PREFILL_OWNED_ROUTER: the gate and routing on this rank's third, then every third's picks and weights
+        // in place (pick and wts hold pc rows: rank j's third at j * m). Image chunks keep the whole-chunk path
+        // (their VL re-routing reads every row's logits); spans are a request's, so every rank takes the same branch.
+        const o = ch.own.?;
+        if (o.n > 0) {
+            try e.ops.toF32(e.s, ch.x + o.r0 * d * 2, ch.xf + o.r0 * d * 4, o.n * d);
+            try e.ops.f16ToF32(e.s, lay.gate_w, ch.gate_f, c.experts * d);
+            try xwTLegacy(e, ch.xf + o.r0 * d * 4, ch.gate_f, ch.logits + o.r0 * c.experts * 4, o.n, d, c.experts);
+            try tri_norm.route(e.t, ch.logits + o.r0 * c.experts * 4, 0, lay.gate_b, c.top_k, c.routed_scaling, shared_id, ch.pick + o.r0 * sl * 4, ch.wts + o.r0 * sl * 4, o.n, c.experts, sl);
+        }
+        try e.comm.allGatherInPlace2(ch.pick, o.m * sl * 4, ch.wts, o.m * sl * 4, e.s);
     } else {
         try e.ops.toF32(e.s, ch.x, ch.xf, n * d);
         try e.ops.f16ToF32(e.s, lay.gate_w, ch.gate_f, c.experts * d);

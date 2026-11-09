@@ -284,6 +284,8 @@ pub const Model = struct {
         if (std.c.getenv("TF_DS_REPLAY_FLOOR")) |v| prompt.replay_floor = std.mem.eql(u8, std.mem.span(v), "1"); // every rank alike
         prompt.short_continuation_gather = if (std.c.getenv("TF_DS_CACHE_SHORT_CONTINUATION")) |v| std.mem.eql(u8, std.mem.span(v), "1") else false; // same opt-in on every rank
         prompt.owned_on = if (std.c.getenv("TF_DS_PREFILL_OWNED")) |v| std.mem.eql(u8, std.mem.span(v), "1") else false; // every rank alike (its collectives pair up)
+        prompt.bf16_wire_on = prompt.owned_on and if (std.c.getenv("TF_DS_PREFILL_BF16_WIRE")) |v| std.mem.eql(u8, std.mem.span(v), "1") else false; // every rank alike
+        prompt.owned_router_on = prompt.owned_on and if (std.c.getenv("TF_DS_PREFILL_OWNED_ROUTER")) |v| std.mem.eql(u8, std.mem.span(v), "1") else false; // every rank alike
         m.rs = .{};
         m.prefill = prefill128.Flags.fromEnv();
         try m.prefill.validate();
@@ -651,7 +653,8 @@ pub const Model = struct {
             if (o.graphs) @intCast(o.graph_cap) else 0, // rank 0 and every follower must use one LRU cap
             // the prompt's collectives pair up only when every rank runs the same kind
             @import("cache_batch.zig").Flags.fromEnv().agreement(@as(u64, @intFromBool(prompt.owned_on)) | @as(u64, @intFromBool(directGather())) << 1 | (m.prefill.bits() << 2) |
-                (if (@import("graph_telemetry.zig").enabled()) @import("graph_telemetry.zig").agreement_bit else 0) | keyed_draft.settingBit(keyed_draft.enabled()) | greedy_head.agreement(m.decode_greedy_head) | (if (m.decode_sample_head) greedy_head.sample_agreement_bit else @as(u64, 0))),
+                (if (@import("graph_telemetry.zig").enabled()) @import("graph_telemetry.zig").agreement_bit else 0) | keyed_draft.settingBit(keyed_draft.enabled()) | greedy_head.agreement(m.decode_greedy_head) | (if (m.decode_sample_head) greedy_head.sample_agreement_bit else @as(u64, 0)) |
+                (@as(u64, @intFromBool(prompt.bf16_wire_on)) << 52) | (@as(u64, @intFromBool(prompt.owned_router_on)) << 53)),
             draft_words[0], draft_words[1],
             @import("engine_api").Spill.roomWaitMs(if (std.c.getenv("TF_SPILL_ROOM_WAIT_MS")) |v| std.mem.span(v) else null),
         };

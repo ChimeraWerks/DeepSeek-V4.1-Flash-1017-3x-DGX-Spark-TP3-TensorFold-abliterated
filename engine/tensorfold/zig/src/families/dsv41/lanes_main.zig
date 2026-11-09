@@ -21,7 +21,7 @@ const cuda = @import("cuda");
 const dsv41 = @import("dsv41");
 const lanes = @import("lanes");
 
-const usage = "usage: tf-dsv41-lanes MODEL_DIR CACHE_DIR RANK WORLD MASTER_IP PORT KIT_DIR --requests FILE [--parallel N] [--pool P] [--drafts 0|1] [--arena-gib G] [--engram DIR --token-map FILE] [--rdma DEVICES --rdma-kernels FATBIN] [--graphs 0|1 [--graph-cap N]] [--fix-k K] [--round-rows R] [--streams S] [--spill-dir DIR --spill-gib G [--spill-min-free-gib F] [--spill-min-tokens T] [--spill-quota Q] [--spill-staging-mib M] [--prompt-cache-gib G]]\n";
+const usage = "usage: tf-dsv41-lanes MODEL_DIR CACHE_DIR RANK WORLD MASTER_IP PORT KIT_DIR --requests FILE [--parallel N] [--pool P] [--drafts 0|1] [--arena-gib G] [--engram DIR --token-map FILE] [--rdma DEVICES --rdma-kernels FATBIN] [--graphs 0|1 [--graph-cap N]] [--fix-k K] [--logit-dump DIR] [--round-rows R] [--streams S] [--spill-dir DIR --spill-gib G [--spill-min-free-gib F] [--spill-min-tokens T] [--spill-quota Q] [--spill-staging-mib M] [--prompt-cache-gib G]]\n";
 
 const pcache = dsv41.spill_tier.prompt_cache;
 
@@ -127,6 +127,7 @@ pub fn main(init: std.process.Init) !u8 {
     var serial = false; // --serial 1: every stream without drafts (one row a round)
     var fix_k: ?usize = null; // --fix-k K: every drafted stream verifies K drafts a round (a cost measurement)
     var cache_gib: f64 = 4; // --prompt-cache-gib: rank 0's prompt cache with the spill tier
+    var logit_dump: ?[]const u8 = null; // --logit-dump DIR: each prompt's last-row fp32 logits as DIR/prompt-N.f32 (a diagnostic)
     var ai: usize = 8;
     while (ai + 1 < args.len) : (ai += 2) {
         const key = args[ai];
@@ -161,6 +162,8 @@ pub fn main(init: std.process.Init) !u8 {
             serial = !std.mem.eql(u8, val, "0");
         } else if (std.mem.eql(u8, key, "--fix-k")) {
             fix_k = try std.fmt.parseInt(usize, val, 10);
+        } else if (std.mem.eql(u8, key, "--logit-dump")) {
+            logit_dump = val;
         } else if (std.mem.eql(u8, key, "--rdma")) {
             o.rdma_devices = val;
         } else if (std.mem.eql(u8, key, "--profile")) {
@@ -318,6 +321,7 @@ pub fn main(init: std.process.Init) !u8 {
     if (spill) |sp| rank0.events = try dsv41.native.openSpill(gpa, io, m, ln, o, sp, staging.?);
     try ln.startKv();
     ln.fix_k = fix_k;
+    ln.logit_dump_dir = logit_dump;
     if (std.c.getenv("TF_DS_ADAPTIVE_LEARNING")) |value| {
         const text = std.mem.span(value);
         if (!std.mem.eql(u8, text, "0") and !std.mem.eql(u8, text, "1")) return error.BadAdaptiveLearning;
