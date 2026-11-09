@@ -4,6 +4,13 @@ DeepSeek V4.1 Flash 1017 abliterated EXL3 3.84 bpw runs across three NVIDIA DGX 
 
 v1.2 uses engine base `30a9647` with exactly two non-runtime edits in `zig/src/server/metrics.zig`. A documentation comment and a test name describe external metrics samplers generically. Serving logic is unchanged by them. Rebuild comparison results: `release/build-verification.json`.
 
+## Unreleased DSML short block guard
+
+Not deployed. Production decoding cannot reach this path: the served tokenizer has no `<tool_call>` token, so a spelled `<tool_call>` is never an envelope.
+
+- A `<tool_call>` block (or `<|tool_call>`, `<x:tool_call>`) that opens with a DSML opener and is shorter than that opener and its closer together now stays text. The parser cut both from it, a slice past its start that panics in the ReleaseSafe server (Mia 4x patch 0053 and 2x patch 0064, Hector Isaza).
+- Every payload long enough parses exactly as before.
+
 ## 2026-11-08 exact image counts
 
 Production moved from `30a9647` to `30a9647` plus this change, with the owner's approval. The weights, KV pool, stream count, spill and sampling defaults are unchanged. The rebuilt binaries embed the production fatbins byte for byte.

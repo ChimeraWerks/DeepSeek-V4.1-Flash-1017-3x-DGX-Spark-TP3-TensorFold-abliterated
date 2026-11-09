@@ -338,3 +338,55 @@ test "a spelled closer in a value is text, a token closer in a value is read pas
         try std.testing.expectEqualStrings("", r.content);
     }
 }
+
+test "a tool-call block that opens with a DSML opener but is too short to hold its closer stays text" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const reply_text = @import("reply_text.zig");
+    const tools = (try json.parse(a, "[{\"type\":\"function\",\"function\":{\"name\":\"write\"}}]")).ok.array;
+    const D = "\u{ff5c}DSML\u{ff5c}";
+    // each payload opens with a DSML opener and is shorter than that opener and its closer: before the length guard the
+    // parser cut both from it, a slice past its own start
+    const short = [_][]const u8{
+        "<tool_call><" ++ D ++ " calls></tool_call>",
+        "<tool_call><" ++ D ++ "tool_calls></tool_call>",
+        "Sure: <tool_call> <" ++ D ++ " calls> x </tool_call>",
+        "<TOOL_CALL><" ++ D ++ " calls></TOOL_CALL>",
+        "<|tool_call><" ++ D ++ " calls><tool_call|>",
+        "<ns:tool_call><" ++ D ++ "tool_calls></ns:tool_call>",
+        "<tool_call><" ++ D ++ " calls></" ++ D ++ " calls</tool_call>", // one byte short
+        "<tool_call><" ++ D ++ "tool_calls></" ++ D ++ "tool_calls</tool_call>", // one byte short
+    };
+    for (short) |text| {
+        const r = try parse(a, text, tools, null);
+        try std.testing.expect(r.calls == null);
+        try std.testing.expectEqualStrings(text, r.content);
+        try std.testing.expect((try parse(a, text, tools, 1)).calls == null);
+        try expectNoRetraction(a, text);
+        // as served, DSML markers count only as tokens and a spelled <tool_call> is no envelope: the reply stays text
+        var spans: std.ArrayList(reply_text.Span) = .empty;
+        var at: usize = 0;
+        while (std.mem.indexOfPos(u8, text, at, D)) |i| : (at = i + D.len) try spans.append(a, .{ .start = i, .end = i + D.len });
+        const markup: reply_text.Markup = .{ .text = text, .spans = spans.items, .token_aware = true };
+        const rt = try tool_parse.parseWith(a, text, tools, null, markup);
+        try std.testing.expect(rt.calls == null);
+        try std.testing.expectEqualStrings(text, rt.content);
+    }
+    // long enough, the payload reads as it always did: an empty block makes no call, a whole block in a tool-call
+    // block makes its call. A whole V4.1 block is its own envelope, so the <tool_call> tags around it stay text; a V4
+    // block is the <tool_call> block's payload, and an empty one leaves that block as text
+    const D41 = "<tool_call><" ++ D ++ " calls></" ++ D ++ " calls></tool_call>";
+    const D4 = "<tool_call><" ++ D ++ "tool_calls></" ++ D ++ "tool_calls></tool_call>";
+    for ([_][2][]const u8{ .{ D41, "<tool_call></tool_call>" }, .{ D4, D4 } }) |c| {
+        const empty = try parse(a, c[0], tools, null);
+        try std.testing.expect(empty.calls == null);
+        try std.testing.expectEqualStrings(c[1], empty.content);
+    }
+    for ([_]bool{ true, false }) |v41| {
+        const wrapped = try parse(a, try std.mem.concat(a, u8, &.{ "<tool_call>", try dsmlWrite(a, v41, "x"), "</tool_call>" }), tools, null);
+        try std.testing.expectEqual(@as(usize, 1), wrapped.calls.?.len);
+        try std.testing.expectEqualStrings("{\"content\":\"x\"}", wrapped.calls.?[0].get("function").?.get("arguments").?.string);
+        try std.testing.expectEqualStrings(if (v41) "<tool_call></tool_call>" else "", wrapped.content);
+    }
+}
