@@ -18,6 +18,18 @@ def validate_rope_rows(rope, context, pool):
         raise ValueError('RoPE tables too short for this conversation window')
 
 
+def pdfium_library(executable, env):
+    """The libpdfium.so tensorfold-native's PDF render worker loads (pdf.zig libraryPath), or None: the
+    TENSORFOLD_LIBPDFIUM file when set (set but empty: none), else lib/ beside the binary's directory, then that
+    directory itself."""
+    configured = {**os.environ, **env}.get('TENSORFOLD_LIBPDFIUM')
+    if configured is not None:
+        return Path(configured) if configured and Path(configured).is_file() else None
+    here = Path(executable).resolve().parent
+    candidates = (here.parent / 'lib' / 'libpdfium.so', here / 'libpdfium.so')
+    return next((path for path in candidates if path.is_file()), None)
+
+
 def command(config, variant, rank, *, benchmark=False, validate_files=False):
     if variant not in {p.stem for p in (HERE/'profiles').glob('*.json')}:
         raise ValueError('Unknown launcher profile')
@@ -99,8 +111,13 @@ def command(config, variant, rank, *, benchmark=False, validate_files=False):
         import hashlib
         checksums = node.get('checksums', {})
         receipt_path = binary_root / 'BUILD.json'
-        for path in [receipt_path, binary_root / 'tensorfold-native', binary_root / 'tf-dsv41-lanes',
-                     model / 'chat_template.jinja']:
+        pinned = [receipt_path, binary_root / 'tensorfold-native', binary_root / 'tf-dsv41-lanes',
+                  model / 'chat_template.jinja']
+        # PDF input (on unless --no-vision-pdf) loads PDFium into the head's render worker as the engine's user:
+        # the library it would find is pinned like the binaries.
+        if rank == 0 and '--no-vision-pdf' not in argv:
+            pinned += [path for path in [pdfium_library(argv[0], env)] if path is not None]
+        for path in pinned:
             expected = checksums.get(str(path), '')
             if len(expected) != 64 or any(c not in '0123456789abcdef' for c in expected):
                 raise ValueError('Require a verified v1 artifact checksum: ' + str(path))
