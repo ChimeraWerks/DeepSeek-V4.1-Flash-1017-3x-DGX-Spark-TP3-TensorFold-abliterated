@@ -98,6 +98,34 @@ The vendored [build_kit.sh](../engine/tensorfold/tools/dsv41-zig/build_kit.sh) i
 
 The kit does not include the optional grammar library (`libtfgrammar.so`). `prepare.sh` stages it with the engine binaries when the build output has one.
 
+## PDFium for PDF input
+
+PDF input (on in `tensorfold-native serve` unless `--no-vision-pdf`) renders pages with PDFium. The build is [bblanchon/pdfium-binaries `chromium/7725`](https://github.com/bblanchon/pdfium-binaries/releases/tag/chromium%2F7725) (PDFium 147.0.7725.0), pinned under `pdfium` in [release/runtime-assets.json](../release/runtime-assets.json). The library is not in this repository.
+
+| Asset | Archive bytes | Archive SHA-256 | `lib/libpdfium.so` SHA-256 |
+|---|---|---|---|
+| `pdfium-linux-arm64.tgz` (the Sparks) | 3,555,478 | `a0dab89cdbee57832292034eaad27e010f84dea1c367e1e0535730933ead2315` | `5cfe82b0f16d33c0117d9df10790ba83b47d0b10deb74b1e7f540e607452a752` (7,752,328 bytes) |
+| `pdfium-linux-x64.tgz` (host tests only) | 3,606,567 | `4f16da3f9c8e5790b9d59959f789bceff6eb8fdc7980e800d93b83392eb9cee4` | `fccddaf6adda2b435074dd88fad5398d7221cbc369d994cf561e7bfa84d7cf7b` (7,551,304 bytes) |
+
+The engine looks for the library in this order and never on the loader's search path:
+
+1. `TENSORFOLD_LIBPDFIUM`, when set; an empty value means none.
+2. `lib/libpdfium.so` in the parent of the server's directory.
+3. `libpdfium.so` beside `tensorfold-native`.
+
+Only rank 0's `tensorfold-native` reads PDFs, and the server process never loads the library: each document's render worker loads it after it sets its limits. At startup with PDF input on, the server logs the file it found and its SHA-256, or that it is missing. A missing library makes PDF parts return HTTP 501 that names `libpdfium.so`. The direct launcher (`native_launch.py --run`) finds the same file and refuses to start rank 0 unless the rank's `checksums` pin its SHA-256, as they pin the binaries.
+
+`prepare.sh` stages it with the engine binaries: it reuses `OUT/lib/libpdfium.so` when that is the pinned file, or downloads the pinned archive into `OUT/downloads`. It checks the archive's and the library's SHA-256 and copies the library into `BIN_DIR` on each Spark, beside `tensorfold-native`. A file that differs from its pin stops `prepare.sh`; without network it warns and stages the engine without the library. To stage it by hand on the head:
+
+```bash
+sha256sum pdfium-linux-arm64.tgz   # a0dab89c...2315
+tar -xzf pdfium-linux-arm64.tgz lib/libpdfium.so
+sha256sum lib/libpdfium.so         # 5cfe82b0...a752
+install -m 755 lib/libpdfium.so ~/ds1017/bin/libpdfium.so
+```
+
+PDFium is BSD-3-Clause. The libraries it bundles (FreeType, libjpeg-turbo, OpenJPEG, libpng, zlib, lcms, ICU, abseil and others) keep their licenses in the archive's `licenses/`. The packaging is MIT.
+
 ## Prompt MoE kernel source
 
 `prefill_128/SOURCE.json` declares `fdf5fc13…` for `experts_ragged.cu`, the hash recorded when the LakyFx 1.2.8 assets were imported. The committed file (`6d051e5a…`) adds an opt-in `TF_EXL3_W_RANGE16` compile path that is off by default. Built with nvcc 13.4.92 without that define, both files give the same cubin (`6a17bde3…`). The release loads the shipped LakyFx cubin `401d6629…` from the payload; a local build of either source differs from it. `SOURCE.json` keeps the declared value because it is part of the vendored tree that [build verification](../release/build-verification.json) hashes. [release/prefill-source-delta.json](../release/prefill-source-delta.json) records the hashes, compile flags and the change. The release consistency check verifies all of them.

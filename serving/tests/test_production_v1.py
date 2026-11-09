@@ -105,6 +105,52 @@ class ProductionV1Tests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "binary differs from its build receipt"):
                 N.command(config, "v1", 0, validate_files=True)
 
+    def test_direct_execution_pins_the_pdfium_library_the_head_would_load(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ):
+            os.environ.pop("TENSORFOLD_LIBPDFIUM", None)
+            config = topology()
+            config["ranks"][0]["root"] = tmp
+            checksums = {}
+            for name in ("bin/tensorfold-native", "bin/tf-dsv41-lanes", "weights/chat_template.jinja"):
+                path = Path(tmp) / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"offline artifact")
+                checksums[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
+            receipt = Path(tmp) / "bin/BUILD.json"
+            receipt.write_text(json.dumps({"schema": "ds41f.native-build.v1", "engine_commit": "7d5b4d8",
+                "adaptive_learning": True, "binaries": {name: {"sha256": checksums[str(Path(tmp) / "bin" / name)]}
+                for name in ("tensorfold-native", "tf-dsv41-lanes")}}))
+            checksums[str(receipt)] = hashlib.sha256(receipt.read_bytes()).hexdigest()
+            config["ranks"][0]["checksums"] = checksums
+            # no library on the engine's search path: nothing more to pin (the next check is the example address)
+            with self.assertRaisesRegex(ValueError, "documentation example address"):
+                N.command(config, "v1", 0, validate_files=True)
+            for library in (Path(tmp) / "bin/libpdfium.so", Path(tmp) / "lib/libpdfium.so"):
+                with self.subTest(library=str(library)):
+                    library.parent.mkdir(parents=True, exist_ok=True)
+                    library.write_bytes(b"pdfium")
+                    with self.assertRaisesRegex(ValueError, "verified v1 artifact checksum: " + str(library)):
+                        N.command(config, "v1", 0, validate_files=True)
+                    checksums[str(library)] = hashlib.sha256(b"pdfium").hexdigest()
+                    with self.assertRaisesRegex(ValueError, "documentation example address"):
+                        N.command(config, "v1", 0, validate_files=True)
+                    library.write_bytes(b"swapped")
+                    with self.assertRaisesRegex(ValueError, "differs from its verified checksum: " + str(library)):
+                        N.command(config, "v1", 0, validate_files=True)
+                    library.write_bytes(b"pdfium")
+            # TENSORFOLD_LIBPDFIUM names the file the engine loads instead; set but empty, none
+            other = Path(tmp) / "other/libpdfium.so"
+            other.parent.mkdir()
+            other.write_bytes(b"other")
+            os.environ["TENSORFOLD_LIBPDFIUM"] = str(other)
+            with self.assertRaisesRegex(ValueError, "verified v1 artifact checksum: " + str(other)):
+                N.command(config, "v1", 0, validate_files=True)
+            os.environ["TENSORFOLD_LIBPDFIUM"] = ""
+            for name in ("bin/libpdfium.so", "lib/libpdfium.so"):
+                del checksums[str(Path(tmp) / name)]
+            with self.assertRaisesRegex(ValueError, "documentation example address"):
+                N.command(config, "v1", 0, validate_files=True)
+
     def test_api_context_default_and_dependent_validation(self):
         cfg = Config().validate()
         self.assertEqual(cfg.context_tokens, 1048576)

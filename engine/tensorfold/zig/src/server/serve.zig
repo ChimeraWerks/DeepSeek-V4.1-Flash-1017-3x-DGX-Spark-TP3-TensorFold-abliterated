@@ -136,6 +136,7 @@ pub fn run(gpa: Allocator, io: std.Io, args: cli.Args, s: Setup) u8 {
         .keep_warm_s = args.keep_warm,
         .default_sampling = s.sampling,
         .use_drafts = !args.no_drafts,
+        .vision_pdf = args.vision_pdf orelse true,
         .seed_salt = salt,
         .request_log = env(s, "TENSORFOLD_REQUEST_LOG"),
         .stream_tool_calls = streamToolCalls(env(s, "TF_STREAM_TOOL_CALLS")),
@@ -171,6 +172,10 @@ pub fn run(gpa: Allocator, io: std.Io, args: cli.Args, s: Setup) u8 {
     if (s.on_listen) |f| f(port);
     const window = srv.info.context_window;
     if (srv.info.startup.len > 0) log.line("{s}", .{srv.info.startup});
+    // PDF input is on unless --no-vision-pdf; a text-only model says so only when --vision-pdf asked for it
+    if (args.vision_pdf orelse true) {
+        if (srv.info.vision != null) @import("pdf.zig").logStartup(a, io) else if (args.vision_pdf != null) log.line("--vision-pdf: this model reads no images, so PDF parts are refused", .{});
+    }
     const now = std.Io.Clock.awake.now(io).toNanoseconds();
     const loaded = if (s.started > 0) @as(f64, @floatFromInt(now - s.started)) / 1e9 else 0;
     var window_text: [24]u8 = undefined;

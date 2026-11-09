@@ -7,7 +7,9 @@ API_INSTALLATION. No API credential is fetched to the launch machine: smoke read
 it only inside the head's Python process. Status/preflight need no credentials.
 """
 import argparse
+import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -15,6 +17,8 @@ import re
 import shlex
 import subprocess
 import sys
+import tarfile
+import urllib.request
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -270,6 +274,62 @@ def mkdirs(host, paths):
     remote(host, "import json,pathlib,sys; [pathlib.Path(p).mkdir(parents=True,exist_ok=True) for p in json.loads(sys.argv[1])]; print('{}')", paths)
 
 
+def sha256_bytes(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def fetch(url, limit):
+    """A pinned download's bytes, at most `limit`; urllib honours the launch machine's proxy settings."""
+    with urllib.request.urlopen(url, timeout=120) as response:
+        data = response.read(limit + 1)
+    if len(data) > limit:
+        raise RecipeFailure(f"{url} is larger than its pin")
+    return data
+
+
+def pdfium_library(out, pin=None):
+    """The pinned arm64 PDFium that --vision-pdf renders with, beside tensorfold-native once staged.
+
+    OUT/lib/libpdfium.so when it is the pinned file; else the pinned release archive (kept in OUT/downloads) is
+    fetched, checked by SHA-256, and its library extracted and checked. A file that differs from its pin is never
+    staged. Without network the engine stages without it: PDF parts then get HTTP 501 naming the library.
+    """
+    pin = pin or json.loads((ROOT / "release/runtime-assets.json").read_text())["pdfium"]
+    lib = out / "lib/libpdfium.so"
+    if lib.is_file():
+        if sha256_bytes(lib.read_bytes()) != pin["library_sha256"]:
+            raise RecipeFailure(f"{lib} is not PDFium {pin['release']} {pin['archive']}; move it aside (docs/runtime-assets.md)")
+        return lib
+    archive = out / "downloads" / pin["archive"]
+    data = archive.read_bytes() if archive.is_file() else None
+    if data is None or sha256_bytes(data) != pin["archive_sha256"]:
+        try:
+            data = fetch(pin["url"], pin["archive_bytes"])
+        except OSError as exc:
+            print(f"WARN: PDFium not staged ({type(exc).__name__}): PDF inputs get HTTP 501 until {lib} holds "
+                  f"{pin['archive']} {pin['release']}'s {pin['member']} (docs/runtime-assets.md)", file=sys.stderr)
+            return None
+        if sha256_bytes(data) != pin["archive_sha256"]:
+            raise RecipeFailure(f"{pin['url']} does not match its pinned SHA-256; nothing staged")
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        kept = archive.with_name(archive.name + ".partial")
+        kept.write_bytes(data)
+        kept.replace(archive)
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        member = next((m for m in tar.getmembers() if m.name == pin["member"]), None)
+        if member is None or not member.isfile() or member.size != pin["library_bytes"]:
+            raise RecipeFailure(f"{pin['archive']}: {pin['member']} is not the pinned file")
+        library = tar.extractfile(member).read()
+    if sha256_bytes(library) != pin["library_sha256"]:
+        raise RecipeFailure(f"{pin['archive']}: {pin['member']} does not match its pinned SHA-256; nothing staged")
+    lib.parent.mkdir(parents=True, exist_ok=True)
+    partial = lib.with_name(lib.name + ".partial")
+    partial.write_bytes(library)
+    partial.chmod(0o755)
+    partial.replace(lib)
+    return lib
+
+
 def stage_engine():
     out = Path(os.environ.get("OUT", str(ROOT / "engine/build/out"))).expanduser().resolve()
     binaries = [out / "native/bin/tensorfold-native", out / "bin/tf-dsv41-lanes", out / "bin/tf-dsv41-check"]
@@ -279,6 +339,9 @@ def stage_engine():
     # The grammar shared library is optional for a build that links it statically.
     if (out / "lib/libtfgrammar.so").is_file():
         binaries.append(out / "lib/libtfgrammar.so")
+    # PDFium for --vision-pdf, found beside tensorfold-native in BIN_DIR (only rank 0's server renders PDFs)
+    if pdfium := pdfium_library(out):
+        binaries.append(pdfium)
     s = deploy.SETTINGS
     for host in deploy.SPARKS.values():
         mkdirs(host, [s["BIN_DIR"], str(Path(s["GUARD_SCRIPT"]).parent), str(Path(s["LOGGER_SCRIPT"]).parent), s["SPARK_ROOT"] + "/logs", s["SPILL_DIR"]])

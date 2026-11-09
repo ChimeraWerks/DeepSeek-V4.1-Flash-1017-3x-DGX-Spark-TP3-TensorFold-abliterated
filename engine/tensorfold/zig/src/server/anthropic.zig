@@ -52,7 +52,8 @@ fn countTokens(srv: *Server, cx: *Cx, chat: Value) errors.Refused!prompt.Counted
     const on = thinking.enable orelse srv.config.enable_thinking;
     // masked as the chat route masks them (issue #21), so the count is the prompt that route serves
     const tools = try tool_specs.active(cx, try messages_mod.maskControls(cx.a, srv.text, chat.get("tools")), chat.get("tool_choice"));
-    var images: messages_mod.Images = .{ .placeholder = if (srv.info.vision) |v| v.placeholder else "" };
+    // a PDF's pages measured, not drawn, when the family spans an image from its header (Server.pdfPages)
+    var images: messages_mod.Images = .{ .placeholder = if (srv.info.vision) |v| v.placeholder else "", .pdf = srv.pdfPages(true) };
     const take: ?*messages_mod.Images = if (srv.info.vision != null) &images else null;
     const msgs = try messages_mod.normalizeImages(cx, try messages_mod.requestMessages(cx, srv.text, chat.get("messages")), "system", srv.needs_user_after_tool, take);
     const ids_ = prompt.renderRequest(srv, cx, msgs, tools, on, srv.effortFor(thinking.effort), true, prompt.responseFormat(chat)) catch |e| switch (e) {
@@ -81,7 +82,7 @@ pub fn post(srv: *Server, conn: *Conn, a: Allocator) void {
             .err => |m| return sendError(conn, a, m, 400),
         };
         if (count) {
-            const n = countRequest(srv, &cx, body, openai.Gone{ .conn = conn }) catch return sendError(conn, a, cx.message, if (cx.kind == .capacity) 503 else 400);
+            const n = countRequest(srv, &cx, body, openai.Gone{ .conn = conn }) catch return sendError(conn, a, cx.message, if (cx.kind == .capacity) 503 else if (cx.kind == .unimplemented) 501 else 400);
             const o = json.newObject(a) catch return;
             o.put(a, "input_tokens", json.intValue(a, n.ids.len) catch return) catch return;
             // with images, their share of input_tokens, each span as generation lays it out

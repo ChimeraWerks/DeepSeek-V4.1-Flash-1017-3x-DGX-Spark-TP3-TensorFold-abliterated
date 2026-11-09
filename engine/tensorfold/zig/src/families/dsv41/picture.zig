@@ -778,6 +778,8 @@ test "an image's header size is the size its decode gives" {
         var pic = try fromRgb(a, rgb, cfg);
         defer pic.deinit(a);
         try std.testing.expectEqual(pic.grid.spanTokens(), spanFromHeader(png, cfg).?);
+        // the signature and IHDR alone (a measured PDF page) span as the whole image does
+        try std.testing.expectEqual(pic.grid.spanTokens(), spanFromHeader(png[0..33], cfg).?);
         try std.testing.expect(pic.grid.spanTokens() <= cfg.max_tokens);
     }
 }
