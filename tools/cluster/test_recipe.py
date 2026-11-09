@@ -396,6 +396,67 @@ def test_assets_script_checks_disk_before_any_download(recipe, monkeypatch, tmp_
     assert row["ok"] is False and "GB free" in row["error"]
 
 
+ZERO_GID = "0000:0000:0000:0000:0000:0000:0000:0000"
+
+
+def ipv4_gid(address):
+    a, b, c, e = map(int, address.split("."))
+    return f"0000:0000:0000:0000:0000:ffff:{a:02x}{b:02x}:{c:02x}{e:02x}"
+
+
+def run_gid_preflight(recipe, monkeypatch, tmp_path, capsys, broken=0, slots=None, **settings):
+    """Run the preflight script over four fake RoCE devices; only device `broken` holds `slots`."""
+    devices = [tmp_path / name for name in ("rocep1s0f0", "roceP2p1s0f0", "rocep1s0f1", "roceP2p1s0f1")]
+    for number, device in enumerate(devices):
+        port = device / "ports/1"
+        for kind in ("gids", "gid_attrs/types", "gid_attrs/ndevs"):
+            (port / kind).mkdir(parents=True)
+        (port / "state").write_text("4: ACTIVE\n")
+        for slot in range(8):
+            (port / "gids" / str(slot)).write_text(ZERO_GID + "\n")
+        # The other devices hold their IPv4 RoCE v2 GID in slot 3.
+        held = slots if number == broken and slots is not None else {3: (ipv4_gid(f"10.0.0.{number + 2}"), "RoCE v2")}
+        for slot, (gid, kind) in held.items():
+            (port / "gids" / str(slot)).write_text(gid + "\n")
+            (port / "gid_attrs/types" / str(slot)).write_text(kind + "\n")
+            (port / "gid_attrs/ndevs" / str(slot)).write_text(f"enp1s0f{number}np{number}\n")
+    data = {**recipe.deploy.SETTINGS, "TF_RDMA_DEVICES": ",".join(map(str, devices)), "SPARK_ROOT": str(tmp_path), "rank": 1, **settings}
+    # The script refuses a device path outside /sys; let it read this test tree only.
+    inside = Path.is_relative_to
+    monkeypatch.setattr(Path, "is_relative_to", lambda self, other: inside(self, other) or inside(self, tmp_path))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=0, stdout="NVIDIA GB10, 580.95.05\n"))
+    monkeypatch.setattr(sys, "argv", ["offline-preflight", json.dumps(data)])
+    exec(compile(recipe.PREFLIGHT, "offline-preflight", "exec"), {})
+    problems = [p for p in json.loads(capsys.readouterr().out)["problems"] if "GID" in p or "NCCL_IB_ADDR_RANGE" in p]
+    return devices, problems
+
+
+@pytest.mark.parametrize("broken, slots, expected", [
+    (0, {3: (ipv4_gid("10.0.0.2"), "RoCE v2")}, []),
+    (0, {4: (ipv4_gid("10.0.0.2"), "RoCE v2")}, ["GID index 3 is empty; its IPv4 RoCE v2 GID 10.0.0.2 is at index 4; re-activate enp1s0f0np0 with nmcli"]),
+    (2, {4: (ipv4_gid("10.0.0.4"), "RoCE v2")}, ["GID index 3 is empty; its IPv4 RoCE v2 GID 10.0.0.4 is at index 4; re-activate enp1s0f2np2 with nmcli"]),
+    (0, {3: ("fe80:0000:0000:0000:4cbb:47ff:fe1b:2c10", "RoCE v2")}, ["GID index 3 is RoCE v2 fe80:0000:0000:0000:4cbb:47ff:fe1b:2c10; it has no IPv4 RoCE v2 GID"]),
+    (0, {3: (ipv4_gid("10.0.0.2"), "IB/RoCE v1")}, ["GID index 3 is IB/RoCE v1 " + ipv4_gid("10.0.0.2") + "; it has no IPv4 RoCE v2 GID"]),
+    (3, {3: (ipv4_gid("10.0.1.5"), "RoCE v2")}, ["GID index 3 is 10.0.1.5, outside NCCL_IB_ADDR_RANGE 10.0.0.0/24"]),
+], ids=["in-slot", "moved", "moved-on-device-2", "link-local", "roce-v1", "outside-range-on-device-3"])
+def test_preflight_checks_the_ring_gid_slot_on_every_device(recipe, monkeypatch, tmp_path, capsys, broken, slots, expected):
+    devices, problems = run_gid_preflight(recipe, monkeypatch, tmp_path, capsys, broken, slots)
+    assert len(problems) == len(expected)
+    for problem, wanted in zip(problems, expected):
+        assert problem.startswith(str(devices[broken]) + " ") and wanted in problem
+
+
+@pytest.mark.parametrize("settings, expected", [
+    ({"TF_RDMA_GID_INDEX": "three"}, "TF_RDMA_GID_INDEX is not a GID slot number: three"),
+    ({"TF_RDMA_GID_INDEX": "-3"}, "TF_RDMA_GID_INDEX is not a GID slot number: -3"),
+    ({"NCCL_IB_ADDR_RANGE": "10.0.0.0/33"}, "NCCL_IB_ADDR_RANGE is not an address range: 10.0.0.0/33"),
+    ({"NCCL_IB_ADDR_RANGE": "roce-subnet"}, "NCCL_IB_ADDR_RANGE is not an address range: roce-subnet"),
+], ids=["word-index", "negative-index", "prefix-too-long", "not-an-address"])
+def test_preflight_lists_a_malformed_gid_setting_once(recipe, monkeypatch, tmp_path, capsys, settings, expected):
+    _, problems = run_gid_preflight(recipe, monkeypatch, tmp_path, capsys, **settings)
+    assert problems == [expected]
+
+
 def clock_sparks(recipe, monkeypatch, ok=True):
     calls = []
     monkeypatch.setattr(recipe.deploy, "SPARKS", {0: "spark1", 1: "spark2", 2: "spark3"})
