@@ -4,9 +4,9 @@ DeepSeek V4.1 Flash 1017 abliterated EXL3 3.84 bpw runs across three NVIDIA DGX 
 
 v1.2 uses engine base `30a9647` with exactly two non-runtime edits in `zig/src/server/metrics.zig`. A documentation comment and a test name describe external metrics samplers generically. Serving logic is unchanged by them. Rebuild comparison results: `release/build-verification.json`.
 
-## Unreleased
+## 2026-11-09 eight upstream fixes
 
-Not deployed. Production stays on `30a9647` plus the exact image count change.
+Production moved to `30a9647` plus the exact image count change and these fixes, with the owner's approval. The weights, KV pool, stream count, spill and sampling defaults are unchanged. The rebuilt binaries embed the production fatbins byte for byte. Checked live after the restart: the Responses `include` request returned 200, and a JSON answer shaped like a call to an offered tool came back as content with finish reason `stop`.
 
 - The engine's `/v1/responses` route accepts `include: ["reasoning.encrypted_content"]` and ignores it. Pi and other Responses API clients send it with every reasoning request, and each such request was refused with a 400. Reasoning already comes as text in its reasoning item, and nothing is encrypted. Any other `include` value is still refused and named. Ported from Mia's AI Lab patch 0058, reported by Unitea (unitea1992).
 - The lane thread makes its CUDA context current as it starts. With the spill tier on, the first request after a restart could resume a saved state from disk before any model call had bound the context on that thread. The restore's `cuMemAlloc` was then refused with 709, read as a lost context, and broke the rank group. The warmups `start.sh` sends after a start hid this; a supervisor restart sends none. Port of Mia's patch 0059 (issue #102, reported by NguyenPhan2810).
@@ -15,9 +15,9 @@ Not deployed. Production stays on `30a9647` plus the exact image count change.
 - `/v1/responses` streams now send a `: ping` comment after 25 s of silence, as chat and Messages streams already do, so idle proxies keep them open through a long prefill or decoding that sends no deltas. Ported from Mia 2x patch 0065 (hecisaza).
 - The engine writes C0, DEL and C1 control bytes in its `[tensorfold]` log lines as `\xNN`, so a request line can no longer drive the terminal of someone reading the rank logs or forge a log line. Ported from TensorFold `ceb6f4d3` (Chad Hurley).
 - `preflight.sh` checks that each RoCE device's `TF_RDMA_GID_INDEX` slot holds its IPv4 RoCE v2 address inside `NCCL_IB_ADDR_RANGE`. When that slot is empty or holds another kind of GID, as after a link flap, it names the slot where the IPv4 RoCE v2 GID now sits; when the slot holds an IPv4 address outside the range, it names that address. A malformed `TF_RDMA_GID_INDEX` or `NCCL_IB_ADDR_RANGE` is listed as a problem. Before, a moved GID showed up only as a failed ring setup at start. Ported from christopherowen/spark-ds41f (Christopher Owen), [`1e9f851`](https://github.com/christopherowen/spark-ds41f/commit/1e9f851ad1c23daa5ef3b9cf490f9c832402cfe9) and [`6a4d398`](https://github.com/christopherowen/spark-ds41f/commit/6a4d398e6d3e30df5799e6d13de18330f8756c1c).
-- Engram table loading checks each file's header length against the file size and a 100 MB cap before it allocates, so a corrupt header fails as `BadSafetensors`. Before, a damaged length could allocate up to the whole table file, or crash the load. Ported from upstream TensorFold `460a2868` and `46ce6dfd`.
+- Engram table loading checks each file's header length against the file size and a 100 MB cap before it allocates, so a corrupt header fails as `BadSafetensors`. Before, a damaged length could allocate up to the whole table file. Ported from upstream TensorFold `460a2868` and `46ce6dfd`.
 
-Not deployed. Production decoding cannot reach this path: the served tokenizer has no `<tool_call>` token, so a spelled `<tool_call>` is never an envelope.
+Hardening only. Production decoding cannot reach this path: the served tokenizer has no `<tool_call>` token, so a spelled `<tool_call>` is never an envelope.
 
 - A `<tool_call>` block (or `<|tool_call>`, `<x:tool_call>`) that opens with a DSML opener and is shorter than that opener and its closer together now stays text. The parser cut both from it, a slice past its start that panics in the ReleaseSafe server (Mia 4x patch 0053 and 2x patch 0064, Hector Isaza).
 - Every payload long enough parses exactly as before.
