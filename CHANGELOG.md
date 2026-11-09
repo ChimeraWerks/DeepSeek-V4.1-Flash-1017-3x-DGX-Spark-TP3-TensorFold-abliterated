@@ -12,6 +12,11 @@ Not deployed. Production stays on `30a9647` plus the exact image count change.
 - The lane thread makes its CUDA context current as it starts. With the spill tier on, the first request after a restart could resume a saved state from disk before any model call had bound the context on that thread. The restore's `cuMemAlloc` was then refused with 709, read as a lost context, and broke the rank group. The warmups `start.sh` sends after a start hid this; a supervisor restart sends none. Port of Mia's patch 0059 (issue #102, reported by NguyenPhan2810).
 - Checked on the host: a new lane host test in `lane_host_tier_test.zig` fails without the change and passes with it, the other tier tests pass, and `tensorfold-native` builds.
 
+Not deployed. Production decoding cannot reach this path: the served tokenizer has no `<tool_call>` token, so a spelled `<tool_call>` is never an envelope.
+
+- A `<tool_call>` block (or `<|tool_call>`, `<x:tool_call>`) that opens with a DSML opener and is shorter than that opener and its closer together now stays text. The parser cut both from it, a slice past its start that panics in the ReleaseSafe server (Mia 4x patch 0053 and 2x patch 0064, Hector Isaza).
+- Every payload long enough parses exactly as before.
+
 ## 2026-11-08 exact image counts
 
 Production moved from `30a9647` to `30a9647` plus this change, with the owner's approval. The weights, KV pool, stream count, spill and sampling defaults are unchanged. The rebuilt binaries embed the production fatbins byte for byte.
