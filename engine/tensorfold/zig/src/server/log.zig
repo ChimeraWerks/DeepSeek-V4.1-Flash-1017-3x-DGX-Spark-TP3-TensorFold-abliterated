@@ -29,16 +29,40 @@ fn writeOut(bytes: []const u8) void {
     }
 }
 
-/// One ``[tensorfold] ...`` line.
+/// One ``[tensorfold] ...`` line; its control bytes are written as ``\xNN``, as Python's ``log_message`` writes them.
 pub fn line(comptime fmt: []const u8, args: anytype) void {
     if (quiet or @import("builtin").is_test) return; // a test's stdout is the build runner's channel
-    var buf: [8192]u8 = undefined;
+    var escaped: Escaped = undefined;
+    raw(render(&escaped, fmt, args));
+}
+
+const line_max = 8192;
+/// The most a line can grow to: every byte escaped, and its newline.
+const Escaped = [4 * line_max + 1]u8;
+
+/// The bytes ``line`` writes.
+fn render(out: *Escaped, comptime fmt: []const u8, args: anytype) []const u8 {
+    var buf: [line_max]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    w.print("[tensorfold] " ++ fmt ++ "\n", args) catch {
-        buf[buf.len - 1] = '\n';
-        w.end = buf.len;
-    };
-    raw(w.buffered());
+    w.print("[tensorfold] " ++ fmt, args) catch {}; // a longer line ends where the buffer does
+    return controlSafe(out, w.buffered());
+}
+
+/// ``text`` and its newline with every C0, DEL and C1 control as ``\xNN``: a request line cannot drive the terminal.
+fn controlSafe(out: []u8, text: []const u8) []const u8 {
+    var w: std.Io.Writer = .fixed(out);
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        const b = text[i];
+        // a request line is latin-1 re-encoded as UTF-8 (http_conn.latin1), so its C1 control is 0xc2 then the byte
+        const c1 = b == 0xc2 and i + 1 < text.len and text[i + 1] >= 0x80 and text[i + 1] <= 0x9f;
+        if (c1) i += 1;
+        if (c1 or b < 0x20 or b == 0x7f) {
+            w.print("\\x{x:0>2}", .{text[i]}) catch break;
+        } else w.writeByte(b) catch break;
+    }
+    w.writeByte('\n') catch unreachable; // out holds four bytes a character of text and the newline
+    return w.buffered();
 }
 
 /// Text as given, the live line cleared first.
@@ -86,8 +110,10 @@ fn label_suffix(label: []const u8) []const u8 {
 
 /// The access line ``send_response`` prints: ``ip "GET / HTTP/1.1" 200 -``.
 pub fn request(c: *const Conn, code: u16) void {
-    line("{s} \"{s}\" {d} -{s}", .{ c.peer, c.requestline, code, keySuffix(c) });
+    line(request_fmt, .{ c.peer, c.requestline, code, keySuffix(c) });
 }
+
+const request_fmt = "{s} \"{s}\" {d} -{s}";
 
 /// ``refused <id>: <message>``, the message cut to 300 characters: why a request got an error reply.
 pub fn refused(buf: []u8, id: []const u8, message: []const u8) []const u8 {
@@ -114,4 +140,31 @@ test "a request's refused and ended lines" {
     try std.testing.expectEqualStrings("refused cmpl-1: short", refused(&buf, "cmpl-1", "short"));
     try std.testing.expectEqualStrings("ended chatcmpl-1 reason=client-left prompt=12 tokens=3 after=0.50s", ended(&buf, "chatcmpl-1", null, 12, 3, 0.5));
     try std.testing.expectEqualStrings("ended chatcmpl-1 reason=error (OutOfMemory) prompt=12 tokens=0 after=1.25s", ended(&buf, "chatcmpl-1", "OutOfMemory", 12, 0, 1.25));
+}
+
+test "security: a request line's control bytes reach the log as \\xNN, never as terminal controls" {
+    var out: Escaped = undefined;
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var conn = try Conn.init(std.testing.allocator, 0, "127.0.0.1");
+    defer conn.deinit();
+    // a method of escape sequences (clear the screen, set the title), DEL, and an 8-bit CSI as http_conn reads it
+    const raw_line = "\x1b[2J\x1b]0;owned\x07\x7f\x9bGET /health HTTP/1.1";
+    conn.requestline = try @import("http_conn.zig").latin1(arena.allocator(), raw_line);
+    const access = render(&out, request_fmt, .{ conn.peer, conn.requestline, 501, keySuffix(&conn) });
+    const want = "[tensorfold] 127.0.0.1 \"\\x1b[2J\\x1b]0;owned\\x07\\x7f\\x9bGET /health HTTP/1.1\" 501 -\n";
+    try std.testing.expectEqualStrings(want, access);
+    for (access[0 .. access.len - 1]) |b| try std.testing.expect(b >= 0x20 and b != 0x7f);
+    // the ordinary line is as before; its own newline is the only control byte
+    try std.testing.expectEqualStrings("[tensorfold] serving x\n", render(&out, "serving {s}", .{"x"}));
+    // a carriage return mid-line cannot overwrite the line on screen
+    try std.testing.expectEqualStrings("[tensorfold] a\\x0db\n", render(&out, "{s}", .{"a\rb"}));
+    // UTF-8 text, including a 0xc2 lead byte that is not a C1 control, passes through
+    try std.testing.expectEqualStrings("[tensorfold] café © 日本語\n", render(&out, "{s}", .{"café © 日本語"}));
+    // a line past the buffer still ends with one newline
+    const long: [9000]u8 = @splat('y');
+    const cut = render(&out, "{s}", .{&long});
+    try std.testing.expectEqual(@as(usize, line_max + 1), cut.len);
+    try std.testing.expectEqual(@as(u8, '\n'), cut[cut.len - 1]);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, cut, "\n"));
 }
