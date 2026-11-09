@@ -205,7 +205,13 @@ const Wire = struct {
     payload: Value = .null,
 
     fn out(w: *Wire) openai.Out {
-        return .{ .ctx = w, .vt = &.{ .open = open, .event = event, .reply = whole } };
+        return .{ .ctx = w, .vt = &.{ .open = open, .event = event, .reply = whole, .ping = ping } };
+    }
+
+    /// An SSE comment during a silent stretch (a long prefill, decoding that sends no deltas), so idle proxies keep the stream.
+    fn ping(ctx: *anyopaque) error{Closed}!void {
+        const w: *Wire = @ptrCast(@alignCast(ctx));
+        return sse.comment(w.reply.conn, "ping");
     }
 
     fn open(ctx: *anyopaque) error{Closed}!void {

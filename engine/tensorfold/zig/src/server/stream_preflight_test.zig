@@ -420,3 +420,75 @@ test "token markers stay literal through Chat Messages and Responses in streamed
         try std.testing.expectEqual(@as(usize, 0), seen.calls);
     };
 }
+
+/// An engine silent for `quiet_ms` (a long cold prefill), then answering "hi" from its own thread.
+const QuietEngine = struct {
+    quiet_ms: i64 = 400,
+    thread: ?std.Thread = null,
+    fn engine(e: *@This()) api.Engine {
+        return .{ .ctx = e, .vtable = &.{ .info = info, .submit = submit, .cancel = HiEngine.cancel, .status = HiEngine.status, .memory = HiEngine.memory } };
+    }
+    fn info(_: *anyopaque) api.Info {
+        return .{ .context_window = 4096 };
+    }
+    fn submit(ctx: *anyopaque, id: api.Id, _: *const api.Request, sink: api.Sink) api.SubmitError!void {
+        const e: *QuietEngine = @ptrCast(@alignCast(ctx));
+        e.thread = std.Thread.spawn(.{}, answer, .{ e, id, sink }) catch return error.Busy;
+    }
+    fn answer(e: *QuietEngine, id: api.Id, sink: api.Sink) void {
+        std.Io.sleep(std.testing.io, .fromMilliseconds(e.quiet_ms), .awake) catch {};
+        sink.event(sink.ctx, id, &.{ .prefilled = 0 });
+        for ("hi") |byte| sink.event(sink.ctx, id, &.{ .tokens = &.{byte} });
+        sink.event(sink.ctx, id, &.{ .finished = .{ .reason = .stop } });
+    }
+};
+
+/// Reads a socket into `out` until its other end closes.
+fn drainSocket(fd: std.posix.fd_t, out: *std.ArrayList(u8)) void {
+    var buf: [4096]u8 = undefined;
+    while (true) {
+        const n = std.posix.read(fd, &buf) catch return;
+        if (n == 0) return;
+        out.appendSlice(std.heap.page_allocator, buf[0..n]) catch return;
+    }
+}
+
+test "a silent streamed Responses request sends a ping comment before its first delta" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const chat_mod = @import("chat.zig");
+    const saved = chat_mod.ping_after_ns;
+    defer chat_mod.ping_after_ns = saved;
+    chat_mod.ping_after_ns = 100 * std.time.ns_per_ms;
+    var text: TestText = .{};
+    var backend: QuietEngine = .{};
+    var srv = try server.Server.init(std.testing.allocator, std.testing.io, backend.engine(), text.text(), .{
+        .served_name = "test-model",
+        .model_ids = &.{"test-model"},
+        .enable_thinking = false,
+        .use_drafts = false,
+    }, null);
+    defer srv.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const body = "{\"model\":\"test-model\",\"input\":\"x\",\"stream\":true,\"store\":false,\"max_output_tokens\":16}";
+    const linux = std.os.linux;
+    var fds: [2]i32 = undefined;
+    if (linux.errno(linux.socketpair(linux.AF.UNIX, linux.SOCK.STREAM, 0, &fds)) != .SUCCESS) return error.SocketPair;
+    var got: std.ArrayList(u8) = .empty;
+    defer got.deinit(std.heap.page_allocator);
+    const reader = try std.Thread.spawn(.{}, drainSocket, .{ fds[1], &got });
+    var headers = [_]@import("http_conn.zig").Header{.{ .name = "Content-Length", .value = try std.fmt.allocPrint(a, "{d}", .{body.len}) }};
+    var conn: Conn = .{ .fd = fds[0], .peer = "", .buf = try a.dupe(u8, body), .end = body.len, .gpa = a, .headers = &headers, .path = "/v1/responses", .method = "POST", .version = "HTTP/1.1" };
+    @import("responses.zig").post(srv, &conn, a);
+    if (backend.thread) |t| t.join();
+    _ = std.posix.system.close(fds[0]);
+    reader.join();
+    _ = std.posix.system.close(fds[1]);
+    const bytes = got.items;
+    const ping = std.mem.indexOf(u8, bytes, "\n: ping\n\n") orelse return error.NoPing;
+    const created = std.mem.indexOf(u8, bytes, "response.created") orelse return error.NoCreated;
+    const delta = std.mem.indexOf(u8, bytes, "response.output_text.delta") orelse return error.NoDelta;
+    try std.testing.expect(created < ping and ping < delta);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "response.completed") != null);
+}
