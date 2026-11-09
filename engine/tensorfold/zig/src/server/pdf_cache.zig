@@ -158,20 +158,36 @@ pub const Cache = struct {
         }
         const size = entryBytes(pages);
         if (size > limit) return;
-        c.map.ensureUnusedCapacity(c.gpa, 1) catch return;
-        if (@as(u64, c.map.capacity()) * slot_bytes + size > limit) return;
-        const e = c.make(key, pages, size) catch return;
+        // Evict least recently used first, shrinking the map as it empties, until the new entry fits beside the
+        // slots; the slots count too, so a map grown by a burst of small entries cannot block every later fill.
         while (c.bytes() + size > limit) {
             const node = c.lru.popLast() orelse break;
             const old: *Entry = @fieldParentPtr("node", node);
             _ = c.map.remove(old.key);
             c.free(old);
             c.evictions += 1;
+            c.shrinkLocked();
         }
+        c.map.ensureUnusedCapacity(c.gpa, 1) catch return;
+        if (c.bytes() + size > limit) return;
+        const e = c.make(key, pages, size) catch return;
         c.map.putAssumeCapacityNoClobber(key, e);
         c.lru.prepend(&e.node);
         c.entries_bytes += size;
         c.fills += 1;
+    }
+
+    /// The map never shrinks by itself, and its slots count against the cap: after a burst of small entries has
+    /// been evicted, rebuild it at the size the live entries need. Best effort; a failed rebuild keeps the old map.
+    fn shrinkLocked(c: *Cache) void {
+        const live = c.map.count();
+        if (c.map.capacity() <= 4 * live + 64) return;
+        var smaller: std.AutoHashMapUnmanaged(Key, *Entry) = .empty;
+        smaller.ensureTotalCapacity(c.gpa, live + 1) catch return;
+        var it = c.map.iterator();
+        while (it.next()) |kv| smaller.putAssumeCapacityNoClobber(kv.key_ptr.*, kv.value_ptr.*);
+        c.map.deinit(c.gpa);
+        c.map = smaller;
     }
 
     fn make(c: *Cache, key: Key, pages: []const []const u8, size: u64) Allocator.Error!*Entry {
@@ -427,6 +443,25 @@ test "PDF page cache: eviction keeps the byte bound, least recently used first" 
     defer off.deinit();
     _ = try expand(a, &off, docs[0], .render, 16);
     try std.testing.expectEqual(@as(u64, 0), off.bytes());
+}
+
+test "PDF page cache: the map shrinks back after a burst of small entries is evicted" {
+    log.init(std.testing.io, false);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var c: Cache = .{ .gpa = std.testing.allocator, .cap_bytes = 64 << 20 };
+    defer c.deinit();
+    for (0..300) |i| _ = try expand(a, &c, try std.fmt.allocPrint(a, "%PDF-1 burst {d}", .{i}), .render, 16);
+    try std.testing.expectEqual(@as(u32, 300), c.map.count());
+    try std.testing.expect(c.map.capacity() >= 300);
+    // the cap drops to a few documents: the next fill evicts the burst, and the map is rebuilt to fit
+    const size = entryBytes((try expand(a, null, "%PDF-1 last", .render, 16)).pages);
+    c.cap_bytes = 4 * size + 128 * slot_bytes;
+    _ = try expand(a, &c, "%PDF-1 last", .render, 16);
+    try std.testing.expect(c.map.count() < 300 and c.fills == 301);
+    try std.testing.expect(c.map.capacity() <= 4 * c.map.count() + 64);
+    try std.testing.expect(c.bytes() <= c.cap_bytes.?);
 }
 
 test "PDF page cache: concurrent hits and fills are safe and render each document once" {

@@ -225,6 +225,7 @@ test "tensorfold-native PDF render worker: a document sent again comes from the 
     worker.render(&cx, try worker.argv(a), doc, .render, 16, deadline_ns, &fresh_budget, &fresh) catch return refused(cx);
     // an agent client's turns: the first renders, the next two are hits that start no worker
     const before = worker.spawned.load(.monotonic);
+    const hits0 = pdf.page_cache.hits; // clear() keeps the counters, so count from here
     for (0..3) |turn| {
         var state: pdf.Pages = .{ .max_pages = 16 };
         var pages: std.ArrayList([]const u8) = .empty;
@@ -233,9 +234,9 @@ test "tensorfold-native PDF render worker: a document sent again comes from the 
         try std.testing.expectEqual(fresh_budget, state.budget);
         try std.testing.expectEqual(@as(usize, 6), pages.items.len);
         for (fresh.items, pages.items) |f, p| try std.testing.expectEqualSlices(u8, f, p);
-        if (turn == 0) try std.testing.expectEqual(@as(u64, 0), pdf.page_cache.hits);
+        if (turn == 0) try std.testing.expectEqual(hits0, pdf.page_cache.hits);
     }
-    try std.testing.expectEqual(@as(u64, 2), pdf.page_cache.hits);
+    try std.testing.expectEqual(hits0 + 2, pdf.page_cache.hits);
     // the count route on a hit: each page's header, the same budget, no worker
     var counted: pdf.Pages = .{ .mode = .measure, .max_pages = 16 };
     var heads: std.ArrayList([]const u8) = .empty;
