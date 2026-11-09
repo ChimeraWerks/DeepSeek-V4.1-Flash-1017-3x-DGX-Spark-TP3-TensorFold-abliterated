@@ -4,6 +4,10 @@ DeepSeek V4.1 Flash 1017 abliterated EXL3 3.84 bpw runs across three NVIDIA DGX 
 
 v1.2 uses engine base `30a9647` with exactly two non-runtime edits in `zig/src/server/metrics.zig`. A documentation comment and a test name describe external metrics samplers generically. Serving logic is unchanged by them. Rebuild comparison results: `release/build-verification.json`.
 
+## Unreleased
+
+- Engram table loading checks each file's header length against the file size and a 100 MB cap before it allocates, so a corrupt header fails as `BadSafetensors`. Before, a damaged length could allocate up to the whole table file, or crash the load. Ported from upstream TensorFold `460a2868` and `46ce6dfd`.
+
 ## 2026-11-08 exact image counts
 
 Production moved from `30a9647` to `30a9647` plus this change, with the owner's approval. The weights, KV pool, stream count, spill and sampling defaults are unchanged. The rebuilt binaries embed the production fatbins byte for byte.

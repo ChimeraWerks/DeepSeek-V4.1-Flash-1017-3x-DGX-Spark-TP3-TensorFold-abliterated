@@ -3,6 +3,15 @@
 const std = @import("std");
 const Io = std.Io;
 
+/// The largest JSON header a reader allocates (the safetensors format's own 100 MB limit; upstream TensorFold 46ce6dfd).
+pub const max_header_bytes = 100_000_000;
+
+/// A header length from a file's first 8 bytes, checked against the file and the cap before anything is allocated.
+pub fn headerSize(header_len: u64, file_size: u64) error{BadSafetensors}!usize {
+    if (file_size < 8 or header_len > max_header_bytes or header_len > file_size - 8) return error.BadSafetensors;
+    return std.math.cast(usize, header_len) orelse error.BadSafetensors;
+}
+
 pub const DType = enum {
     bool,
     u8,
