@@ -7,6 +7,11 @@ class PolicyError(ValueError):
     pass
 
 
+# Marks a normalized body whose output cap the client left out. Internal: normalize drops a client's copy, and the
+# engine transport removes it before counting and dispatch.
+CAP_OMITTED = "_recipe_cap_omitted"
+
+
 def sampling_values(values):
     allowed = {"temperature", "top_p", "top_k", "presence_penalty", "frequency_penalty", "min_p"}
     if not isinstance(values, dict) or set(values) - allowed:
@@ -109,7 +114,12 @@ def normalize(raw, cfg, client="default", api="chat", profile=None):
         raise PolicyError("only n=1 is supported")
     field = "max_output_tokens" if api == "responses" else "max_tokens"
     cap = body.get(field, body.get("max_completion_tokens"))
-    cap = cfg.output_tokens if cap is None else cap
+    # An omitted cap is the configured default until the prompt is counted; Engine.check_count then lowers it to the
+    # context left, as DeepSeek's resolve_max_tokens does (deepseek-recipe request/mod.rs). A cap the client gave is kept.
+    body.pop(CAP_OMITTED, None)
+    if cap is None:
+        cap = cfg.output_tokens
+        body[CAP_OMITTED] = True
     if isinstance(cap, bool) or not isinstance(cap, int) or not 0 < cap <= cfg.max_output_tokens:
         raise PolicyError(f"{field} must be between 1 and {cfg.max_output_tokens}")
     body[field] = cap
@@ -180,7 +190,8 @@ def normalize_messages(raw, cfg, client="default", profile=None):
         view["reasoning_effort"] = config["effort"]
     chat = normalize(view, cfg, client, "chat", profile)
     body = dict(raw)
-    body.update({k: chat[k] for k in ("model", "max_tokens", *sampled) if k in chat})
+    body.pop(CAP_OMITTED, None)
+    body.update({k: chat[k] for k in ("model", "max_tokens", CAP_OMITTED, *sampled) if k in chat})
     effort = chat["reasoning_effort"]
     if "thinking" not in raw and config.get("effort") is None:
         body["thinking"] = {"type": "disabled" if effort == "none" else "enabled"}

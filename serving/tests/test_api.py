@@ -121,6 +121,18 @@ class PolicyTests(unittest.TestCase):
                 await engine.close()
         self.assertEqual(asyncio.run(run()), (False, True))
 
+    def test_only_an_omitted_cap_is_marked_for_lowering(self):
+        from chimera_sparks.policy import CAP_OMITTED, normalize_messages
+        cfg, messages = Config(), [{"role": "user", "content": "hi"}]
+        self.assertIs(normalize({"messages": messages}, cfg)[CAP_OMITTED], True)
+        self.assertIs(normalize({"input": "hi"}, cfg, api="responses")[CAP_OMITTED], True)
+        self.assertIs(normalize_messages({"messages": messages}, cfg)[CAP_OMITTED], True)
+        # a client cannot mark its own cap for lowering
+        for given in ({"max_tokens": 64}, {"max_completion_tokens": 64}):
+            self.assertNotIn(CAP_OMITTED, normalize({"messages": messages, **given, CAP_OMITTED: True}, cfg))
+        self.assertNotIn(CAP_OMITTED, normalize({"input": "hi", "max_output_tokens": 64, CAP_OMITTED: True}, cfg, api="responses"))
+        self.assertNotIn(CAP_OMITTED, normalize_messages({"messages": messages, "max_tokens": 64, CAP_OMITTED: True}, cfg))
+
     def test_bad_settings_and_internal_ownership(self):
         base = {"messages": [{"role": "user", "content": "hello"}]}
         for bad in [{"temperature": float("nan")}, {"top_k": True}, {"top_p": 0}, {"max_tokens": -1}]:
@@ -295,6 +307,64 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.app.state.engine.cfg = replace(self.cfg, context_tokens=100)
         answer = await self.client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}], "max_tokens": 64})
         self.assertEqual(answer.status_code, 400)
+        self.assertEqual(self.seen, [])
+
+    def near_full_context(self, room):
+        """Leave ``room`` output tokens beside the mock's 10-token prompt, and record each admitted weight."""
+        engine = self.app.state.engine
+        engine.cfg = replace(self.cfg, context_tokens=10 + self.cfg.safety_tokens + room)
+        weights, acquire = [], engine.gate.acquire
+        async def recording(*, weight, **kw):
+            weights.append(weight)
+            return await acquire(weight=weight, **kw)
+        engine.gate.acquire = recording
+        return weights
+
+    ROUTES = (("/v1/chat/completions", {"messages": [{"role": "user", "content": "hi"}]}, "max_tokens"),
+              ("/v1/responses", {"input": "hi"}, "max_output_tokens"),
+              ("/v1/messages", {"messages": [{"role": "user", "content": "hi"}]}, "max_tokens"))
+
+    async def test_omitted_cap_is_lowered_to_the_context_left(self):
+        from chimera_sparks.policy import CAP_OMITTED
+        weights = self.near_full_context(500)
+        for path, body, field in self.ROUTES:
+            for stream in (False, True):
+                self.seen.clear()
+                answer = await self.client.post(path, json={**body, "stream": stream})
+                self.assertNotIn("context_length_exceeded", answer.text, (path, stream))
+                self.assertEqual(len(self.seen), 1, (path, stream, answer.text))
+                self.assertEqual(self.seen[-1][field], 500, (path, stream))
+                self.assertNotIn(CAP_OMITTED, self.seen[-1])
+                self.assertEqual(weights[-1], 10 + 500, (path, stream))
+                if not stream and path != "/v1/responses":
+                    self.assertEqual(answer.status_code, 200, (path, answer.text))
+        # with room to spare, an omitted cap stays the configured default
+        self.app.state.engine.cfg = self.cfg
+        await self.client.post("/v1/chat/completions", json=self.ROUTES[0][1])
+        self.assertEqual(self.seen[-1]["max_tokens"], self.cfg.output_tokens)
+        self.assertEqual(self.app.state.engine.gate.active_weight, 0)
+
+    async def test_explicit_cap_that_does_not_fit_is_still_refused(self):
+        self.near_full_context(500)
+        caps = [(path, body, name) for path, body, field in self.ROUTES
+                for name in ((field, "max_completion_tokens") if path == "/v1/chat/completions" else (field,))]
+        for path, body, name in caps:
+            answer = await self.client.post(path, json={**body, name: 501})
+            self.assertEqual((answer.status_code, answer.json()["error"]["code"]), (400, "context_length_exceeded"), (path, name))
+            stream = await self.client.post(path, json={**body, name: 501, "stream": True})
+            self.assertIn("stream_incomplete", stream.text, (path, name))
+            self.assertEqual(self.seen, [], (path, name))
+        for path, body, field in self.ROUTES:
+            await self.client.post(path, json={**body, field: 500})
+            self.assertEqual(self.seen[-1][field], 500, path)
+
+    async def test_omitted_cap_with_no_room_left_is_refused(self):
+        self.near_full_context(0)
+        for path, body, _ in self.ROUTES:
+            answer = await self.client.post(path, json=body)
+            self.assertEqual((answer.status_code, answer.json()["error"]["code"]), (400, "context_length_exceeded"), path)
+            stream = await self.client.post(path, json={**body, "stream": True})
+            self.assertIn("stream_incomplete", stream.text, path)
         self.assertEqual(self.seen, [])
 
     async def test_malformed_messages_and_effort_are_400_not_500(self):

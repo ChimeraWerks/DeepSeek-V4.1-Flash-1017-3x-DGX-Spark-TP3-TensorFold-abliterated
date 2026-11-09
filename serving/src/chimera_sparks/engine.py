@@ -14,7 +14,7 @@ from .laky.media_admission import has_images
 from .laky.media_types import DOCUMENT_BLOCK_TYPES
 from .laky.queue import FairPriorityGate
 from .laky.stream_validation import ChatStreamValidator, MessagesStreamValidator, ResponsesStreamValidator
-from .policy import normalize
+from .policy import CAP_OMITTED, normalize
 
 
 def upstream_message(response):
@@ -158,11 +158,23 @@ class Engine:
         return count
 
     async def prepare(self, body, api="chat"):
+        body = dict(body)
+        omitted = body.pop(CAP_OMITTED, False) is True
         count, method = await self.count_input(body, api)
-        return self.check_count(body, count, api, method)
+        return self.check_count(body, count, api, method, cap_omitted=omitted)
 
-    def check_count(self, body, count, api, method):
-        cap = body["max_output_tokens" if api == "responses" else "max_tokens"]
+    def check_count(self, body, count, api, method, *, cap_omitted=False):
+        """Admit a counted prompt with its output cap, or refuse it.
+
+        A cap the client gave must fit beside the prompt and safety_tokens. A cap it left out (the configured default)
+        is lowered to the context left, when at least one token is left, like deepseek-recipe's resolve_max_tokens; the
+        lowered cap is what the engine gets and what admission weighs.
+        """
+        field = "max_output_tokens" if api == "responses" else "max_tokens"
+        cap = body[field]
+        room = self.cfg.context_tokens - count - self.cfg.safety_tokens
+        if cap_omitted and 1 <= room < cap:
+            body, cap = {**body, field: room}, room
         if count + cap + self.cfg.safety_tokens > self.cfg.context_tokens:
             raise GatewayError(400, "input and output reserve exceed recipe context; compact the conversation explicitly", "context_length_exceeded")
         return {"body": body, "count": count, "weight": count + cap, "token_method": method}
