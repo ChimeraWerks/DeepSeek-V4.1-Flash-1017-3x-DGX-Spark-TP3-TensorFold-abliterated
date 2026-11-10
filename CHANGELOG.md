@@ -6,7 +6,7 @@ v1.2 uses engine base `30a9647` with exactly two non-runtime edits in `zig/src/s
 
 ## 2026-11-09 keyed drafts for top_k requests
 
-Built on branch `engine/keyed-draft-topk` and measured on the three Sparks; not in production.
+In production since 2026-11-09, with the owner's approval: main `551d77e` built with `-Dkeyed_draft=true`, its keyed kernel image compiled on the head Spark, and `TF_DS_KEYED_FILTER` left unset (mirror). The other flags are unchanged. Checked live after the restart: all three ranks run the new binaries, two seeded `top_k` 20 thinking replies were identical, as were two seeded `top_k` 0 replies, and a `top_k` 20 reply decoded at 72.6 and 70.4 tok/s against 65.7 after the afternoon restart.
 
 - Keyed drafts reached only requests that sample without `top_k`, `top_p` or `min_p`, so API-default requests (`top_k` 20) still drafted greedily against a sampled target. Every sampled request now gets keyed draft noise, and a request with `top_k` has it mirrored in the draft: each rank keeps at least its `top_k` best columns of the draft logits plus the Markov bias before the noise is added, so a tail token the target cannot pick is never proposed. A `top_k` of 1,024 or more is not mirrored.
 - Target sampling and acceptance are unchanged, so a reply still depends only on its seed, never on the draft. Grammar-constrained requests still draft greedily. `top_p` and `min_p` are not mirrored.
