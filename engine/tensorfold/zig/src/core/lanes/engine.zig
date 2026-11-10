@@ -164,7 +164,12 @@ pub const Engine = struct {
         const forced = try e.forcedNext(s);
         if (forced) |t| feed = .{ .value = t };
         // tool_choice required: a drawn first token passes the gate; a forced one is committed as it is
-        if (s.gate != null and forced == null) feed = .{ .value = try e.correctCall(s, try e.readFeed(feed)) };
+        if (s.gate != null and forced == null) {
+            // Read the handle before the assignment: writing `feed` first would make the read below
+            // see the new tag (.value) with the handle still in the payload, committing the handle.
+            const first = try e.readFeed(feed);
+            feed = .{ .value = try e.correctCall(s, first) };
+        }
         var asked: ?u32 = null;
         if (e.cfg.family_mtp and s.drafts) {
             // the head reads the prompt's last row and the first token, and drafts the one after it
