@@ -93,6 +93,20 @@ fn decodeOuterKind(raw: u8) !Kind {
         };
 }
 
+/// What a follower takes while a sliced prompt chunk is open: the next slice, and the one decode round that runs
+/// between slices (its verify and its draft pass, plain or keyed). Any other outer operation would run inside the chunk.
+fn openChunkAllows(kind: Kind) bool {
+    return switch (kind) {
+        .fill_slice, .verify, .pass, .pass_keyed => true,
+        else => false,
+    };
+}
+
+test "keyed draft pass frame is admitted while a prefill slice chunk is open" {
+    for ([_]Kind{ .fill_slice, .verify, .pass, .pass_keyed }) |k| try std.testing.expect(openChunkAllows(k));
+    for ([_]Kind{ .fill_begin, .fill_chunk, .snap_save, .snap_restore, .snap_drop, .fill_images, .done, .rank_wire, .rdma_idle, .idle_move, .fill_resume, .graph_vote_agree, .snap_drop_many }) |k| try std.testing.expect(!openChunkAllows(k));
+}
+
 test "outer follower decoder accepts fill_resume 13 and rejects reserved kinds" {
     try std.testing.expectEqual(Kind.fill_resume, try decodeOuterKind(13));
     try std.testing.expectEqual(Kind.rdma_idle, try decodeOuterKind(11));
@@ -2935,7 +2949,7 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
             if (move_state.pending == null) move_deadline = admission_deadline;
             if (spill) |sd| if (sd.side) |side| { side.operation_deadline = move_deadline; };
         }
-        if (m.rs.live and kind != .fill_slice and kind != .verify and kind != .pass) return error.OpenPrefillChunk;
+        if (m.rs.live and !openChunkAllows(kind)) return error.OpenPrefillChunk;
         if (!m.rs.live and move_state.pending == null and kind != .idle_move and kind != .fill_slice) if (spill) |sd| sd.service(std.time.ns_per_ms); // relocation does not service unrelated work
         // a chunk's read-ahead of the next is done before anything but that chunk (a prompt's ids may change)
         if (kind != .fill_chunk and kind != .fill_slice and kind != .snap_save and kind != .snap_restore and kind != .fill_images and kind != .rank_wire) {

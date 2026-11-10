@@ -4,6 +4,14 @@ DeepSeek V4.1 Flash 1017 abliterated EXL3 3.84 bpw runs across three NVIDIA DGX 
 
 v1.2 uses engine base `30a9647` with exactly two non-runtime edits in `zig/src/server/metrics.zig`. A documentation comment and a test name describe external metrics samplers generically. Serving logic is unchanged by them. Rebuild comparison results: `release/build-verification.json`.
 
+## 2026-11-10 keyed drafts while a prompt loads
+
+In production since 2026-11-10: main `53dedad`, the same kernel images and flags as the entry below. Checked live after the restart: a sampled 2,500-token reply kept streaming while cold 8,012-token and 30,012-token prompts loaded beside it, every rank stayed up, and the seeded `top_k` 0 and `top_k` 20 replies were still identical.
+
+- The keyed top_k build stopped all three ranks when a new prompt arrived during a sampled reply. With `TF_DS_PREFILL_SLICE` on, one decode round runs between a prompt's layer slices, and followers accept only the next slice, a verify frame and a draft pass while a chunk is open. The keyed draft pass has its own frame kind, which that check did not list, so followers returned `OpenPrefillChunk` and the rank group exited 75. It happened twice in production on 2026-11-10 (5:07 AM and 8:04 AM Eastern); the supervisor restored service both times.
+- Followers now accept the keyed draft pass in that window as they accept the plain one. It runs the same drafter pass on the drafter's own buffers, with graph capture off while the chunk is open. The check moved into `openChunkAllows`, and a host test covers every frame kind.
+- While a cold prompt loads, a reply already streaming runs at about 6 to 7 tok/s instead of about 60 (one decode round between slices of five layers). That is the existing `TF_DS_PREFILL_SLICE=5` behavior, measured here for the first time.
+
 ## 2026-11-09 keyed drafts for top_k requests
 
 In production since 2026-11-09, with the owner's approval: main `551d77e` built with `-Dkeyed_draft=true`, its keyed kernel image compiled on the head Spark, and `TF_DS_KEYED_FILTER` left unset (mirror). The other flags are unchanged. Checked live after the restart: all three ranks run the new binaries, two seeded `top_k` 20 thinking replies were identical, as were two seeded `top_k` 0 replies, and a `top_k` 20 reply decoded at 72.6 and 70.4 tok/s against 65.7 after the afternoon restart.
