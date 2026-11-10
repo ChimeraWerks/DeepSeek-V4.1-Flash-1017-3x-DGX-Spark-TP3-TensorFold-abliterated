@@ -382,3 +382,43 @@ test "keyed draft TP3 columns use padded physical widths and global token IDs" {
         try std.testing.expectEqual((rank + 1) * 43136 - 1, m.col0() + m.rowCols() - 1);
     }
 }
+
+test "draft head actual Markov launches never read removed rows" {
+    var cfg = try modelConfig();
+    cfg.vocab = 129408;
+    cfg.logical_vocab = 129280;
+    const Callback = struct {
+        count: usize = 0,
+        fn gather(_: *anyopaque, _: u64, _: usize) anyerror!u64 { return 0x900000; }
+        fn tap(ctx: *anyopaque, step: usize) anyerror!void {
+            const c: *@This() = @ptrCast(@alignCast(ctx));
+            try std.testing.expectEqual(c.count, step);
+            c.count += 1;
+        }
+    };
+    const sc: Scratch = .{ .pv = 0x600000, .pi = 0x610000, .send = 0x620000, .stage = 0x630000 };
+    for (0..3) |rank| for (1..17) |streams| for (1..6) |steps| for (0..3) |noise_mode| {
+        var log: tri.Log = .{ .gpa = std.testing.allocator };
+        defer log.deinit();
+        var cb: Callback = .{};
+        const m = try Markov.init(cfg, .{ .rank = @intCast(rank), .world = 3 }, elsewhere, elsewhere, elsewhere);
+        const tap: Tap = .{ .ctx = &cb, .run = Callback.tap };
+        try m.stepsWith(.{ .log = &log }, 0x100000, 0x500000, steps + 1, streams, steps, steps, sc,
+            .{ .ctx = &cb, .run = Callback.gather }, if (noise_mode == 1) tap else null, if (noise_mode == 2) tap else null);
+        var consumed: usize = 0;
+        for (log.items.items) |launch| {
+            if (!std.mem.eql(u8, launch.name, "_score")) continue;
+            const base = launch.args[0].value.ptr.addr;
+            const stride: usize = @intCast(launch.args[2].value.i32);
+            try std.testing.expectEqual(@as(u64, 0x100000 + consumed * m.rowCols() * 4), base);
+            try std.testing.expectEqual(steps * m.rowCols(), stride);
+            for (0..streams) |s| {
+                const last = (base - 0x100000) / 4 + s * stride + m.rowCols() - 1;
+                try std.testing.expect(last < streams * steps * m.rowCols());
+            }
+            consumed += 1;
+        }
+        try std.testing.expectEqual(steps, consumed);
+        try std.testing.expectEqual(if (noise_mode == 0) @as(usize, 0) else steps, cb.count);
+    };
+}

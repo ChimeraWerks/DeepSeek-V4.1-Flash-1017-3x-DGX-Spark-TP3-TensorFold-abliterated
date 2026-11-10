@@ -1562,10 +1562,7 @@ pub const Graphs = struct {
         g.telemetry.capture();
         try cuda.graph.beginCapture(e.s, .thread_local);
         stretch(e, rd, ch, cs, rings, cy, li, end, null) catch |err| {
-            if (cuda.graph.endCapture(e.s)) |got| {
-                var x = got;
-                x.deinit();
-            } else |_| {}
+            leaveCapture(StretchCapture{ .e = e, .rd = rd }, true);
             return err;
         };
         var graph = try cuda.graph.endCapture(e.s);
@@ -1623,7 +1620,9 @@ pub const Graphs = struct {
         g.telemetry.capture();
         if (cuda.graph.beginCapture(e.s, .thread_local)) |_| {
             const recorded = if (stretch(e, rd, ch, cs, rings, cy, li, end, null)) |_| true else |_| false;
-            if (v.isHealthy()) {
+            if (!recorded) {
+                leaveCapture(StretchCapture{ .e = e, .rd = rd }, v.isHealthy());
+            } else if (v.isHealthy()) {
                 if (cuda.graph.endCapture(e.s)) |got| graph = got else |_| {}
             }
             if (recorded) if (graph) |*x| {
@@ -2078,4 +2077,68 @@ test "decode greedy head graph keys distinguish every sampled count" {
         next.stretch += 1;
         try std.testing.expect(a.wire().c != next.wire().c);
     }
+}
+
+// Failed captures own these joins. No event from them may reach a later capture.
+const StretchCapture = struct {
+    e: *const Engine,
+    rd: *Round,
+    fn joinSide(c: StretchCapture) !void { try c.rd.joinSide(c.e); }
+    fn joinPrefetch(c: StretchCapture) !void { try c.rd.joinPrefetch(c.e); }
+    fn end(c: StretchCapture) !cuda.graph.Graph { return cuda.graph.endCapture(c.e.s); }
+    fn forgetForked(c: StretchCapture) void { c.rd.side_out = false; c.rd.pf_out = false; }
+};
+
+fn leaveCapture(cap: anytype, healthy: bool) void {
+    defer cap.forgetForked();
+    // A poisoned voted rank must not touch CUDA, including its cleanup calls.
+    if (!healthy) return;
+    cap.joinSide() catch {};
+    cap.joinPrefetch() catch {};
+    if (cap.end()) |got| {
+        var graph = got;
+        graph.deinit();
+    } else |_| {}
+}
+
+test "graph failed capture cleanup on each TP3 rank and ordinary or voted path" {
+    const Fake = struct {
+        const Self = @This();
+        const Graph = struct {
+            f: *Self,
+            fn deinit(g: *Graph) void { g.f.calls[g.f.n] = 4; g.f.n += 1; }
+        };
+        rd: *Round,
+        faults: u3,
+        calls: [5]u8 = undefined,
+        n: usize = 0,
+        fn note(f: *Self, c: u8) void { f.calls[f.n] = c; f.n += 1; }
+        fn joinSide(f: *Self) !void { f.note(1); if (f.faults & 1 != 0) return error.Injected; }
+        fn joinPrefetch(f: *Self) !void { f.note(2); if (f.faults & 2 != 0) return error.Injected; }
+        fn end(f: *Self) !Graph { f.note(3); if (f.faults & 4 != 0) return error.Injected; return .{ .f = f }; }
+        fn forgetForked(f: *Self) void {
+            f.note(5);
+            (StretchCapture{ .e = undefined, .rd = f.rd }).forgetForked();
+        }
+    };
+    for (0..3) |rank| for ([_]bool{ false, true }) |voted| for (0..8) |faults| {
+        var rd: Round = undefined;
+        for ([_][2]bool{ .{ true, true }, .{ true, false }, .{ false, true } }) |flags| {
+            rd.side_out = flags[0]; rd.pf_out = flags[1];
+            var f: Fake = .{ .rd = &rd, .faults = @intCast(faults) };
+            leaveCapture(&f, true);
+            const expected: []const u8 = if (faults & 4 != 0) &.{ 1, 2, 3, 5 } else &.{ 1, 2, 3, 4, 5 };
+            try std.testing.expectEqualSlices(u8, expected, f.calls[0..f.n]);
+            try std.testing.expect(!rd.side_out and !rd.pf_out);
+            if (voted) {
+                rd.side_out = true; rd.pf_out = true; f.n = 0;
+                leaveCapture(&f, false);
+                try std.testing.expectEqualSlices(u8, &.{5}, f.calls[0..f.n]);
+                try std.testing.expect(!rd.side_out and !rd.pf_out);
+                var votes: [3]graph_vote.Status = @splat(.yes);
+                votes[rank] = .no;
+                try std.testing.expectEqual(graph_vote.Status.fatal, graph_vote.decide(.ready, &votes));
+            }
+        }
+    };
 }

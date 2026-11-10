@@ -24,8 +24,8 @@ pub const Frame = struct {
 
 fn valid(f: Frame) bool {
     if (f.world == 0 or f.sender >= f.world) return false;
-    // Draft keys: c is the keyed-draft bit (draft.zig PassGraphs.Key.voteKey), so exactly 0 or 1.
-    if (f.family == .draft and (f.ordinal != 0 or f.key.c > 1)) return false;
+    // Draft keys: c carries keyed draft and compact head (PassGraphs.Key.voteKey).
+    if (f.family == .draft and (f.ordinal != 0 or f.key.c > 3)) return false;
     if (f.family == .round and (f.key.c & 0xff) > 2) return false;
     return switch (f.message) {
         .start => f.sender == 0 and f.status == .none,
@@ -230,8 +230,8 @@ test "codec round trip and malformed frames" {
     }
 }
 
-test "draft frames carry the keyed bit and reject unknown values" {
-    for ([_]u64{ 0, 1 }) |c| for ([_]Stage{ .reserve, .ready }) |stage| {
+test "draft head frames carry keyed and compact bits and reject unknown values" {
+    for ([_]u64{ 0, 1, 2, 3 }) |c| for ([_]Stage{ .reserve, .ready }) |stage| {
         const f: Frame = .{ .message = .start, .stage = stage, .sender = 0, .world = 3, .step = 7, .ordinal = 0, .family = .draft, .status = .none, .key = .{ .a = 16, .b = 3, .c = c } };
         var b = try encode(f);
         try std.testing.expectEqual(@as(u8, 3), b[1]);
@@ -239,7 +239,7 @@ test "draft frames carry the keyed bit and reject unknown values" {
         b[1] = 2; // old keyed pass frames have no top_k.
         try std.testing.expectError(error.BadFrame, decode(&b));
     };
-    for ([_]u64{ 2, 3, 1 << 63 }) |c| {
+    for ([_]u64{ 4, 5, 1 << 63 }) |c| {
         const f: Frame = .{ .message = .start, .stage = .reserve, .sender = 0, .world = 3, .step = 7, .ordinal = 0, .family = .draft, .status = .none, .key = .{ .a = 16, .b = 3, .c = c } };
         try std.testing.expectError(error.BadFrame, encode(f));
     }

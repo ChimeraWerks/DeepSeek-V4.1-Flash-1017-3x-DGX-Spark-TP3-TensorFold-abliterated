@@ -16,6 +16,7 @@ pub fn enabled() bool {
 /// Tombstone/disabled eager hits do not recapture and can be timed normally.
 pub const Stats = struct {
     on: bool = false,
+    timing: bool = false, // track contaminated samples without diagnostic counters or logging
     clean: bool = true,
     accesses: u64 = 0,
     hits: u64 = 0,
@@ -31,7 +32,7 @@ pub const Stats = struct {
         s.clean = true;
     }
     pub fn timingClean(s: *const Stats) bool {
-        return !s.on or s.clean;
+        return !(s.on or s.timing) or s.clean;
     }
     pub fn access(s: *Stats) void {
         if (s.on) s.accesses +|= 1;
@@ -40,6 +41,7 @@ pub const Stats = struct {
         if (s.on) s.hits +|= 1;
     }
     pub fn miss(s: *Stats) void {
+        if (s.timing) s.clean = false;
         if (!s.on) return;
         s.misses +|= 1;
         s.clean = false;
@@ -48,6 +50,7 @@ pub const Stats = struct {
         if (s.on) s.capture_attempts +|= 1;
     }
     pub fn fail(s: *Stats) void {
+        if (s.timing) s.clean = false;
         if (!s.on) return;
         s.failures +|= 1;
         s.clean = false;
@@ -137,4 +140,22 @@ test "graph telemetry counters saturate without wrapping" {
     s.hit();
     try std.testing.expectEqual(std.math.maxInt(u64), s.accesses);
     try std.testing.expectEqual(std.math.maxInt(u64), s.hits);
+}
+
+
+test "round timing excludes capture without telemetry counters or logs" {
+    var s: Stats = .{ .timing = true };
+    s.access();
+    s.miss();
+    s.capture();
+    s.kept(true, 128);
+    s.hit();
+    s.eagerRun();
+    s.note("test", 128, 3, true);
+    try std.testing.expect(!s.timingClean());
+    try std.testing.expectEqualDeep(Stats{ .timing = true, .clean = false }, s);
+    s.begin();
+    try std.testing.expect(s.timingClean());
+    s.fail();
+    try std.testing.expect(!s.timingClean());
 }

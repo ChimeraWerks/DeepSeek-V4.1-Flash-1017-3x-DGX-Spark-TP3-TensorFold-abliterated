@@ -26,6 +26,7 @@ const markov_tokens = @import("markov_tokens.zig");
 const draft2d = @import("draft2d.zig");
 const ops_mod = @import("ops.zig");
 const keyed_draft = @import("keyed_draft.zig");
+const draft_head = @import("draft_head.zig");
 const graph_vote = @import("graph_vote.zig");
 
 const Engine = prompt.Engine;
@@ -111,12 +112,13 @@ const NoiseTap = struct {
     e: *const Engine,
     dr: *const Drafter,
     n: usize,
+    block: usize,
 
     fn run(ctx: *anyopaque, step: usize) anyerror!void {
         const x: *NoiseTap = @ptrCast(@alignCast(ctx));
         const mk = x.dr.mk;
         const lw = mk.rowCols();
-        try x.e.ops.keyedNoise(x.e.s, x.dr.local + 4 * step * lw, x.dr.n * lw, lw, mk.col0(), x.dr.nz, step, x.n);
+        try x.e.ops.keyedNoise(x.e.s, x.dr.local + 4 * step * lw, x.block * lw, lw, mk.col0(), x.dr.nz, step, x.n);
     }
 };
 
@@ -126,13 +128,14 @@ const FilterTap = struct {
     dr: *const Drafter,
     n: usize,
     ts: usize,
+    block: usize,
 
     fn run(ctx: *anyopaque, step: usize) anyerror!void {
         const x: *FilterTap = @ptrCast(@alignCast(ctx));
         const dr = x.dr;
         const mk = dr.mk;
         const lw = mk.rowCols();
-        try x.e.ops.keyedFilter(x.e.s, dr.local + 4 * step * lw, dr.n * lw, lw, mk.col0(), dr.nz, step, x.n,
+        try x.e.ops.keyedFilter(x.e.s, dr.local + 4 * step * lw, x.block * lw, lw, mk.col0(), dr.nz, step, x.n,
             dr.out + 8 * step, x.ts, mk.slot, mk.cache, mk.cols, dr.msc.stage, mk.cols);
     }
 };
@@ -168,8 +171,9 @@ pub const PassGraphs = struct {
         streams: u32,
         steps: u32,
         keyed: bool = false,
+        compact_head: bool = false,
         fn voteKey(key: @This()) graph_vote.Key {
-            return .{ .a = key.streams, .b = key.steps, .c = @intFromBool(key.keyed) };
+            return .{ .a = key.streams, .b = key.steps, .c = @as(u64, @intFromBool(key.keyed)) | (@as(u64, @intFromBool(key.compact_head)) << 1) };
         }
     };
 
@@ -208,7 +212,7 @@ pub const PassGraphs = struct {
     }
 
     fn run(g: *PassGraphs, dr: *Drafter, e: *const Engine, ch: *const Chunk, pool: *const Pool, N: usize, steps: usize, keyed: bool) !void {
-        const key: Key = .{ .streams = @intCast(N), .steps = @intCast(steps), .keyed = keyed };
+        const key: Key = .{ .streams = @intCast(N), .steps = @intCast(steps), .keyed = keyed, .compact_head = draft_head.compact(dr.compact_head, dr.n, steps, false) };
         g.telemetry.access();
         defer g.telemetry.note("draft", g.lru.count(), g.lru.evicted, false);
         errdefer g.telemetry.fail();
@@ -342,6 +346,7 @@ pub const Drafter = struct {
     ds: weights.DSpark,
     n: usize, // a stream's block rows: [token, noise x (n - 1)]
     noise: i64,
+    compact_head: bool = false,
     topk: usize,
     slots_moe: usize, // the MoE's slots a row: top-k routed and the shared expert
     taps_w: usize, // the taps' row width: taps * D
@@ -435,6 +440,7 @@ pub const Drafter = struct {
         var dr: Drafter = undefined;
         dr.ds = ds;
         dr.n = c.dspark_block;
+        dr.compact_head = draft_head.enabled();
         dr.noise = c.dspark_noise;
         dr.topk = c.draft_top_k;
         dr.slots_moe = c.draft_top_k + 1;
@@ -718,17 +724,26 @@ pub const Drafter = struct {
         const S = dr.ds.blocks.len;
         try Probe.check(probe, .stages_h, S, h);
         try Probe.check(probe, .stages_pre, S, pre);
-        // the head on every row (this rank's columns: the Markov loop scores them without a gather)
+        // This rank's head columns: Markov reads only the first steps rows of each block.
         try tri_basic.collapse(t, h, pre, dr.xc, R, d);
         try tri_basic.rmsnorm(t, dr.xc, d, dr.ds.norm, dr.xn, d, c.eps, R, d);
-        try prompt.grouped(e, ch, R, &.{e.w.head}, &.{dr.xn}, &.{d}, &.{dr.local}, &.{e.w.head.n}, &.{.f32});
+        const compact = draft_head.compact(dr.compact_head, n, steps, probe != null);
+        const block = if (compact) steps else n;
+        const head_rows = N * block;
+        var head_in = dr.xn;
+        if (compact and N > 1) {
+            // Confidence staging is dead until after Markov. Keep the stage rows intact.
+            try e.ops.copyRows(e.s, dr.xn, n * d * 2, dr.xcf, steps * d * 2, steps * d * 2, N);
+            head_in = dr.xcf;
+        }
+        try prompt.grouped(e, ch, head_rows, &.{e.w.head}, &.{head_in}, &.{d}, &.{dr.local}, &.{e.w.head.n}, &.{.f32});
         // Padded tokens must never win the Markov draft, including when every
         // valid logit is negative. Zero padded weights alone are insufficient.
         if (c.logical_vocab != 0) {
             const width: usize = e.w.head.n;
             const start = @as(usize, e.comm.rank) * width;
             const valid = @min(width, c.tokenVocab() -| start);
-            if (valid < width) for (0..R) |r| {
+            if (valid < width) for (0..head_rows) |r| {
                 try e.d.check(e.d.api.cuMemsetD32Async(dr.local + (r * width + valid) * 4,
                     0xff800000, width - valid, e.s.handle), "TP3 draft vocab mask");
             };
@@ -737,12 +752,12 @@ pub const Drafter = struct {
         // the Markov loop: out [N, steps + 1], each stream's last token first
         const ts = steps + 1;
         var g: MarkovGather = .{ .e = e, .dst = dr.mg };
-        var nt: NoiseTap = .{ .e = e, .dr = dr, .n = N };
-        var ft: FilterTap = .{ .e = e, .dr = dr, .n = N, .ts = ts };
+        var nt: NoiseTap = .{ .e = e, .dr = dr, .n = N, .block = block };
+        var ft: FilterTap = .{ .e = e, .dr = dr, .n = N, .ts = ts, .block = block };
         const filtered = noisy and dr.mk.lg_w == 0 and dr.mk.segs == 1 and e.ops.keyed_select != null and e.ops.keyed_apply != null;
         const pre_tap: ?tri_markov.Tap = if (noisy and !filtered) .{ .ctx = &nt, .run = NoiseTap.run } else null;
         const mid: ?tri_markov.Tap = if (filtered) .{ .ctx = &ft, .run = FilterTap.run } else null;
-        try dr.mk.stepsWith(t, dr.local, dr.out, ts, N, n, steps, dr.msc, .{ .ctx = &g, .run = MarkovGather.run }, pre_tap, mid);
+        try dr.mk.stepsWith(t, dr.local, dr.out, ts, N, block, steps, dr.msc, .{ .ctx = &g, .run = MarkovGather.run }, pre_tap, mid);
         try Probe.check(probe, .markov, S, dr.out);
         // the confidence head: [xc (fp32), the embedding rows the steps read (fp32)] @ conf^T, a stream's first steps rows
         const rank = c.markov_rank;
@@ -931,4 +946,19 @@ test "keyed draft graph keys separate captures and cross-rank votes" {
     try std.testing.expectEqual(@as(u8, 7), map.get(off).?);
     try std.testing.expectEqual(@as(u64, 0), off.voteKey().c);
     try std.testing.expectEqual(@as(u64, 1), on.voteKey().c);
+}
+
+test "draft head graph keys separate compact, keyed and legacy captures" {
+    const Legacy = struct { streams: u32, steps: u32, keyed: bool = false };
+    try std.testing.expectEqual(@sizeOf(Legacy), @sizeOf(PassGraphs.Key));
+    var map: std.AutoHashMapUnmanaged(PassGraphs.Key, u8) = .empty;
+    defer map.deinit(std.testing.allocator);
+    for ([_]bool{ false, true }) |keyed| for ([_]bool{ false, true }) |compact| {
+        const key: PassGraphs.Key = .{ .streams = 4, .steps = 3, .keyed = keyed, .compact_head = compact };
+        const bits: u8 = @as(u8, @intFromBool(keyed)) | (@as(u8, @intFromBool(compact)) << 1);
+        try std.testing.expect(map.get(key) == null);
+        try map.put(std.testing.allocator, key, bits);
+        try std.testing.expectEqual(@as(u64, bits), key.voteKey().c);
+    };
+    try std.testing.expectEqual(@as(usize, 4), map.count());
 }

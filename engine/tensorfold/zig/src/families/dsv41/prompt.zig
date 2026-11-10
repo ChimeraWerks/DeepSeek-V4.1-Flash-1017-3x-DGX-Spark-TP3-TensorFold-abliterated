@@ -1599,6 +1599,32 @@ pub const EngramHost = struct {
     p_gate: u64 = 0,
     p_calls: u64 = 0,
 
+    /// Decode-only storage. Tables and Hasher's const map are immutable; the pool
+    /// and all output arrays are private. No prompt read-ahead arrays are borrowed.
+    pub fn initRound(a: std.mem.Allocator, source: *const EngramHost, pool: *engram_io.Pool, cap: usize) !EngramHost {
+        var row_w: usize = 0;
+        var row_s: usize = 0;
+        var it = source.tables.layers.valueIterator();
+        while (it.next()) |t| {
+            row_w = @max(row_w, t.row_w);
+            row_s = @max(row_s, t.row_s);
+        }
+        const k = source.hi - source.lo;
+        return .{
+            .hasher = source.hasher,
+            .tables = source.tables,
+            .pool = pool,
+            .lo = source.lo,
+            .hi = source.hi,
+            .hashes = try a.alloc(i64, cap * source.hasher.layers * source.hasher.cols()),
+            .flat = try a.alloc(i64, cap * k),
+            .w = try a.alloc(u8, cap * k * row_w),
+            .s = try a.alloc(u8, cap * k * row_s),
+            .rows = try a.alloc(u16, cap * k * row_w),
+            .aio = source.aio, // the existing decode ring, never the prompt's paio
+        };
+    }
+
     pub fn init(gpa: std.mem.Allocator, c: *const Config, hasher: engram.Hasher, tables: *const engram_io.Tables, pool: *engram_io.Pool, rank: usize, world: usize, cap: usize) !EngramHost {
         const cols = hasher.cols();
         const lo = rank * cols / world;
@@ -1972,4 +1998,92 @@ test "prefill128 owned gather slots cover 4K uneven QR and index rows" {
     }
     try std.testing.expectEqual(@as(usize, 4128), optionalGatherRows(4096, 3, true));
     try std.testing.expectEqual(@as(usize, 4096), optionalGatherRows(4096, 2, true));
+}
+
+test "prefill slice nojoin threaded hash reader and row ownership stress" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var bytes: [4096]u8 = @splat(0);
+    for (0..7) |r| {
+        @memset(bytes[r * 32 ..][0..32], @intCast(0x30 + r));
+        bytes[224 + r] = 127;
+    }
+    try tmp.dir.writeFile(io, .{ .sub_path = "rows", .data = &bytes });
+    const path = try std.fs.path.joinZ(a, &.{ ".zig-cache", "tmp", &tmp.sub_path, "rows" });
+    defer a.free(path);
+    const fd = std.c.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true });
+    if (fd < 0) return error.FileNotFound;
+    defer _ = std.c.close(fd);
+    var tables: engram_io.Tables = .{ .gpa = a };
+    defer tables.layers.deinit(a);
+    const t: engram_io.Table = .{ .fd_w = fd, .fd_s = fd, .base_w = 0, .base_s = 224, .row_w = 32, .row_s = 1, .rows = 7 };
+    try tables.layers.put(a, 1, t);
+    try tables.layers.put(a, 14, t);
+    var c: Config = undefined;
+    c.engram_layers = .{ .items = .{ 1, 14, 0, 0, 0, 0, 0, 0 }, .len = 2 };
+    const map = [_]i32{ 0, 1, 2, 3, 4, 5, 6 };
+    const hasher: engram.Hasher = .{ .layers = 2, .ngram = 2, .heads = 1, .primes = @splat(@splat(7)), .offsets = @splat(@splat(0)), .mult = @splat(@splat(3)), .map = &map, .pad = 0 };
+    const pp = try engram_io.Pool.init(a, io, 4);
+    defer pp.deinit(a);
+    const dp = try engram_io.Pool.init(a, io, 4);
+    defer dp.deinit(a);
+    var prefill_host = try EngramHost.init(arena.allocator(), &c, hasher, &tables, pp, 0, 1, 8192);
+    var dec = try EngramHost.initRound(arena.allocator(), &prefill_host, dp, 96);
+    try std.testing.expect(prefill_host.hashes.ptr != dec.hashes.ptr and prefill_host.pool != dec.pool);
+    try std.testing.expect(prefill_host.flat.ptr != dec.flat.ptr and prefill_host.rows.ptr != dec.rows.ptr);
+    try std.testing.expect(prefill_host.w.ptr != dec.w.ptr and prefill_host.s.ptr != dec.s.ptr);
+    try std.testing.expect(dec.ahead_rows[0].len == 0 and dec.paio == null);
+    var ids: [8192]i32 = undefined;
+    for (&ids, 0..) |*v, i| v.* = @intCast(i % 7);
+    var want: [8192 * 2]i64 = undefined;
+    hasher.hashes(&ids, 0, ids.len, &want);
+    const dseq = [_]i32{ 6, 5, 4, 3, 2, 1, 0 };
+    for ([_]bool{ false, true }) |aio_on| {
+        const paio = if (aio_on) try engram_aio.Aio.init(a, io, 4096) else null;
+        defer if (paio) |x| x.deinit();
+        const daio = if (aio_on) try engram_aio.Aio.init(a, io, 128) else null;
+        defer if (daio) |x| x.deinit();
+        prefill_host.paio = paio;
+        dec.aio = daio;
+        // Real read-ahead worker, real hasher, two actual pools and the same immutable fd.
+        // Repeated rounds race in time, never in storage, with both current and future reads.
+        for (0..16) |_| {
+            prefill_host.ahead_ready = .{ false, false };
+            prefill_host.ahead_err = null;
+            const worker = try std.Thread.spawn(.{}, engramReadAheadAll, .{ &prefill_host, &c, &ids, @as(usize, 0), ids.len });
+            defer worker.join();
+            for (0..32) |_| {
+                dec.hasher.hashes(&dseq, 0, dseq.len, dec.hashes[0 .. dseq.len * 2]);
+                for (0..2) |j| {
+                    for (0..dseq.len) |r| dec.flat[j * 48 + r] = dec.hashes[r * 2 + j];
+                    const at = j * 48;
+                    if (dec.aio) |aio| {
+                        const batch = try aio.start(t, dec.flat[at..][0..dseq.len], dec.w[at * 32 ..][0 .. dseq.len * 32], dec.s[at..][0..dseq.len]);
+                        try aio.wait(batch);
+                    } else try dec.pool.gather(t, dec.flat[at..][0..dseq.len], dec.w[at * 32 ..][0 .. dseq.len * 32], dec.s[at..][0..dseq.len]);
+                    for (0..dseq.len) |r| {
+                        const row = at + r;
+                        engram.decodeRow(dec.w[row * 32 ..][0..32], dec.s[row..][0..1], dec.rows[row * 32 ..][0..32]);
+                        const id: usize = @intCast(dec.flat[row]);
+                        try std.testing.expectEqualSlices(u8, bytes[id * 32 ..][0..32], dec.w[row * 32 ..][0..32]);
+                        var expected: [32]u16 = undefined;
+                        engram.decodeRow(bytes[id * 32 ..][0..32], bytes[224 + id ..][0..1], &expected);
+                        try std.testing.expectEqualSlices(u16, &expected, dec.rows[row * 32 ..][0..32]);
+                    }
+                }
+            }
+        }
+        try std.testing.expect(prefill_host.ahead_err == null and prefill_host.ahead_ready[0] and prefill_host.ahead_ready[1]);
+        try std.testing.expectEqualSlices(i64, &want, prefill_host.hashes);
+        for (0..2) |j| for (0..ids.len) |r| {
+            const id: usize = @intCast(want[r * 2 + j]);
+            var expected: [32]u16 = undefined;
+            engram.decodeRow(bytes[id * 32 ..][0..32], bytes[224 + id ..][0..1], &expected);
+            try std.testing.expectEqualSlices(u16, &expected, prefill_host.ahead_rows[j][r * 32 ..][0..32]);
+        };
+    }
 }

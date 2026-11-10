@@ -36,6 +36,7 @@ const move_budget = @import("kv_move_budget.zig");
 const idle_relocation = @import("idle_relocation.zig");
 const idle_protocol = @import("idle_protocol.zig");
 const cache_batch = @import("cache_batch.zig");
+const round_timing = @import("round_timing.zig");
 
 const be = lanes.backend;
 const Model = model.Model;
@@ -113,6 +114,46 @@ test "outer follower decoder accepts fill_resume 13 and rejects reserved kinds" 
     for ([_]u8{ 0, 14, 255 }) |raw| try std.testing.expectError(error.BadFrame, decodeOuterKind(raw));
     for ([_]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12 }) |raw| try std.testing.expectEqual(raw, @intFromEnum(try decodeOuterKind(raw)));
 }
+
+test "outer follower decoder covers every enum byte and open chunk policy" {
+    for (0..256) |raw| {
+        const byte: u8 = @intCast(raw);
+        if (std.enums.fromInt(Kind, byte)) |kind| {
+            try std.testing.expectEqual(kind, try decodeOuterKind(byte));
+            const allowed = switch (kind) {
+                .verify, .pass, .pass_keyed, .fill_slice => true,
+                .fill_begin, .fill_chunk, .snap_save, .snap_restore, .snap_drop,
+                .fill_images, .done, .rank_wire, .idle_move, .fill_resume,
+                .graph_vote_agree, .rdma_idle, .snap_drop_many => false,
+            };
+            try std.testing.expectEqual(allowed, openChunkAllows(kind));
+            var wire: Wire = .{};
+            defer wire.deinit(std.testing.allocator);
+            try wire.begin(std.testing.allocator, kind, 123);
+            var reader: Reader = .{ .b = wire.buf.items };
+            try std.testing.expectEqual(kind, try decodeOuterKind(try reader.int(u8)));
+            try std.testing.expectEqual(@as(u64, 123), try reader.int(u64));
+        } else try std.testing.expectError(error.BadFrame, decodeOuterKind(byte));
+    }
+}
+
+test "outer follower decoder audit reproduces an unsent frame step gap" {
+    var backing: [512]u8 = undefined;
+    var allocator: std.heap.FixedBufferAllocator = .init(&backing);
+    var m: Model = undefined;
+    var ln: Lanes = .{ .gpa = allocator.allocator(), .m = &m, .peer = .{ .fd = -1 } };
+    defer ln.wire.deinit(ln.gpa);
+    try std.testing.expect(try ln.begin(.verify));
+    const unsent = ln.step - 1;
+    // No flush or device access occurs. The remainder of this request's frame cannot allocate.
+    try std.testing.expectError(error.OutOfMemory, ln.wire.buf.appendNTimes(ln.gpa, 0, 1024));
+    try std.testing.expect(try ln.begin(.done));
+    var reader: Reader = .{ .b = ln.wire.buf.items };
+    _ = try reader.int(u8);
+    try std.testing.expectEqual(unsent + 1, try reader.int(u64));
+    // The real follower still expects `unsent` and returns OutOfStep.
+}
+
 
 comptime {
     std.debug.assert(@backingInt(Kind.rank_wire) == @import("rank_wire.zig").lanes_kind);
@@ -615,6 +656,7 @@ pub const Lanes = struct {
     masked: []f32 = &.{}, // reused full-logit rows for grammar masks
     penalty_workers: ?*penalty_pool.Pool = null,
     penalty_disabled: bool = false,
+    clean_round_timing: bool = false,
     prefill_yield: bool = false, // TF_DS_PREFILL_YIELD=1; otherwise the whole prompt remains one host call
 
     spill: ?*SpillTier = null, // --spill-dir/--spill-gib: the spill tier (native.zig opens it; null: off, nothing changes)
@@ -638,6 +680,9 @@ pub const Lanes = struct {
         for (&ln.wc, 0..) |*c, i| c.* = .{ .width = @intCast(i + 1), .ms = t[@min(i, t.len - 1)] };
         for (&ln.sc, 0..) |*c, i| c.* = .{ .width = @intCast(i + 1), .ms = t[@min(i, t.len - 1)] };
         if (!@import("builtin").is_test) {
+            ln.clean_round_timing = round_timing.enabled();
+            if (m.graphs) |*g| g.telemetry.timing = ln.clean_round_timing;
+            if (m.pgraphs) |*g| g.telemetry.timing = ln.clean_round_timing;
             ln.rdma_park = idle_protocol.enabled(getenv("TF_DS_RDMA_PARK"));
             if (std.c.getenv("TF_DS_PREFILL_YIELD")) |v| ln.prefill_yield = std.mem.eql(u8, std.mem.span(v), "1");
             if (std.c.getenv("TF_KV_PRESSURE_PLANNER")) |v| ln.pressure_planner = v[0] == '1';
@@ -760,7 +805,9 @@ pub const Lanes = struct {
     }
 
     fn beginTimingFn(ptr: *anyopaque) void {
-        const m = of(ptr).m;
+        const self = of(ptr);
+        const m = self.m;
+        if (self.clean_round_timing) round_timing.begin(true, m) catch |err| m.pairFault(err);
         if (m.graphs) |*g| g.telemetry.begin();
         if (m.pgraphs) |*g| g.telemetry.begin();
     }
@@ -1387,7 +1434,7 @@ pub const Lanes = struct {
             }
             lo = hi;
             if (b.wanted(b.ptr)) {
-                m.joinAhead(); // shared Engram hashes and reader pool, not just row arrays
+                m.joinParkAhead(); // opt-in parks leave prompt hash/reader custody alone
                 if (b.timed) try m.stream.synchronize();
                 try b.run(b.ptr);
             }
@@ -2959,7 +3006,7 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
         if (!m.rs.live and move_state.pending == null and kind != .idle_move and kind != .fill_slice) if (spill) |sd| sd.service(std.time.ns_per_ms); // relocation does not service unrelated work
         // a chunk's read-ahead of the next is done before anything but that chunk (a prompt's ids may change)
         if (kind != .fill_chunk and kind != .fill_slice and kind != .snap_save and kind != .snap_restore and kind != .fill_images and kind != .rank_wire) {
-            if (kind != .idle_move) m.joinAhead();
+            if (kind != .idle_move) m.joinParkAhead();
             if (!m.rs.live) m.fill_seq = &.{};
         }
         switch (kind) {
@@ -4602,4 +4649,38 @@ test "prefill slice off and unsupported scheduler paths keep whole chunk protoco
     try std.testing.expect(!useLayerSlices(false, 5, false, true));
     try std.testing.expect(!useLayerSlices(true, 5, true, true));
     try std.testing.expect(!useLayerSlices(true, 5, false, false));
+}
+
+test "round timing actual backend hook fences only when opted in" {
+    const Fake = struct {
+        var syncs: usize = 0;
+        fn sync(_: cuda.abi.Stream) callconv(.c) cuda.abi.Result {
+            syncs += 1;
+            return cuda.abi.success;
+        }
+    };
+    Fake.syncs = 0;
+    var driver: cuda.Driver = undefined;
+    driver.api.cuStreamSynchronize = Fake.sync;
+    const health = cuda.context_health;
+    const context: cuda.abi.Context = @ptrFromInt(0x7dd85401);
+    try health.retain(@intFromPtr(&driver), context);
+    defer health.release(@intFromPtr(&driver), context);
+    health.setCurrent(@intFromPtr(&driver), context);
+    defer health.clearCurrent(@intFromPtr(&driver), context);
+    var owner = health.Owner.capture();
+    defer owner.release();
+    var m: Model = undefined;
+    m.graphs = null;
+    m.pgraphs = null;
+    var ln: Lanes = .{ .gpa = std.testing.allocator, .m = &m, .peer = null };
+    // Off cannot touch the deliberately undefined stream or read-ahead fields.
+    ln.backend().beginTiming();
+    try std.testing.expectEqual(@as(usize, 0), Fake.syncs);
+    m.ahead = null;
+    m.rs.ahead = null;
+    m.stream = .{ .d = &driver, .owner = owner, .handle = null };
+    ln.clean_round_timing = true;
+    ln.backend().beginTiming();
+    try std.testing.expectEqual(@as(usize, 1), Fake.syncs);
 }

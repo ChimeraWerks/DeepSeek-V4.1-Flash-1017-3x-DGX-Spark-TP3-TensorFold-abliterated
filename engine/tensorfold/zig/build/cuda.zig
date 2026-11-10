@@ -245,6 +245,7 @@ pub fn hostTests(b: *std.Build, draft_ids: *std.Build.Module, step: *std.Build.S
     const mods = family(b, host, .debug, cuda, draft_ids);
     const eng = engines(b, host, .debug, cuda, mods.lanes, mods.nemotron, mods.core);
     b.step("test-kv-loopback", "Loopback fixture connection and worker lifetimes").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{ "loopback fixture", "over a loopback link:" } })).step);
+    b.step("test-round-timing", "Opt-in round fences and graph timing without logging, CPU only").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{ "round timing", "graph telemetry" } })).step);
     const draft_cal_tests = b.step("test-draft-calibration", "Draft survival, first depth, allocator and TP3 settings host regressions");
     draft_cal_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = mods.lanes })).step);
     draft_cal_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{"draft settings"} })).step);
@@ -390,6 +391,7 @@ pub fn hostTests(b: *std.Build, draft_ids: *std.Build.Module, step: *std.Build.S
     const graph_telemetry_tests = b.step("test-graph-telemetry", "Graph telemetry, TP3 cache/votes and capture-clean learning, CPU only");
     graph_telemetry_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{ "graph telemetry", "graph", "vote", "three ranks" } })).step);
     graph_telemetry_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = mods.lanes, .filters = &.{ "graph telemetry" } })).step);
+    b.step("test-draft-head", "Compact draft head layouts, reads and TP3 graph agreement, CPU only").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{ "draft head" } })).step);
     b.step("test-keyed-draft", "Keyed draft sampler, TP3 frame, graph keys and launch regressions, CPU only").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{ "keyed", "Markov", "pre hook", "logits row", "prefix sampling", "candidate windows", "outer follower decoder", "rank zero drafter", "graph cache" } })).step);
     b.step("test-drafter-pairfault", "Rank-zero drafter pair-ending faults and follower-watch decisions, CPU only").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{ "rank zero drafter qualification faults", "follower watch" } })).step);
     const cache_batch_tests = b.step("test-cache-batch", "Bounded dead release, first continuation, TP3 receipts and key compatibility, CPU only");
