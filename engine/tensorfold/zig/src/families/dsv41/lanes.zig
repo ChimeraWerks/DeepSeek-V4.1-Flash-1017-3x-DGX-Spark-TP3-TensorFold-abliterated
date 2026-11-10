@@ -93,8 +93,8 @@ fn decodeOuterKind(raw: u8) !Kind {
         };
 }
 
-/// What a follower takes while a sliced prompt chunk is open: the next slice, and the one decode round that runs
-/// between slices (its verify and its draft pass, plain or keyed). Any other outer operation would run inside the chunk.
+/// What a follower takes while a sliced prompt chunk is open: the next slice, and decode rounds that run
+/// between slices (each round's verify and draft pass, plain or keyed). Any other outer operation would run inside the chunk.
 fn openChunkAllows(kind: Kind) bool {
     return switch (kind) {
         .fill_slice, .verify, .pass, .pass_keyed => true,

@@ -45,6 +45,8 @@ pub const Fake = struct {
     prefill_slices: usize = 0,
     slice_hook: ?*const fn (*anyopaque, *Stream) void = null,
     slice_ctx: ?*anyopaque = null,
+    round_hook: ?*const fn (*anyopaque) void = null,
+    round_ctx: ?*anyopaque = null,
     mark_grid: u32 = 0, // stepped backend may keep marks at their grid floor
     prefill_count: usize = 0,
     prefill_hook: ?*const fn (ctx: *anyopaque, s: *Stream, chunk: usize) void = null,
@@ -257,6 +259,7 @@ pub const Fake = struct {
         if (self(ptr).capture_timing == .verify) self(ptr).timing_dirty = true;
         const x = self(ptr);
         x.rounds += 1;
+        if (x.round_hook) |hook| hook(x.round_ctx.?);
         for (windows, out) |w, o| {
             if (w.stream.prefill_only) x.warm_verify += 1;
             const l = x.lane(w.stream);

@@ -3,13 +3,21 @@ const std = @import("std");
 pub const Share = struct {
     p: f64 = 1,
     debt_ns: i64 = 0,
+    park_max_ns: i64 = 250 * std.time.ns_per_ms,
     pub const short_rows = 512;
     pub fn fromEnv() Share {
-        return fromText(std.mem.span(std.c.getenv("TENSORFOLD_PREFILL_SHARE") orelse return .{}));
+        var s = if (std.c.getenv("TENSORFOLD_PREFILL_SHARE")) |v| fromText(std.mem.span(v)) else Share{};
+        if (std.c.getenv("TF_DS_PARK_MAX_MS")) |v| s.park_max_ns = parkMaxFromText(std.mem.span(v));
+        return s;
     }
     pub fn fromText(text: []const u8) Share {
         const p = std.fmt.parseFloat(f64, text) catch return .{};
         return .{ .p = if (p >= 0.01 and p <= 1) p else 1 };
+    }
+    pub fn parkMaxFromText(text: []const u8) i64 {
+        const ms = std.fmt.parseInt(u64, text, 10) catch return 250 * std.time.ns_per_ms;
+        const bounded: u64 = @min(ms, std.math.maxInt(i64) / std.time.ns_per_ms);
+        return @intCast(bounded * std.time.ns_per_ms);
     }
     pub fn stepped(s: *Share, ns: i64, decoding: bool) void {
         if (s.p >= 1 or !decoding) return;
@@ -67,4 +75,26 @@ test "prefill slice decode occupancy pays debt instead of counting as fill" {
     s = .{};
     s.sliced(1000, 200, true);
     try std.testing.expectEqual(@as(i64, 0), s.debt_ns);
+}
+
+test "prefill slice park cap configuration" {
+    try std.testing.expectEqual(@as(i64, 250_000_000), (Share{}).park_max_ns);
+    try std.testing.expectEqual(@as(i64, 0), Share.parkMaxFromText("0"));
+    try std.testing.expectEqual(@as(i64, 123_000_000), Share.parkMaxFromText("123"));
+    for ([_][]const u8{ "", "-1", "1.5", "x", "18446744073709551616" }) |v|
+        try std.testing.expectEqual(@as(i64, 250_000_000), Share.parkMaxFromText(v));
+    try std.testing.expectEqual(@as(i64, 9_223_372_036_854_000_000), Share.parkMaxFromText("18446744073709551615"));
+}
+
+test "prefill slice local park budgets do not double charge the chunk" {
+    var s: Share = .{ .p = 0.5 };
+    var park: Share = .{ .p = s.p };
+    park.stepped(100, true);
+    park.rounded(40);
+    try std.testing.expectEqual(@as(i64, 60), park.debt_ns);
+    park.rounded(80);
+    try std.testing.expectEqual(@as(i64, 0), park.debt_ns);
+    try std.testing.expectEqual(@as(i64, 0), s.debt_ns);
+    s.sliced(420, 120, true); // 300 fill, 120 paid, including the unsliced tail
+    try std.testing.expectEqual(@as(i64, 180), s.debt_ns);
 }
