@@ -4,6 +4,19 @@ DeepSeek V4.1 Flash 1017 abliterated EXL3 3.84 bpw runs across three NVIDIA DGX 
 
 v1.2 uses engine base `30a9647` with exactly two non-runtime edits in `zig/src/server/metrics.zig`. A documentation comment and a test name describe external metrics samplers generically. Serving logic is unchanged by them. Rebuild comparison results: `release/build-verification.json`.
 
+## 2026-11-09 keyed drafts for top_k requests
+
+Built on branch `engine/keyed-draft-topk` and measured on the three Sparks; not in production.
+
+- Keyed drafts reached only requests that sample without `top_k`, `top_p` or `min_p`, so API-default requests (`top_k` 20) still drafted greedily against a sampled target. Every sampled request now gets keyed draft noise, and a request with `top_k` has it mirrored in the draft: each rank keeps at least its `top_k` best columns of the draft logits plus the Markov bias before the noise is added, so a tail token the target cannot pick is never proposed. A `top_k` of 1,024 or more is not mirrored.
+- Target sampling and acceptance are unchanged, so a reply still depends only on its seed, never on the draft. Grammar-constrained requests still draft greedily. `top_p` and `min_p` are not mirrored.
+- `TF_DS_KEYED_FILTER` on rank 0 selects the rule (`2` mirror, the default; `1` noise without the mirror; `0` the previous rule). The draft pass frame carries each stream's `top_k`, and the rank protocol version is 3, checked at startup with CUDA graphs on or off, so old and new ranks refuse to start together.
+- Two new kernels live in the opt-in `dsv41_keyed` image: `tf_ds_keyed_select_kernel` finds each row's cut in one pass (the `top_k`-th largest of 1,024 strided maxima) and `tf_ds_keyed_apply_kernel` masks below it and adds the noise across the whole grid. The row grew from 24 to 32 bytes: a `KEYED_DRAFT=true` build needs that fatbin rebuilt.
+- `tf-dsv41-lanes` requests take `min_p`.
+- A first Spark run on 2026-11-09 with a one-kernel version confirmed the mechanism at one request with `top_k` 20: 2.16 to 2.46 tokens a round, 65.3 to 68.9 tok/s, replies identical. That kernel did its noise and a 32-pass search on one block per row, about 2.9 ms a round, and slowed `top_k` 0 requests by about 10%; the two kernels above replace it.
+- Measured on the three Sparks with the two-kernel build, one binary with the previous rule and the new one, thinking on at temperature 1.0: `top_k` 20 decode went from 66.1 to 71.4 tok/s at one request (+8%) and from 115 to 126 tok/s combined at four (+9%), and the `focused` profile (`top_p` 0.95, `min_p` 0.05) from 64.5 to 68.9 tok/s (+7%). Tokens a round rose from 2.15 to 2.42. `top_k` 0 speed did not change (67.5 and 67.1 tok/s). One-request replies were identical in both arms.
+- Checked on the host: the kernels matched a CPU reference on an RTX 5090 (31,557,392 checks: masked sets exact, the true `top_k` always kept, noise within 2e-6, `top_k` 0 bit-equal to the old kernel), where one call costs 94 µs against 1,004 µs before; the keyed-draft, structured-output, graph-vote and drafter-fault test steps pass.
+
 ## 2026-11-09 measured round costs
 
 In production since 2026-11-09, with the owner's approval, in the bundled restart: `TF_DS_ROUND_MS` set on every rank to a round-cost table measured on this cluster, in place of the served `ROUND_MS`.

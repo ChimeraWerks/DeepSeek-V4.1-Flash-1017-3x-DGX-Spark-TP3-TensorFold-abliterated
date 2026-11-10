@@ -37,6 +37,25 @@ const pool_mod = @import("pool.zig");
 const shard = @import("shard.zig");
 const shard_ops = @import("shard_ops.zig");
 
+/// keyed pass framing must agree even when CUDA graphs are off.
+fn graphAgreementWord(graphs: bool) u64 {
+    return (@as(u64, graph_vote.version) << 8) | @as(u64, @intFromBool(graphs));
+}
+
+test "keyed pass startup version rejects old ranks with graphs on or off" {
+    for ([_]bool{ false, true }) |graphs| {
+        const word = graphAgreementWord(graphs);
+        try std.testing.expectEqual(@as(u64, graph_vote.version), word >> 8);
+        try std.testing.expectEqual(@as(u64, @intFromBool(graphs)), word & 0xff);
+        for ([_]bool{ false, true }) |old_graphs| {
+            const old: u64 = if (old_graphs) 1 | (@as(u64, 2) << 8) else 0;
+            // agree compares the entire word on every rank, not just its graph bit.
+            try std.testing.expect(word != old);
+        }
+    }
+    try std.testing.expect(graphAgreementWord(false) != graphAgreementWord(true));
+}
+
 /// Host scheduling policy is runtime-only: never change the durable spill namespace.
 fn roomWaitAgreement(leader: u64, follower: u64) !void {
     if (leader != follower) return error.RestoreRoomSettingMismatch;
@@ -648,8 +667,8 @@ pub const Model = struct {
             if (want_pool) |x| x else |_| 0,
             if (want_window) |x| x orelse 0 else |_| bad_setting,
             o.round_rows,
-            // CUDA graphs and their vote's protocol: a rank voting while another runs eagerly would hang or fail closed
-            if (o.graphs) 1 | (@as(u64, graph_vote.version) << 8) else 0,
+            // graph mode and wire version: keyed pass frames also need agreement when graphs are off.
+            graphAgreementWord(o.graphs),
             if (o.graphs) @intCast(o.graph_cap) else 0, // rank 0 and every follower must use one LRU cap
             // the prompt's collectives pair up only when every rank runs the same kind
             @import("cache_batch.zig").Flags.fromEnv().agreement(@as(u64, @intFromBool(prompt.owned_on)) | @as(u64, @intFromBool(directGather())) << 1 | (m.prefill.bits() << 2) |

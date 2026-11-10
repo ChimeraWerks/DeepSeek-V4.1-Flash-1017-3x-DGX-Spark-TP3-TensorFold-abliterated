@@ -102,8 +102,8 @@ pub const Probe = struct {
 pub const Item = struct { slot: usize, taps: u64, n: usize, start: usize };
 
 /// The served sampler's keys of a pass's streams (TF_DS_KEYED_DRAFT): each stream's seed and temperature (<= 0:
-/// greedy, no noise). Draft j of a stream is keyed at q0 + 1 + j, the key the verify's sampler uses for that row.
-pub const Keyed = struct { seeds: []const u64, temps: []const f64 };
+/// greedy, no noise), and draft top_k (0: unrestricted). Draft j is keyed at q0 + 1 + j, as in verification.
+pub const Keyed = struct { seeds: []const u64, temps: []const f64, top_ks: []const u32 };
 
 /// The Markov loop's pre-step hook: step i's logits block row of every stream plus T * gumbel (each step reads its own
 /// block row of `local`, so no noise reaches another step).
@@ -117,6 +117,23 @@ const NoiseTap = struct {
         const mk = x.dr.mk;
         const lw = mk.rowCols();
         try x.e.ops.keyedNoise(x.e.s, x.dr.local + 4 * step * lw, x.dr.n * lw, lw, mk.col0(), x.dr.nz, step, x.n);
+    }
+};
+
+/// the post-bias hook: filter the draft's logits plus Markov bias before adding keyed noise.
+const FilterTap = struct {
+    e: *const Engine,
+    dr: *const Drafter,
+    n: usize,
+    ts: usize,
+
+    fn run(ctx: *anyopaque, step: usize) anyerror!void {
+        const x: *FilterTap = @ptrCast(@alignCast(ctx));
+        const dr = x.dr;
+        const mk = dr.mk;
+        const lw = mk.rowCols();
+        try x.e.ops.keyedFilter(x.e.s, dr.local + 4 * step * lw, dr.n * lw, lw, mk.col0(), dr.nz, step, x.n,
+            dr.out + 8 * step, x.ts, mk.slot, mk.cache, mk.cols, dr.msc.stage, mk.cols);
     }
 };
 
@@ -378,7 +395,7 @@ pub const Drafter = struct {
     msc: tri_markov.Scratch,
     mg: u64, // fp32 [world, max_streams, 4]: a step's gathered bests
     out: u64, // int64 [max_streams, n + 1]: each stream's last token, then its drafts
-    nz: u64 = 0, // ops.KeyedRow [max_streams] (TF_DS_KEYED_DRAFT; 0: off): each stream's seed, temperature and first draft position
+    nz: u64 = 0, // ops.KeyedRow [max_streams] (TF_DS_KEYED_DRAFT; 0: off): each stream's seed, temperature, first draft position and top_k
     // the confidence head
     embs: u64, // bf16 [max_rows, rank]: the Markov embedding rows of the tokens each step read
     xcf: u64, // fp32 [max_rows, D]
@@ -638,10 +655,10 @@ pub const Drafter = struct {
         // the noise runs only in a pass with a sampled stream: all-greedy passes (and the flag off) launch what they did
         var noisy = false;
         if (keyed) |k| {
-            if (k.seeds.len != N or k.temps.len != N) return error.BadDraftPass;
+            if (k.seeds.len != N or k.temps.len != N or k.top_ks.len != N) return error.BadDraftPass;
             var tab: [max_streams]ops_mod.KeyedRow = undefined;
             for (0..N) |i| {
-                tab[i] = .{ .seed = k.seeds[i], .temp = k.temps[i], .pos = try keyed_draft.firstPosition(q0[i]) };
+                tab[i] = .{ .seed = k.seeds[i], .temp = k.temps[i], .pos = try keyed_draft.firstPosition(q0[i]), .top_k = k.top_ks[i] };
                 if (k.temps[i] > 0.0) noisy = true;
             }
             if (noisy) {
@@ -721,8 +738,11 @@ pub const Drafter = struct {
         const ts = steps + 1;
         var g: MarkovGather = .{ .e = e, .dst = dr.mg };
         var nt: NoiseTap = .{ .e = e, .dr = dr, .n = N };
-        const noise: ?tri_markov.Tap = if (noisy) .{ .ctx = &nt, .run = NoiseTap.run } else null;
-        try dr.mk.stepsWith(t, dr.local, dr.out, ts, N, n, steps, dr.msc, .{ .ctx = &g, .run = MarkovGather.run }, noise);
+        var ft: FilterTap = .{ .e = e, .dr = dr, .n = N, .ts = ts };
+        const filtered = noisy and dr.mk.lg_w == 0 and dr.mk.segs == 1 and e.ops.keyed_select != null and e.ops.keyed_apply != null;
+        const pre_tap: ?tri_markov.Tap = if (noisy and !filtered) .{ .ctx = &nt, .run = NoiseTap.run } else null;
+        const mid: ?tri_markov.Tap = if (filtered) .{ .ctx = &ft, .run = FilterTap.run } else null;
+        try dr.mk.stepsWith(t, dr.local, dr.out, ts, N, n, steps, dr.msc, .{ .ctx = &g, .run = MarkovGather.run }, pre_tap, mid);
         try Probe.check(probe, .markov, S, dr.out);
         // the confidence head: [xc (fp32), the embedding rows the steps read (fp32)] @ conf^T, a stream's first steps rows
         const rank = c.markov_rank;

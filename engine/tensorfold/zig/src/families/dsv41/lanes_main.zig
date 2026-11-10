@@ -46,6 +46,7 @@ const Request = struct {
     temperature: f64 = 0,
     top_k: u32 = 20,
     top_p: f64 = 0.95,
+    min_p: f64 = 0,
     expect_sha: ?[]const u8 = null,
     serial: bool = false, // run this request without drafts, alone
     alone: bool = false, // single-stream admission while keeping drafts enabled
@@ -411,7 +412,7 @@ pub fn main(init: std.process.Init) !u8 {
                 .images = images,
                 .max_new = r.max_tokens,
                 .eos = &eos,
-                .sampling = if (r.temperature > 0) .{ .seed = r.seed orelse 0, .temperature = r.temperature, .top_k = r.top_k, .top_p = r.top_p } else null,
+                .sampling = if (r.temperature > 0) .{ .seed = r.seed orelse 0, .temperature = r.temperature, .top_k = r.top_k, .top_p = r.top_p, .min_p = r.min_p } else null,
                 .drafts = !serial and !r.serial,
                 .proposer = j.proposer.proposer(),
                 .reuse = reuse,

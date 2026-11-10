@@ -1706,10 +1706,12 @@ pub const Lanes = struct {
         var depths: [max_streams]usize = undefined;
         var seeds: [max_streams]u64 = @splat(0);
         var temps: [max_streams]f64 = @splat(0);
+        var top_ks: [max_streams]u32 = @splat(0);
         var sampled = false;
         var asked: [max_streams]*Lane = undefined;
         var n: usize = 0;
         var steps: usize = 0;
+        const mode = keyed_draft.filterMode();
         for (requests) |r| {
             if (r.lanes != null or r.early) return error.TreesNotBuilt;
             const l = self.streams.getPtr(r.stream) orelse return error.UnknownStream;
@@ -1721,9 +1723,10 @@ pub const Lanes = struct {
             tokens[n] = token;
             q0[n] = @intCast(r.position - 1);
             slots[n] = @intCast(l.slot);
-            if (r.stream.sampling) |sm| if (r.stream.grammar == null and keyed_draft.eligible(sm, m.vocab)) {
+            if (r.stream.sampling) |sm| if (r.stream.grammar == null and keyed_draft.eligible(sm, m.vocab, mode)) {
                 seeds[n] = sm.seed;
                 temps[n] = sm.temperature;
+                top_ks[n] = keyed_draft.draftTopK(sm, m.vocab, mode);
                 sampled = true;
             };
             depths[n] = @min(r.depth, block);
@@ -1733,7 +1736,7 @@ pub const Lanes = struct {
         }
         if (n == 0) return;
         const keyed = sampled and m.dr.?.nz != 0;
-        const keys: ?@import("draft.zig").Keyed = if (keyed) .{ .seeds = seeds[0..n], .temps = temps[0..n] } else null;
+        const keys: ?@import("draft.zig").Keyed = if (keyed) .{ .seeds = seeds[0..n], .temps = temps[0..n], .top_ks = top_ks[0..n] } else null;
         if (try self.begin(if (keyed) .pass_keyed else .pass)) {
             try writePass(&self.wire, gpa, tokens[0..n], q0[0..n], slots[0..n], steps, keys);
             try self.flush(); // the same frame goes to BOTH TP3 followers
@@ -3075,7 +3078,7 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
                 const keyed = kind == .pass_keyed;
                 const frame = try readPass(&r, keyed, m.dr != null and m.dr.?.nz != 0);
                 m.pass(frame.tokens[0..frame.n], frame.q0[0..frame.n], frame.slots[0..frame.n], frame.steps,
-                    if (keyed) .{ .seeds = frame.seeds[0..frame.n], .temps = frame.temps[0..frame.n] } else null) catch |err| try roundRefused(err);
+                    if (keyed) .{ .seeds = frame.seeds[0..frame.n], .temps = frame.temps[0..frame.n], .top_ks = frame.top_ks[0..frame.n] } else null) catch |err| try roundRefused(err);
             },
             .fill_images => {
                 const count = try r.int(u32);
@@ -4294,6 +4297,7 @@ fn writePass(w: *Wire, gpa: std.mem.Allocator, tokens: []const i64, q0: []const 
         if (keyed) |k| {
             try w.int(gpa, u64, k.seeds[i]);
             try w.int(gpa, u64, @bitCast(k.temps[i]));
+            try w.int(gpa, u32, k.top_ks[i]);
         }
     }
 }
@@ -4306,6 +4310,7 @@ const PassFrame = struct {
     slots: [max_streams]i64 = undefined,
     seeds: [max_streams]u64 = undefined,
     temps: [max_streams]f64 = undefined,
+    top_ks: [max_streams]u32 = undefined,
 };
 
 fn readPass(r: *Reader, keyed: bool, enabled: bool) !PassFrame {
@@ -4319,6 +4324,8 @@ fn readPass(r: *Reader, keyed: bool, enabled: bool) !PassFrame {
         if (keyed) {
             f.seeds[i] = try r.int(u64);
             f.temps[i] = @bitCast(try r.int(u64));
+            f.top_ks[i] = try r.int(u32);
+            if (f.top_ks[i] > keyed_draft.max_top_k) return error.BadFrame;
             if (!std.math.isFinite(f.temps[i]) or f.temps[i] < 0) return error.BadFrame;
             _ = try keyed_draft.firstPosition(f.q0[i]);
         }
@@ -4350,9 +4357,10 @@ test "keyed draft frame round trip through both TP3 follower links and off bytes
     const slots = [_]i64{ 0, 7 };
     const seeds = [_]u64{ 0xffffffffffffffff, 4242 };
     const temps = [_]f64{ 0.7, 0 };
+    const top_ks = [_]u32{ 20, 1023 };
     for ([_]bool{ false, true }) |keyed| {
         try ln.wire.begin(a, if (keyed) .pass_keyed else .pass, 31);
-        try writePass(&ln.wire, a, &tokens, &q0, &slots, 5, if (keyed) .{ .seeds = &seeds, .temps = &temps } else null);
+        try writePass(&ln.wire, a, &tokens, &q0, &slots, 5, if (keyed) .{ .seeds = &seeds, .temps = &temps, .top_ks = &top_ks } else null);
         if (!keyed) {
             var legacy: Wire = .{};
             defer legacy.deinit(a);
@@ -4388,9 +4396,22 @@ test "keyed draft frame round trip through both TP3 follower links and off bytes
             if (keyed) {
                 try std.testing.expectEqualSlices(u64, &seeds, f.seeds[0..f.n]);
                 try std.testing.expectEqualSlices(f64, &temps, f.temps[0..f.n]);
+                try std.testing.expectEqualSlices(u32, &top_ks, f.top_ks[0..f.n]);
             }
             try std.testing.expectEqual(r.b.len, r.at);
         }
+    }
+    // both follower links reject a top_k the kernel cannot mirror.
+    const too_large = [_]u32{ 20, 1024 };
+    try ln.wire.begin(a, .pass_keyed, 32);
+    try writePass(&ln.wire, a, &tokens, &q0, &slots, 5, .{ .seeds = &seeds, .temps = &temps, .top_ks = &too_large });
+    try ln.flush();
+    for (&peers) |*peer| {
+        var buf: [512]u8 = undefined;
+        var r: Reader = .{ .b = try peer.recv(&buf) };
+        try std.testing.expectEqual(Kind.pass_keyed, try decodeOuterKind(try r.int(u8)));
+        try std.testing.expectEqual(@as(u64, 32), try r.int(u64));
+        try std.testing.expectError(error.BadFrame, readPass(&r, true, true));
     }
 }
 
