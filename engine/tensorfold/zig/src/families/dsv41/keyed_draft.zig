@@ -3,7 +3,8 @@ const std = @import("std");
 const lanes = @import("lanes");
 pub const env = "TF_DS_KEYED_DRAFT";
 pub const filter_env = "TF_DS_KEYED_FILTER";
-pub const max_top_k: u32 = 1024;
+/// the widest draft top_k the select kernel mirrors: below its 1024 threads.
+pub const max_top_k: u32 = 1023;
 
 pub const Filter = enum(u8) {
     /// filtered samplers draft greedily, as before.
@@ -57,10 +58,10 @@ pub fn eligible(s: lanes.Sampling, vocab: usize, mode: Filter) bool {
         std.math.isFinite(s.min_p) and s.min_p <= 0;
 }
 
-/// mirror a bounded top_k in the draft; zero leaves noise unrestricted.
+/// mirror a bounded top_k in the draft; zero leaves noise unrestricted, also for a top_k too wide to mirror.
 pub fn draftTopK(s: lanes.Sampling, vocab: usize, mode: Filter) u32 {
-    if (mode != .mirror or s.top_k == 0 or s.top_k >= vocab) return 0;
-    return @min(s.top_k, max_top_k);
+    if (mode != .mirror or s.top_k == 0 or s.top_k >= vocab or s.top_k > max_top_k) return 0;
+    return s.top_k;
 }
 
 pub fn firstPosition(q0: i64) !i64 {
@@ -121,9 +122,9 @@ test "keyed draft eligibility preserves greedy and allows open and mirror filter
 
 test "keyed draft top_k mirrors only a bounded active filter" {
     for ([_]Filter{ .greedy, .open, .mirror }) |mode| {
-        for ([_]u32{ 0, 1, 20, max_top_k, max_top_k + 1, 129280, 129281 }) |k| {
+        for ([_]u32{ 0, 1, 20, 1023, 1024, 1025, 129280, 129281 }) |k| {
             const s: lanes.Sampling = .{ .seed = 91, .top_k = k };
-            const want: u32 = if (mode == .mirror and k > 0 and k < 129280) @min(k, max_top_k) else 0;
+            const want: u32 = if (mode == .mirror and k > 0 and k < 1024) k else 0;
             try std.testing.expectEqual(want, draftTopK(s, 129280, mode));
         }
     }

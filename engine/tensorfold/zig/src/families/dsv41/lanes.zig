@@ -4357,7 +4357,7 @@ test "keyed draft frame round trip through both TP3 follower links and off bytes
     const slots = [_]i64{ 0, 7 };
     const seeds = [_]u64{ 0xffffffffffffffff, 4242 };
     const temps = [_]f64{ 0.7, 0 };
-    const top_ks = [_]u32{ 20, keyed_draft.max_top_k };
+    const top_ks = [_]u32{ 20, 1023 };
     for ([_]bool{ false, true }) |keyed| {
         try ln.wire.begin(a, if (keyed) .pass_keyed else .pass, 31);
         try writePass(&ln.wire, a, &tokens, &q0, &slots, 5, if (keyed) .{ .seeds = &seeds, .temps = &temps, .top_ks = &top_ks } else null);
@@ -4401,8 +4401,8 @@ test "keyed draft frame round trip through both TP3 follower links and off bytes
             try std.testing.expectEqual(r.b.len, r.at);
         }
     }
-    // both follower links reject a top_k above the kernel's bound.
-    const too_large = [_]u32{ 20, keyed_draft.max_top_k + 1 };
+    // both follower links reject a top_k the kernel cannot mirror.
+    const too_large = [_]u32{ 20, 1024 };
     try ln.wire.begin(a, .pass_keyed, 32);
     try writePass(&ln.wire, a, &tokens, &q0, &slots, 5, .{ .seeds = &seeds, .temps = &temps, .top_ks = &too_large });
     try ln.flush();

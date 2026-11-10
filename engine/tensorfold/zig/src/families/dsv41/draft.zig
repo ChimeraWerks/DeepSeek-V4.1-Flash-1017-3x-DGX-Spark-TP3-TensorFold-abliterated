@@ -739,7 +739,7 @@ pub const Drafter = struct {
         var g: MarkovGather = .{ .e = e, .dst = dr.mg };
         var nt: NoiseTap = .{ .e = e, .dr = dr, .n = N };
         var ft: FilterTap = .{ .e = e, .dr = dr, .n = N, .ts = ts };
-        const filtered = noisy and dr.mk.lg_w == 0 and dr.mk.segs == 1 and e.ops.keyed_filter != null;
+        const filtered = noisy and dr.mk.lg_w == 0 and dr.mk.segs == 1 and e.ops.keyed_select != null and e.ops.keyed_apply != null;
         const pre_tap: ?tri_markov.Tap = if (noisy and !filtered) .{ .ctx = &nt, .run = NoiseTap.run } else null;
         const mid: ?tri_markov.Tap = if (filtered) .{ .ctx = &ft, .run = FilterTap.run } else null;
         try dr.mk.stepsWith(t, dr.local, dr.out, ts, N, n, steps, dr.msc, .{ .ctx = &g, .run = MarkovGather.run }, pre_tap, mid);

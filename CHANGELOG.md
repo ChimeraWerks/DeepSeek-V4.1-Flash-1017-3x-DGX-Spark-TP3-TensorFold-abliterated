@@ -8,12 +8,13 @@ v1.2 uses engine base `30a9647` with exactly two non-runtime edits in `zig/src/s
 
 Built and host-tested on branch `engine/keyed-draft-topk`; not in production and not yet measured on the Sparks.
 
-- Keyed drafts reached only requests that sample without `top_k`, `top_p` or `min_p`, so API-default requests (`top_k` 20) still drafted greedily against a sampled target. Every sampled request now gets keyed draft noise, and a request with `top_k` has it mirrored in the draft: each rank keeps its `top_k` best columns of the draft logits plus the Markov bias before the noise is added, so a tail token the target cannot pick is never proposed.
+- Keyed drafts reached only requests that sample without `top_k`, `top_p` or `min_p`, so API-default requests (`top_k` 20) still drafted greedily against a sampled target. Every sampled request now gets keyed draft noise, and a request with `top_k` has it mirrored in the draft: each rank keeps at least its `top_k` best columns of the draft logits plus the Markov bias before the noise is added, so a tail token the target cannot pick is never proposed. A `top_k` of 1,024 or more is not mirrored.
 - Target sampling and acceptance are unchanged, so a reply still depends only on its seed, never on the draft. Grammar-constrained requests still draft greedily. `top_p` and `min_p` are not mirrored.
 - `TF_DS_KEYED_FILTER` on rank 0 selects the rule (`2` mirror, the default; `1` noise without the mirror; `0` the previous rule). The draft pass frame carries each stream's `top_k`, and the rank protocol version is 3, checked at startup with CUDA graphs on or off, so old and new ranks refuse to start together.
-- The new kernel `tf_ds_keyed_filter_kernel` lives in the opt-in `dsv41_keyed` image, and its row grew from 24 to 32 bytes: a `KEYED_DRAFT=true` build needs that fatbin rebuilt.
+- Two new kernels live in the opt-in `dsv41_keyed` image: `tf_ds_keyed_select_kernel` finds each row's cut in one pass (the `top_k`-th largest of 1,024 strided maxima) and `tf_ds_keyed_apply_kernel` masks below it and adds the noise across the whole grid. The row grew from 24 to 32 bytes: a `KEYED_DRAFT=true` build needs that fatbin rebuilt.
 - `tf-dsv41-lanes` requests take `min_p`.
-- Checked on the host: the kernel matched a CPU reference on an RTX 5090 (19,178,030 checks: masked sets exact, noise within 2e-6, `top_k` 0 bit-equal to the old kernel), 34 keyed-draft tests and the structured-output, graph-vote and drafter-fault steps pass, and the aarch64 `native` and `dsv41-tools` build succeeds.
+- A first Spark run on 2026-11-09 with a one-kernel version confirmed the mechanism at one request with `top_k` 20: 2.16 to 2.46 tokens a round, 65.3 to 68.9 tok/s, replies identical. That kernel did its noise and a 32-pass search on one block per row, about 2.9 ms a round, and slowed `top_k` 0 requests by about 10%; the two kernels above replace it and have not run on the Sparks yet.
+- Checked on the host: the kernels matched a CPU reference on an RTX 5090 (31,557,392 checks: masked sets exact, the true `top_k` always kept, noise within 2e-6, `top_k` 0 bit-equal to the old kernel), where one call costs 94 µs against 1,004 µs before; the keyed-draft, structured-output, graph-vote and drafter-fault test steps pass.
 
 ## 2026-11-09 measured round costs
 
