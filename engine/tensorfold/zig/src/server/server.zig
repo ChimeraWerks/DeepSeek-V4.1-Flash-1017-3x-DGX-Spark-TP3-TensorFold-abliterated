@@ -492,8 +492,11 @@ test "penalties resolution keeps greedy settings and neutral null" {
     try std.testing.expect(result.penalties.active());
     try std.testing.expect(result.penalties.include_prompt);
     try std.testing.expectEqual(@as(u32,3),result.penalties.window);
+    // repetition_penalty alone covers the whole reply; an explicit zero window with it still refuses
     const missing_window = (try json.parse(cx.a,"{\"repetition_penalty\":2}")).ok;
-    try std.testing.expectError(error.Refused,srv.resolveSampling(&cx,missing_window,0,&.{1}));
+    try std.testing.expectEqual(@as(u32,std.math.maxInt(u32)),(try srv.resolveSampling(&cx,missing_window,0,&.{1})).?.penalties.window);
+    const zero_window = (try json.parse(cx.a,"{\"repetition_penalty\":2,\"repetition_penalty_window\":0}")).ok;
+    try std.testing.expectError(error.Refused,srv.resolveSampling(&cx,zero_window,0,&.{1}));
     // on: out-of-range and malformed values refuse, as the patch did
     for ([_][]const u8{ "{\"presence_penalty\":3}", "{\"frequency_penalty\":\"abc\"}", "{\"repetition_penalty\":0,\"repetition_penalty_window\":4}" }) |body|
         try std.testing.expectError(error.Refused,srv.resolveSampling(&cx,(try json.parse(cx.a,body)).ok,0,&.{1}));

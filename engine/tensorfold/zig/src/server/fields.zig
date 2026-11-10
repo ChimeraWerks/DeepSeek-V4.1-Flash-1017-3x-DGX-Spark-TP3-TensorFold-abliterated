@@ -105,6 +105,9 @@ pub fn penalties(cx: *Cx, options: Value, on: bool) errors.Refused!Penalties {
         const count = n.int64() orelse return cx.refuse("repetition_penalty_window is out of range");
         if (count < 0 or count > std.math.maxInt(u32)) return cx.refuse("repetition_penalty_window must be between 0 and 4294967295");
         out.window = @intCast(count);
+    } else if (out.repetition != 1) {
+        // clients send repetition_penalty alone: it then covers the whole reply
+        out.window = std.math.maxInt(u32);
     }
     if (options.field("penalty_include_prompt")) |v| {
         if (v != .bool) return cx.refuse("penalty_include_prompt must be a boolean or null");
@@ -402,6 +405,11 @@ test "penalties request fields validate numbers and prompt boolean" {
     try std.testing.expectEqual(@as(f64,-2),got.presence);
     try std.testing.expectEqual(@as(u32,5),got.window);
     try std.testing.expect(got.include_prompt);
+    // repetition_penalty alone covers the whole reply; a null window is absent; a neutral value sets no window
+    for ([_][]const u8{ "{\"repetition_penalty\":1.1}", "{\"repetition_penalty\":1.1,\"repetition_penalty_window\":null}" }) |body|
+        try std.testing.expectEqual(@as(u32,std.math.maxInt(u32)),(try penalties(&cx,try parseNumbers(&cx,(try json.parse(cx.a,body)).ok),true)).window);
+    try std.testing.expectEqual(@as(u32,0),(try penalties(&cx,try parseNumbers(&cx,(try json.parse(cx.a,"{\"repetition_penalty\":1}")).ok),true)).window);
+    try std.testing.expectEqual(@as(u32,0),(try penalties(&cx,try parseNumbers(&cx,(try json.parse(cx.a,"{\"repetition_penalty\":1.1,\"repetition_penalty_window\":0}")).ok),true)).window);
 }
 
 test "penalties off keeps the legacy fields raw and ignored, refuses window and prompt inclusion" {
