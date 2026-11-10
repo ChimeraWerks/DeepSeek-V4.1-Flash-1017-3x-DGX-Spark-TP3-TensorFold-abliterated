@@ -151,6 +151,8 @@ pub const Snaps = struct {
     compatible: *const fn (*anyopaque, *anyopaque, usize) bool,
     dead_reason: *const fn (*anyopaque, *anyopaque) u8,
     exact_end: bool = true,
+    ladder_gap: u32 = 0,
+    keep_slack: u32 = 0,
     /// Whether a kept state still restores (Lanes.usable): given with the spill tier only.
     usable: ?*const fn (*anyopaque, *anyopaque, u32) bool = null,
     short_eligible: *const fn (*anyopaque, *anyopaque, u32) bool,
@@ -304,6 +306,10 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, ctx: *const cuda.Context, dir: [
         .continuation_hint = L.snapContinuationHintFn, .adaptive_hint = L.snapAdaptiveHintFn,
         .drop_many = L.snapDropManyFn, .first_hint = L.snapFirstHintFn,
         .ghost_range = L.snapGhostRangeFn };
+    if (st.lanes.cancel_checkpoints) {
+        snaps.ladder_gap = 65536;
+        snaps.keep_slack = @intCast(st.m.cfg.window + st.m.compute_rows);
+    }
     const window: ?usize = if (st.m.kvs != null or st.m.pool_cap != o.context) st.m.window_cap else null;
     var tier: ?spill_tier.prompt_cache.Tier = null;
     snaps.usable = L.usableFn;

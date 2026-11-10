@@ -544,6 +544,10 @@ fn openWith(comptime F: type, a: Allocator, gpa: Allocator, io: std.Io, o: api.O
             if (@hasField(@TypeOf(sn), "hold")) h.snap_vt.hold = sn.hold;
             if (@hasField(@TypeOf(sn), "ghost_range")) h.snap_vt.ghost_range = sn.ghost_range;
             h.cache = api.prompt_cache.Store.init(gpa, .{ .ptr = sn.ptr, .vtable = &h.snap_vt }, .{ .exact_end = if (@hasField(@TypeOf(sn), "exact_end")) sn.exact_end else false }, want);
+            if (@hasField(@TypeOf(sn), "ladder_gap")) if (sn.ladder_gap > 0) {
+                h.cache.?.rules.ladder_gap = sn.ladder_gap;
+                h.cache.?.rules.keep_slack = sn.keep_slack;
+            };
             // Native physical eligibility is required even without a disk tier.
             if (@hasField(@TypeOf(sn), "usable")) h.snap_vt.usable = sn.usable;
             if (@hasField(@TypeOf(sn), "short_eligible")) h.snap_vt.short_eligible = sn.short_eligible;

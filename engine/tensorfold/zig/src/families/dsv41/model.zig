@@ -56,6 +56,26 @@ test "keyed pass startup version rejects old ranks with graphs on or off" {
     try std.testing.expect(graphAgreementWord(false) != graphAgreementWord(true));
 }
 
+
+fn cacheGrowthBit(on: bool) u64 { return @as(u64, @intFromBool(on)) << 40; }
+fn cacheGrowthAgreement(leader: u64, follower: u64) !void {
+    if ((leader ^ follower) & cacheGrowthBit(true) != 0) return error.CacheGrowthSettingMismatch;
+}
+test "pool pressure cache growth startup agrees all TP3 ranks and preserves off" {
+    for ([_]bool{ false, true }) |graphs| {
+        const base = graphAgreementWord(graphs);
+        try std.testing.expectEqual(base, base | cacheGrowthBit(false));
+        for (0..3) |rank| {
+            var words: [3]u64 = @splat(base);
+            words[rank] |= cacheGrowthBit(true);
+            var mismatch = false;
+            for (words[1..]) |w| cacheGrowthAgreement(words[0], w) catch { mismatch = true; };
+            try std.testing.expect(mismatch);
+        }
+        try cacheGrowthAgreement(base | cacheGrowthBit(true), base | cacheGrowthBit(true));
+    }
+}
+
 /// Host scheduling policy is runtime-only: never change the durable spill namespace.
 fn roomWaitAgreement(leader: u64, follower: u64) !void {
     if (leader != follower) return error.RestoreRoomSettingMismatch;
@@ -674,12 +694,12 @@ pub const Model = struct {
             if (want_window) |x| x orelse 0 else |_| bad_setting,
             o.round_rows,
             // graph mode and wire version: keyed pass frames also need agreement when graphs are off.
-            graphAgreementWord(o.graphs),
+            graphAgreementWord(o.graphs) | cacheGrowthBit(prefill128.enabled("TF_KV_CACHE_GROW")),
             if (o.graphs) @intCast(o.graph_cap) else 0, // rank 0 and every follower must use one LRU cap
             // the prompt's collectives pair up only when every rank runs the same kind
             @import("cache_batch.zig").Flags.fromEnv().agreement(@as(u64, @intFromBool(prompt.owned_on)) | @as(u64, @intFromBool(directGather())) << 1 | (m.prefill.bits() << 2) |
                 (if (@import("graph_telemetry.zig").enabled()) @import("graph_telemetry.zig").agreement_bit else 0) | keyed_draft.settingBit(keyed_draft.enabled()) | greedy_head.agreement(m.decode_greedy_head) | (if (m.decode_sample_head) greedy_head.sample_agreement_bit else @as(u64, 0)) |
-                parkAgreement(m.park_nojoin) | @import("draft_head.zig").settingBit(@import("draft_head.zig").enabled()) | (@as(u64, @intFromBool(prompt.bf16_wire_on)) << 52) | (@as(u64, @intFromBool(prompt.owned_router_on)) << 53) | @import("round_timing.zig").agreement(@import("round_timing.zig").enabled())),
+                parkAgreement(m.park_nojoin) | @import("draft_head.zig").settingBit(@import("draft_head.zig").enabled()) | (@as(u64, @intFromBool(prompt.bf16_wire_on)) << 52) | (@as(u64, @intFromBool(prompt.owned_router_on)) << 53) | @import("round_timing.zig").agreement(@import("round_timing.zig").enabled()) | checkpointAgreementBit(prefill128.enabled("TF_DS_PREFILL_CHECKPOINTS"))),
             draft_words[0], draft_words[1],
             @import("engine_api").Spill.roomWaitMs(if (std.c.getenv("TF_SPILL_ROOM_WAIT_MS")) |v| std.mem.span(v) else null),
         };
@@ -698,6 +718,7 @@ pub const Model = struct {
         _ = try want_window;
         var firsts: [4][4]u64 = undefined;
         for (all[0..o.world], firsts[0..o.world]) |r, *f| {
+            try cacheGrowthAgreement(all[0][4], r[4]);
             if (r[0] == bad_setting or r[1] == 0 or r[2] == bad_setting) return error.KvShardMismatch;
             if (r[0] != all[0][0] or r[1] != all[0][1] or r[3] != all[0][3]) return error.KvShardMismatch;
             if (r[4] != all[0][4] or r[5] != all[0][5]) return error.GraphSettingMismatch;
@@ -705,6 +726,7 @@ pub const Model = struct {
             try @import("round_timing.zig").check(all[0][6], r[6]);
             try greedy_head.agree(r[6], all[0][6]);
             try keyed_draft.checkAgreement(r[6], all[0][6]);
+            try checkpointAgreement(all[0][6], r[6]);
             try prefillAgreement(all[0][6], r[6]);
             try draft_config.check(all[0][7..9].*, r[7..9].*);
             try roomWaitAgreement(all[0][9], r[9]);
@@ -2100,4 +2122,20 @@ test "prefill slice nojoin off and empty Engram never allocate a decode host" {
     m.eh = null;
     try std.testing.expect(try m.roundEngram() == null);
     try std.testing.expect(m.park_eh == null and m.park_pool == null);
+}
+
+fn checkpointAgreementBit(on: bool) u64 { return @as(u64, @intFromBool(on)) << 56; } // 54 draft head, 55 round timing
+fn checkpointAgreement(leader: u64, follower: u64) !void {
+    if ((leader ^ follower) & checkpointAgreementBit(true) != 0) return error.PrefillCheckpointSettingMismatch;
+}
+test "prefill slice checkpoints agree all three ranks and preserve off words" {
+    const base = @as(u64, 3) << 52 | (prefill128.Flags{ .ac = true, .rows = 8192, .slice_layers = 5 }).bits() << 2;
+    try std.testing.expectEqual(base, base | checkpointAgreementBit(false));
+    for (0..3) |rank| {
+        var words: [3]u64 = @splat(base);
+        words[rank] |= checkpointAgreementBit(true);
+        var mismatch = false;
+        for (words[1..]) |w| checkpointAgreement(words[0], w) catch { mismatch = true; };
+        try std.testing.expect(mismatch);
+    }
 }

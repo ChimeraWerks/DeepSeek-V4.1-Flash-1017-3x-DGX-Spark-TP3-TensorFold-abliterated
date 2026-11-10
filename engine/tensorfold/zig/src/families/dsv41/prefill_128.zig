@@ -322,3 +322,19 @@ test "prefill slice flags default off and preserve neighboring actual agreement 
     }
     try std.testing.expectEqual(@as(u64, 0), (Flags{}).bits());
 }
+
+test "prefill128 cancellation rungs close 8K chunks before saving" {
+    const marks = [_]u32{ 65536, 131072, 196608 };
+    for ([_]usize{ 0, 2048, 63488, 65536 }) |from| {
+        var at = from;
+        var seen: usize = 0;
+        while (at < 200000) {
+            const n = nextRows(200000, at, 199872, 8192, &marks);
+            try std.testing.expect(n > 0 and n <= 8192);
+            for (marks) |mark| try std.testing.expect(!(at < mark and at + n > mark));
+            at += n;
+            for (marks) |mark| if (at == mark) { seen += 1; };
+        }
+        try std.testing.expectEqual(@as(usize, if (from < 65536) 3 else 2), seen);
+    }
+}

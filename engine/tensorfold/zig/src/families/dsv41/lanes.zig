@@ -649,6 +649,7 @@ pub const Lanes = struct {
     pressure_planner: bool = false,
     short_reuse: bool = false,
     continuation_donors: bool = false,
+    cache_grow: bool = false, // TF_KV_CACHE_GROW: rank-zero replicated placement only
     adaptive_prefix: bool = false,
     first_continuation: bool = false,
     relocate_max_bytes: usize = 0,
@@ -658,6 +659,7 @@ pub const Lanes = struct {
     penalty_disabled: bool = false,
     clean_round_timing: bool = false,
     prefill_yield: bool = false, // TF_DS_PREFILL_YIELD=1; otherwise the whole prompt remains one host call
+    cancel_checkpoints: bool = false,
 
     spill: ?*SpillTier = null, // --spill-dir/--spill-gib: the spill tier (native.zig opens it; null: off, nothing changes)
     kv: ?*kv_lanes.Kv = null, // TF_DS_KV_SHARD: the parts' planner (startKv, at open; null: the switch off)
@@ -688,12 +690,14 @@ pub const Lanes = struct {
             if (std.c.getenv("TF_KV_PRESSURE_PLANNER")) |v| ln.pressure_planner = v[0] == '1';
         if (std.c.getenv("TF_KV_SHORT_REUSE")) |v| ln.short_reuse = std.mem.eql(u8, std.mem.span(v), "1");
         if (std.c.getenv("TF_KV_CONTINUATION_DONOR")) |v| ln.continuation_donors = std.mem.eql(u8, std.mem.span(v), "1");
+        if (std.c.getenv("TF_KV_CACHE_GROW")) |v| ln.cache_grow = std.mem.eql(u8, std.mem.span(v), "1");
         if (std.c.getenv("TF_CACHE_ADAPTIVE_PREFIX")) |v| ln.adaptive_prefix = std.mem.eql(u8, std.mem.span(v), "1");
         ln.first_continuation = cache_batch.Flags.fromEnv().first_continuation;
             if (std.c.getenv("TF_KV_RELOCATE_MAX_BYTES")) |v| {
                 const n = std.fmt.parseInt(usize, std.mem.sliceTo(v, 0), 10) catch 0;
                 ln.relocate_max_bytes = @min(n, pressure.hard_copy_bytes);
             }
+            ln.cancel_checkpoints = model.prefill128.enabled("TF_DS_PREFILL_CHECKPOINTS");
         }
         return ln;
     }
@@ -1273,11 +1277,12 @@ pub const Lanes = struct {
             } else s.reuse_failed = true;
         };
         const base = if (parted) |pp| pp.base else if (kept != null and !moved) kept.?.base else try self.placeKept(taken[0..nt], size, kept);
+        if (self.cache_grow and parted == null) if (kept) |sn| { moved = base != sn.base; };
         if (kept) |sn| {
             sn.wanted = 0;
             if (!moved) sn.end = @max(sn.end, base + size); // its extent now: the next resume in place finds it held
         }
-        if (kept) |sn| if (moved and sn.stale) { // the placement needed the kept rows' room: the prompt runs from 0
+        if (kept) |sn| if ((moved or self.cache_grow) and sn.stale) { // the placement needed the kept rows' room: the prompt runs from 0
             kept = null;
             s.reuse_failed = true;
         };
@@ -2029,6 +2034,14 @@ pub const Lanes = struct {
             }
             if (self.pressure_planner) if (try self.planPressure(live, size, protected)) |base| return base;
             var choice = try pressure.plan(gpa, states.items, live, size, self.m.pool_cap, options);
+            if (choice == null and self.cache_grow) if (protected) |sn| {
+                if (self.canGrowHere(live, size, sn)) {
+                    // Guard pending spill readers before any tail can be overwritten.
+                    self.staleOver(sn.base + sn.at, sn.base + size, sn);
+                    if (self.spill) |t| if (t.broken) |err| return err;
+                    return sn.base;
+                }
+            };
             if (choice == null) {
                 // Only true pressure may sacrifice the requested source. The
                 // caller already handles its invalidation by restarting cold.
@@ -2054,6 +2067,20 @@ pub const Lanes = struct {
             }
             return plan.base;
         }
+    }
+
+    fn canGrowHere(self: *const Lanes, live: []const [2]usize, size: usize, source: *const Snap) bool {
+        if (self.kv != null or source.stale or source.loading or size < source.at or
+            source.base > self.m.pool_cap or size > self.m.pool_cap - source.base) return false;
+        const end = source.base + size;
+        if (clashes(live, source.base, end)) return false;
+        for (self.snaps.items) |sn| {
+            if (sn == source or sn.stale) continue;
+            // Loading restores reserve their whole extent, including an unwritten tail.
+            const stop = if (sn.loading) @max(sn.base + sn.at, sn.end) else sn.base + sn.at;
+            if ((sn.loading or sn.held > 0) and sn.base < end and source.base < stop) return false;
+        }
+        return true;
     }
 
     fn waitIdleCopy(m: *Model, deadline: u64) !void {
@@ -2144,6 +2171,7 @@ pub const Lanes = struct {
     /// The live state at `at` (the pass stands at that chunk end): the slot's own part copied, the extent's rows kept.
     pub fn snapSaveFn(ptr: *anyopaque, owner: ?*anyopaque, at: u32) anyerror!*anyopaque {
         const self = of(ptr);
+        if (self.cancel_checkpoints and self.m.rs.live) return error.OpenPrefillChunk;
         const s: *const lanes.Stream = @ptrCast(@alignCast(owner orelse return error.NoStream));
         const l = self.streams.getPtr(s) orelse return error.UnknownStream;
         const complete = at == s.prompt_len and s.emitted().len == 0;
@@ -3308,6 +3336,56 @@ test "prefix growth relocates instead of overwriting a retained neighbour" {
     try std.testing.expectEqual(@as(usize, 12288 + growth_rows), try l.placeKept(&.{}, 10240, &a));
     try std.testing.expect(!a.stale and !b.stale);
     try std.testing.expect(!l.overwritesKept(12288, 22528, &a));
+}
+
+
+test "pool pressure cache growth keeps a long prefix only when enabled" {
+    for ([_]bool{ false, true }) |enabled| {
+        var m: Model = undefined;
+        m.pool_cap = 524288;
+        var ln: Lanes = .{ .gpa = std.testing.allocator, .m = &m, .peer = null, .cache_grow = enabled, .relocation_enabled = false };
+        defer ln.snaps.deinit(ln.gpa);
+        var source: Snap = .{ .id = 1, .at = 270336, .base = 0, .end = 270336, .buf = undefined, .restored = true };
+        var tail: Snap = .{ .id = 2, .at = 65536, .base = 270336, .end = 370688, .buf = undefined };
+        try ln.snaps.appendSlice(ln.gpa, &.{ &source, &tail });
+        const base = try ln.placeKept(&.{}, 274432, &source);
+        try std.testing.expectEqual(@as(usize, 0), base);
+        try std.testing.expectEqual(!enabled, source.stale);
+        try std.testing.expect(tail.stale);
+    }
+}
+
+test "pool pressure cache growth protects live borrowed loading and pool bounds" {
+    var m: Model = undefined;
+    m.pool_cap = 524288;
+    var ln: Lanes = .{ .gpa = std.testing.allocator, .m = &m, .peer = null, .cache_grow = true, .relocation_enabled = false };
+    defer ln.snaps.deinit(ln.gpa);
+    var source: Snap = .{ .id = 1, .at = 270336, .base = 0, .end = 270336, .buf = undefined };
+    var tail: Snap = .{ .id = 2, .at = 2048, .base = 266240, .end = 370688, .buf = undefined, .loading = true };
+    try ln.snaps.appendSlice(ln.gpa, &.{ &source, &tail });
+    try std.testing.expect(!ln.canGrowHere(&.{}, 274432, &source));
+    tail.loading = false; tail.held = 1;
+    try std.testing.expect(!ln.canGrowHere(&.{}, 274432, &source));
+    tail.held = 0;
+    try std.testing.expect(ln.canGrowHere(&.{}, 274432, &source));
+    try std.testing.expect(!ln.canGrowHere(&.{.{ 270336, 370688 }}, 274432, &source));
+    try std.testing.expect(!ln.canGrowHere(&.{.{ 0, 270336 }}, 274432, &source));
+    source.base = m.pool_cap - source.at;
+    try std.testing.expect(!ln.canGrowHere(&.{}, 274432, &source));
+    source.base = std.math.maxInt(usize);
+    try std.testing.expect(!ln.canGrowHere(&.{}, 274432, &source));
+}
+
+test "pool pressure cache growth prefers a disjoint copy for sibling marks" {
+    var m: Model = undefined;
+    m.pool_cap = 1048576;
+    var ln: Lanes = .{ .gpa = std.testing.allocator, .m = &m, .peer = null, .cache_grow = true, .relocation_enabled = false };
+    defer ln.snaps.deinit(ln.gpa);
+    var source: Snap = .{ .id = 1, .at = 270336, .base = 0, .end = 370688, .buf = undefined };
+    var later: Snap = .{ .id = 2, .at = 368640, .base = 0, .end = 370688, .buf = undefined };
+    try ln.snaps.appendSlice(ln.gpa, &.{ &source, &later });
+    try std.testing.expect(try ln.placeKept(&.{}, 274432, &source) != source.base);
+    try std.testing.expect(!source.stale and !later.stale);
 }
 
 test "placement keeps restore source until genuine pool pressure requires cold fallback" {
@@ -4683,4 +4761,12 @@ test "round timing actual backend hook fences only when opted in" {
     ln.clean_round_timing = true;
     ln.backend().beginTiming();
     try std.testing.expectEqual(@as(usize, 1), Fake.syncs);
+}
+
+test "prefill slice cancellation checkpoint refuses before allocation or frame" {
+    var m: Model = undefined;
+    m.rs = .{ .live = true };
+    var ln: Lanes = .{ .gpa = std.testing.allocator, .m = &m, .peer = null, .cancel_checkpoints = true };
+    try std.testing.expectError(error.OpenPrefillChunk, Lanes.snapSaveFn(&ln, null, 65536));
+    try std.testing.expectEqual(@as(usize, 0), ln.snaps.items.len);
 }
