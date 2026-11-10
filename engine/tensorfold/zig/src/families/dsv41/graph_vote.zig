@@ -92,6 +92,10 @@ pub fn spillOptIn(text: ?[]const u8) bool {
 pub fn agreeSpill(links: []const ?link.Link, frame: []const u8, timeout_ns: u64) !void {
     const deadline = link.Link.monotonicNs() +| timeout_ns;
     for (links) |l| try (l orelse return error.NoLink).sendWithin(frame, deadline);
+    try receiveSpill(links, deadline);
+}
+
+pub fn receiveSpill(links: []const ?link.Link, deadline: u64) !void {
     for (links) |l| {
         var reply: [1]u8 = undefined;
         const bytes = try (l orelse return error.NoLink).recvBy(&reply, deadline);
