@@ -672,3 +672,53 @@ test "token decoder distinguishes a real ID from the same plain bytes" {
     try std.testing.expectEqualStrings("ok", split.answer);
     try std.testing.expectEqual(@as(usize, 1), decoded.spans.items.len);
 }
+
+test "recipe 48 decoded special token stop matches at every token split" {
+    const Fake = struct {
+        fn isOutputControl(_: @This(), id: u32) bool {
+            return id == 1000;
+        }
+        fn decode(_: @This(), a: Allocator, ids: []const u32) Allocator.Error![]u8 {
+            var out: std.ArrayList(u8) = .empty;
+            for (ids) |id| {
+                if (id == 1000) try out.appendSlice(a, "<｜ref｜>") else try out.append(a, @intCast(id));
+            }
+            return out.items;
+        }
+    };
+    const ids = [_]u32{ 'a', 'n', 's', 'w', 'e', 'r', 1000, 't', 'a', 'i', 'l' };
+    for (0..ids.len + 1) |cut| {
+        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var decoded: TokenText = .{};
+        _ = try decoded.extend(a, Fake{}, ids[0..cut], false);
+        _ = try decoded.extend(a, Fake{}, ids[cut..], true);
+        const stop: Stops = .{ .strings = &.{"<｜ref｜>"} };
+        try std.testing.expectEqualStrings("answer", stop.visible(decoded.text.items, false));
+        const crossing: Stops = .{ .strings = &.{"r<｜ref｜>t"} };
+        try std.testing.expectEqualStrings("answe", crossing.visible(decoded.text.items, false));
+    }
+}
+
+test "recipe 29 terminal replacement character survives token decoder finish" {
+    const Fake = struct {
+        fn isOutputControl(_: @This(), _: u32) bool {
+            return false;
+        }
+        fn decode(_: @This(), a: Allocator, ids: []const u32) Allocator.Error![]u8 {
+            var out: std.ArrayList(u8) = .empty;
+            for (ids) |id| try out.appendSlice(a, if (id == 1) "hello" else "\u{fffd}");
+            return out.items;
+        }
+    };
+    for (0..3) |cut| {
+        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena.deinit();
+        const ids = [_]u32{ 1, 2 };
+        var decoded: TokenText = .{};
+        _ = try decoded.extend(arena.allocator(), Fake{}, ids[0..cut], false);
+        _ = try decoded.extend(arena.allocator(), Fake{}, ids[cut..], true);
+        try std.testing.expectEqualStrings("hello\u{fffd}", decoded.text.items);
+    }
+}

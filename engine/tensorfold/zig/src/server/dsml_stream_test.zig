@@ -896,3 +896,44 @@ test "DSML Messages and Responses opt-in preserves long Write arguments byte for
         }
     }
 }
+
+test "recipe issue 61 malformed attribute parameters never stream successful empty arguments" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const answer = comptime b_open ++ bInvoke("Bash", "<｜DSML｜ parameter command=\"ls\" string=\"true\" />\n") ++ b_close;
+    const whole = wholeMessage(&try bytesAsk(a, answer, .{ .stream = false }));
+    try std.testing.expectEqual(@as(usize, 0), whole.calls.len);
+    for ([_][]const usize{ &.{1}, &.{7}, &.{1 << 20} }) |pattern| {
+        for ([_]usize{ answer.len, answer.len - b_close.len }) |end| {
+            const seen = try bytesAsk(a, answer[0..end], .{ .pattern = pattern, .cut = end != answer.len });
+            const r = try Read.of(a, &seen);
+            for (r.calls.items) |call| try std.testing.expect(!std.mem.eql(u8, call.arguments.items, "{}"));
+            if (r.finish) |finish| try std.testing.expect(!std.mem.eql(u8, finish, "tool_calls"));
+        }
+    }
+}
+
+test "recipe issue 61 an unclosed invoke with a self-closing parameter streams as the parse reads it" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // the second invoke never closes, so the parse skips it (never reading its parameter) and keeps the first call:
+    // the stream must go as it goes for any unclosed invoke, the first call whole, not stop at the self-closing tag
+    const head = comptime b_open ++ bInvoke("Bash", bParam("command", "ls")) ++ "<" ++ BD ++ " invoke name=\"Read\">\n";
+    const answer = comptime head ++ "<" ++ BD ++ " parameter file_path=\"x\" />\n" ++ b_close;
+    const ordinary = comptime head ++ bParam("file_path", "x") ++ b_close;
+    const whole = wholeMessage(&try bytesAsk(a, answer, .{ .stream = false }));
+    try std.testing.expectEqual(@as(usize, 1), whole.calls.len);
+    try std.testing.expectEqualStrings("tool_calls", whole.finish);
+    const args = whole.calls[0].get("function").?.strField("arguments").?;
+    for ([_][]const usize{ &.{1}, &.{7}, &.{1 << 20} }) |pattern| {
+        const r = try Read.of(a, &try bytesAsk(a, answer, .{ .pattern = pattern }));
+        const o = try Read.of(a, &try bytesAsk(a, ordinary, .{ .pattern = pattern }));
+        try std.testing.expectEqualStrings(whole.finish, r.finish.?);
+        try std.testing.expectEqualStrings(args, r.calls.items[0].arguments.items);
+        try std.testing.expectEqualStrings(whole.content, r.content.items);
+        try std.testing.expectEqual(o.calls.items.len, r.calls.items.len);
+        try std.testing.expectEqualStrings(o.finish.?, r.finish.?);
+    }
+}

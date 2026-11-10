@@ -14,7 +14,16 @@ pub const Set = struct {
     custom_patch: bool = false,
 
     pub fn init(cx: *Cx, raw: ?Value) errors.Refused!Set {
+        return initHistory(cx, raw, &.{});
+    }
+
+    pub fn initHistory(cx: *Cx, raw: ?Value, messages: []const Value) errors.Refused!Set {
         var set: Set = .{};
+        // Reserve history before declarations choose their aliases.
+        for (messages) |m| if (m.get("tool_calls")) |calls| if (calls == .array) for (calls.array) |call| {
+            const f = call.get("function") orelse continue;
+            if (f.strField("namespace") == null) if (f.strField("name")) |n| try set.reserved.append(cx.a, n);
+        };
         const value = raw orelse return set;
         if (value == .null) return set;
         if (value != .array) return cx.refuse("tools must be a list");
@@ -199,4 +208,16 @@ test "namespace aliases avoid the parser's case folded name collisions" {
     try std.testing.expectEqualStrings("Files::read", set.namespaces.items[0].flat);
     try std.testing.expectEqualStrings("files::read_1", set.namespaces.items[1].flat);
     try std.testing.expectEqualStrings("files", set.resolve("files::read_1").?.namespace);
+}
+
+test "recipe 32 synthetic apply_patch cannot alias a V41 namespace" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    const raw = (try json.parse(cx.a,
+        \\[{"type":"namespace","name":"apply_","tools":[{"type":"function","name":"patch"}]},{"type":"custom","name":"apply_patch"}]
+    )).ok;
+    const set = try Set.init(&cx, raw);
+    try std.testing.expectEqualStrings("apply_::patch", set.offered.?[0].get("function").?.get("name").?.string);
+    try std.testing.expectEqualStrings("apply_patch", set.offered.?[1].get("function").?.get("name").?.string);
 }

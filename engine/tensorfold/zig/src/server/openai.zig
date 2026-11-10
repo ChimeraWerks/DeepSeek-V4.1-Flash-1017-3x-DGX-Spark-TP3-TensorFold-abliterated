@@ -334,6 +334,9 @@ const Run = struct {
         const list = try a.alloc(Value, 1);
         list[0] = .{ .object = choice };
         try o.put(a, "choices", .{ .array = list });
+        // OpenAI's include_usage contract: every chunk but the last carries a null usage (upstream deepseek-recipe
+        // PR 38); a stream that did not ask keeps its chunks as they were
+        if (r.plan.separate_usage) try o.put(a, "usage", .null);
         return .{ .object = o };
     }
 

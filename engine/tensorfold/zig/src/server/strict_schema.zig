@@ -115,3 +115,64 @@ test "strict schemas reject conflicts and non-object roots" {
     _ = try normalize(&cx, empty, true);
     try std.testing.expectError(error.Refused, normalize(&cx, empty, false));
 }
+
+test "recipe 31 standard definitions keep normalized targets" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    for ([_][]const u8{ "$defs", "definitions" }) |key| {
+        const raw = try std.fmt.allocPrint(cx.a, "{{\"type\":\"object\",\"properties\":{{\"value\":{{\"$ref\":\"#/{s}/Entry\"}}}},\"{s}\":{{\"Entry\":{{\"type\":\"object\",\"properties\":{{\"name\":{{\"type\":\"string\"}}}}}}}}}}", .{ key, key });
+        const normalized = try normalize(&cx, (try json.parse(cx.a, raw)).ok, true);
+        const entry = normalized.get(key).?.get("Entry").?;
+        try std.testing.expectEqualStrings("name", entry.get("required").?.array[0].string);
+        try std.testing.expect(!entry.get("additionalProperties").?.bool);
+    }
+}
+
+test "recipe 33 anyOf keeps references and nested unions" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    const raw =
+        \\{"type":"object","properties":{"value":{"anyOf":[{"$ref":"#/properties/base"},{"anyOf":[{"type":"string"},{"type":"null"}]}]},"base":{"type":"integer"}}}
+    ;
+    const normalized = try normalize(&cx, (try json.parse(cx.a, raw)).ok, true);
+    const branches = normalized.get("properties").?.get("value").?.get("anyOf").?.array;
+    try std.testing.expectEqualStrings("#/properties/base", branches[0].get("$ref").?.string);
+    try std.testing.expectEqualStrings("null", branches[1].get("anyOf").?.array[1].get("type").?.string);
+}
+
+test "recipe 34 35 36 39 51 strict primitive and array constraints survive" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    const cases = [_][]const u8{
+        \\{"type":"integer","minimum":0.5,"maximum":10.5,"multipleOf":0.5}
+        ,
+        \\{"type":"integer","maximum":18446744073709551615}
+        ,
+        \\{"type":["string","null"],"enum":["on",null]}
+        ,
+        \\{"type":"string","const":"fixed"}
+        ,
+        \\{"type":"boolean","const":true}
+        ,
+        \\{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":3,"uniqueItems":true}
+        ,
+        \\{"type":"array","items":{"type":"array","items":{"type":"integer"},"minItems":0,"maxItems":0,"uniqueItems":false},"minItems":0}
+        ,
+    };
+    for (cases) |raw| {
+        const property = (try json.parse(cx.a, raw)).ok;
+        const input = (try json.parse(cx.a, try std.fmt.allocPrint(cx.a, "{{\"type\":\"object\",\"properties\":{{\"value\":{s}}}}}", .{raw}))).ok;
+        const before = try json.stringify(cx.a, input, .{});
+        const normalized = try normalize(&cx, input, true);
+        try std.testing.expectEqualStrings(try json.stringify(cx.a, property, .{}), try json.stringify(cx.a, normalized.get("properties").?.get("value").?, .{}));
+        try std.testing.expectEqualStrings(before, try json.stringify(cx.a, input, .{}));
+    }
+    for ([_][]const u8{ "date-time", "date", "time", "uri", "duration", "custom-format" }) |format| {
+        const input = (try json.parse(cx.a, try std.fmt.allocPrint(cx.a, "{{\"type\":\"object\",\"properties\":{{\"value\":{{\"type\":\"string\",\"format\":\"{s}\"}}}}}}", .{format}))).ok;
+        const normalized = try normalize(&cx, input, true);
+        try std.testing.expectEqualStrings(format, normalized.get("properties").?.get("value").?.get("format").?.string);
+    }
+}

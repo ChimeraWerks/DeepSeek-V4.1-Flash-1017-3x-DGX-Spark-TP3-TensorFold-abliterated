@@ -189,6 +189,46 @@ fn messages(cx: *Cx, value: ?Value, system: ?Value) errors.Refused!Value {
     return .{ .array = out.items };
 }
 
+/// ``messages``, with one repair for a history the chat route would refuse: an assistant turn's tool calls split over
+/// adjacent assistant messages (upstream deepseek-recipe PR 49) join into the one message their results answer. Only
+/// the split itself joins: a history that validates as it is comes back untouched (its prompt bytes do not change), and
+/// adjacent user or text turns elsewhere in a repaired history stay separate messages, as the earlier turns rendered them.
+fn messageTurns(cx: *Cx, value: ?Value, system: ?Value) errors.Refused!Value {
+    const original = try messages(cx, value, system);
+    var check: Cx = .{ .a = cx.a };
+    if (@import("messages.zig").validateToolHistory(&check, original)) |_| return original else |e| {
+        if (e == error.OutOfMemory) return e;
+    }
+    var turns: std.ArrayList(Value) = .empty;
+    var joined_any = false;
+    for (value.?.array) |message| {
+        const previous = if (turns.items.len > 0) &turns.items[turns.items.len - 1] else null;
+        if (previous != null and roleIs(message, &.{"assistant"}) and roleIs(previous.?.*, &.{"assistant"}) and try hasToolUse(cx, previous.?.*)) {
+            const left = try parts(cx, previous.?.get("content"));
+            const right = try parts(cx, message.get("content"));
+            // only further calls join a turn that called: text, media or thinking after a call would move before it,
+            // and an empty message is not dropped
+            if (right.len == 0) return original;
+            for (right) |block| if (!block.typeIs("tool_use")) return original;
+            const copy = try json.copyObject(cx.a, previous.?.object);
+            try copy.put(cx.a, "content", .{ .array = try std.mem.concat(cx.a, Value, &.{ left, right }) });
+            previous.?.* = .{ .object = copy };
+            joined_any = true;
+        } else try turns.append(cx.a, message);
+    }
+    if (!joined_any) return original;
+    const joined = try messages(cx, .{ .array = turns.items }, system);
+    if (@import("messages.zig").validateToolHistory(&check, joined)) |_| return joined else |e| {
+        if (e == error.OutOfMemory) return e;
+        return original;
+    }
+}
+
+fn hasToolUse(cx: *Cx, message: Value) errors.Refused!bool {
+    for (try parts(cx, message.get("content"))) |block| if (block.typeIs("tool_use")) return true;
+    return false;
+}
+
 fn positiveInt(v: ?Value) ?i64 {
     const x = v orelse return null;
     if (x != .int) return null;
@@ -203,7 +243,7 @@ pub fn translate(cx: *Cx, body: Value, count: bool) errors.Refused!Value {
     const model = try string(cx, body.get("model"), "model", false);
     const chat = try json.newObject(a);
     try chat.put(a, "model", .{ .string = model });
-    try chat.put(a, "messages", try messages(cx, body.get("messages"), body.get("system")));
+    try chat.put(a, "messages", try messageTurns(cx, body.get("messages"), body.get("system")));
     if (!count) {
         _ = positiveInt(body.get("max_tokens")) orelse return cx.refuse("max_tokens must be a positive integer");
         try chat.put(a, "max_tokens", body.get("max_tokens").?);
@@ -391,4 +431,84 @@ test "document blocks become file parts, in user turns and tool results; remote 
     )).ok;
     try std.testing.expectError(error.Refused, translate(&url_cx, remote, false));
     try std.testing.expect(std.mem.indexOf(u8, url_cx.message, "URLs are not accepted") != null);
+}
+
+test "recipe 49 adjacent assistant calls and split user results form a turn" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    const inputs = [_][]const u8{
+        \\{"model":"test","max_tokens":1,"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f","input":{}}]},{"role":"assistant","content":[{"type":"tool_use","id":"b","name":"g","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"one"}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"b","content":"two"}]}]}
+        ,
+        \\{"model":"test","max_tokens":1,"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f","input":{}},{"type":"tool_use","id":"b","name":"g","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"one"}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"b","content":"two"}]}]}
+        ,
+    };
+    var rendered: [inputs.len][]const u8 = undefined;
+    for (inputs, &rendered) |raw, *out| {
+        const translated = try translate(&cx, (try json.parse(cx.a, raw)).ok, false);
+        try @import("messages.zig").validateToolHistory(&cx, translated.get("messages"));
+        const ms = translated.get("messages").?.array;
+        try std.testing.expectEqual(@as(usize, 2), ms[0].get("tool_calls").?.array.len);
+        try std.testing.expectEqualStrings("a", ms[1].strField("tool_call_id").?);
+        try std.testing.expectEqualStrings("b", ms[2].strField("tool_call_id").?);
+        out.* = try json.stringify(cx.a, translated, .{});
+    }
+    // the split turn runs as the same chat request as the one message that holds both calls
+    try std.testing.expectEqualStrings(rendered[1], rendered[0]);
+}
+
+test "recipe 49 joins only the split call turn and keeps other turns as sent" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    // adjacent user and assistant text turns elsewhere stay separate messages in a repaired history
+    const raw =
+        \\[{"role":"user","content":"first"},{"role":"user","content":"second"},{"role":"assistant","content":"looking"},{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f","input":{}}]},{"role":"assistant","content":[{"type":"tool_use","id":"b","name":"g","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"one"},{"type":"tool_result","tool_use_id":"b","content":"two"}]}]
+    ;
+    const joined = (try messageTurns(&cx, (try json.parse(cx.a, raw)).ok, null)).array;
+    try @import("messages.zig").validateToolHistory(&cx, .{ .array = joined });
+    try std.testing.expectEqual(@as(usize, 6), joined.len);
+    try std.testing.expectEqualStrings("user", joined[1].strField("role").?);
+    try std.testing.expectEqualStrings("looking", joined[2].get("content").?.array[0].get("text").?.string);
+    try std.testing.expect(joined[2].get("tool_calls") == null);
+    try std.testing.expectEqual(@as(usize, 2), joined[3].get("tool_calls").?.array.len);
+    // text, thinking or an empty message after a split call still refuses, as before
+    const still_bad = [_][]const u8{
+        \\[{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f","input":{}}]},{"role":"assistant","content":[{"type":"text","text":"and"},{"type":"tool_use","id":"b","name":"g","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"one"},{"type":"tool_result","tool_use_id":"b","content":"two"}]}]
+        ,
+        \\[{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f","input":{}}]},{"role":"assistant","content":[{"type":"thinking","thinking":"next"},{"type":"tool_use","id":"b","name":"g","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"one"},{"type":"tool_result","tool_use_id":"b","content":"two"}]}]
+        ,
+        \\[{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f","input":{}}]},{"role":"assistant","content":[]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"one"}]}]
+        ,
+    };
+    for (still_bad) |bad| {
+        const translated = try messageTurns(&cx, (try json.parse(cx.a, bad)).ok, null);
+        try std.testing.expectError(error.Refused, @import("messages.zig").validateToolHistory(&cx, translated));
+    }
+}
+
+test "recipe 49 keeps valid messages exact and invalid tool histories invalid" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    const valid = (try json.parse(cx.a,
+        \\[{"role":"user","content":"first"},{"role":"user","content":"second"},{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"ok"}]}]
+    )).ok;
+    try std.testing.expectEqualStrings(try json.stringify(cx.a, try messages(&cx, valid, null), .{}), try json.stringify(cx.a, try messageTurns(&cx, valid, null), .{}));
+    const bad = [_][]const u8{
+        \\[{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f","input":{}}]},{"role":"assistant","content":[{"type":"tool_use","id":"b","name":"g","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"one"}]}]
+        ,
+        \\[{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"one"}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"duplicate"}]}]
+        ,
+        \\[{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f","input":{}}]},{"role":"system","content":"boundary"},{"role":"assistant","content":[{"type":"tool_use","id":"b","name":"g","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"one"},{"type":"tool_result","tool_use_id":"b","content":"two"}]}]
+        ,
+    };
+    const interrupted = (try json.parse(cx.a,
+        \\[{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f","input":{}},{"type":"tool_use","id":"b","name":"g","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"one"}]},{"role":"user","content":"interrupted"},{"role":"user","content":[{"type":"tool_result","tool_use_id":"b","content":"two"}]}]
+    )).ok;
+    try std.testing.expectError(error.Refused, @import("messages.zig").validateToolHistory(&cx, try messageTurns(&cx, interrupted, null)));
+    for (bad) |raw| {
+        const translated = try messageTurns(&cx, (try json.parse(cx.a, raw)).ok, null);
+        try std.testing.expectError(error.Refused, @import("messages.zig").validateToolHistory(&cx, translated));
+    }
 }

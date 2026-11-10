@@ -69,6 +69,7 @@ const TestText = struct {
 const HiEngine = struct {
     tokens: []const u32 = &.{ 'h', 'i' },
     window: u32 = 8,
+    batch_tokens: bool = false, // every token in one event, as a drafting round commits them
     structures: bool = false,
     logprobs: bool = false,
     submissions: usize = 0,
@@ -85,7 +86,7 @@ const HiEngine = struct {
         const e: *HiEngine = @ptrCast(@alignCast(ctx));
         e.submissions += 1;
         sink.event(sink.ctx, id, &.{ .prefilled = 0 });
-        for (e.tokens) |token| {
+        if (e.batch_tokens) sink.event(sink.ctx, id, &.{ .tokens = e.tokens }) else for (e.tokens) |token| {
             if (request.logprobs) |k| {
                 var row: api.LogprobRow = .{ .chosen = .{ .id = token, .logprob = -1.25 }, .count = k };
                 for (row.top[0..k], 0..) |*v, i| v.* = .{ .id = @intCast(65 + i), .logprob = -1.0 - @as(f64, @floatFromInt(i)) };
@@ -114,6 +115,9 @@ const Seen = struct {
     score_top: usize = 0,
     score_sum: f64 = 0,
     tokens: ?[]const u32 = null,
+    window: u32 = 8,
+    batch_tokens: bool = false,
+    completion_tokens: i64 = -1,
     submissions: usize = 0,
     answer: [2048]u8 = undefined,
     answer_len: usize = 0,
@@ -128,6 +132,10 @@ const Seen = struct {
     gone_at_open: bool = false, // the client is gone when the stream opens
     opened: bool = false,
     events: usize = 0,
+    usage_values: usize = 0, // chunks whose usage is an object
+    usage_nulls: usize = 0, // chunks whose usage is null
+    usage_empty_choices: usize = 0, // usage objects on a chunk with no choices
+    usage_with_finish: usize = 0, // usage objects on the chunk with the finish reason
     role_first: bool = false,
     status: ?u16 = null,
     context_code: bool = false,
@@ -184,6 +192,14 @@ const Seen = struct {
             return;
         }
         const choices = p.get("choices") orelse return;
+        if (p.get("usage")) |usage| {
+            if (usage == .null) c.usage_nulls += 1 else {
+                c.usage_values += 1;
+                c.completion_tokens = usage.get("completion_tokens").?.int64().?;
+                if (choices == .array and choices.array.len == 0) c.usage_empty_choices += 1;
+                if (choices == .array and choices.array.len > 0 and choices.array[0].strField("finish_reason") != null) c.usage_with_finish += 1;
+            }
+        }
         if (choices != .array or choices.array.len == 0) return;
         c.finished(choices.array[0]);
         const delta = choices.array[0].get("delta") orelse return;
@@ -241,7 +257,7 @@ fn send(route: Route, body: []const u8) !Seen {
 
 fn sendTo(route: Route, body: []const u8, start: Seen) !Seen {
     var text: TestText = .{};
-    var backend: HiEngine = .{ .structures = start.structures, .logprobs = start.logprobs };
+    var backend: HiEngine = .{ .structures = start.structures, .logprobs = start.logprobs, .window = start.window, .batch_tokens = start.batch_tokens };
     if (start.tokens) |tokens| {
         backend.tokens = tokens;
         backend.window = 8192;
@@ -646,5 +662,46 @@ test "reply logprobs Chat and Responses request rows reach whole and streaming r
         try std.testing.expectEqual(@as(usize, 2), response.score_rows);
         try std.testing.expectEqual(@as(usize, 0), response.score_top);
         try std.testing.expectEqual(@as(f64, -2.5), response.score_sum);
+    }
+}
+
+test "recipe 38 requested stream usage is null on every chunk but its own, and an unrequested stream is unchanged" {
+    const prefix = "{\"model\":\"test-model\",\"max_tokens\":2,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]";
+    // OpenAI's contract: usage null on each chunk, then one chunk with no choices that carries it, then [DONE]
+    const requested = try send(.chat, prefix ++ ",\"stream_options\":{\"include_usage\":true}}");
+    try std.testing.expectEqual(@as(usize, 1), requested.usage_values);
+    try std.testing.expectEqual(@as(usize, 1), requested.usage_empty_choices);
+    try std.testing.expectEqual(@as(usize, 0), requested.usage_with_finish);
+    try std.testing.expectEqual(requested.events - 2, requested.usage_nulls);
+    // without include_usage the stream keeps its bytes: no null usage fields, the usage on the finish chunk as before
+    inline for ([_][]const u8{ "}", ",\"stream_options\":{\"include_usage\":false}}" }) |suffix| {
+        const plain = try send(.chat, prefix ++ suffix);
+        try std.testing.expectEqual(@as(usize, 1), plain.usage_values);
+        try std.testing.expectEqual(@as(usize, 1), plain.usage_with_finish);
+        try std.testing.expectEqual(@as(usize, 0), plain.usage_empty_choices);
+        try std.testing.expectEqual(@as(usize, 0), plain.usage_nulls);
+    }
+}
+
+test "recipe 44 exact full context refuses implicit output before submission" {
+    const chat_body = "{\"model\":\"test-model\",\"messages\":[{\"role\":\"user\",\"content\":\"x\"}],\"stream\":true}";
+    const responses_body = "{\"model\":\"test-model\",\"input\":\"x\",\"stream\":true}";
+    inline for (.{ .{ Route.chat, chat_body }, .{ Route.responses, responses_body } }) |item| {
+        const full = try sendTo(item[0], item[1], .{ .window = 6 });
+        try std.testing.expect(full.context_code);
+        try std.testing.expectEqual(@as(usize, 0), full.submissions);
+        const room = try sendTo(item[0], item[1], .{ .window = 7 });
+        try std.testing.expect(!room.context_code);
+        try std.testing.expectEqual(@as(usize, 1), room.submissions);
+    }
+}
+
+test "recipe 37 native usage counts committed prefix not discarded batch tail" {
+    const body = "{\"model\":\"test-model\",\"messages\":[{\"role\":\"user\",\"content\":\"x\"}],\"stream\":true,\"stop\":[\"STOP\"],\"stream_options\":{\"include_usage\":true}}";
+    const tokens = [_]u32{ 'A', 'S', 'T', 'O', 'P', 'Z' };
+    for ([_]bool{ false, true }) |batch| {
+        const seen = try sendTo(.chat, body, .{ .tokens = &tokens, .batch_tokens = batch });
+        try std.testing.expectEqualStrings("A", seen.answer[0..seen.answer_len]);
+        try std.testing.expectEqual(@as(i64, 5), seen.completion_tokens);
     }
 }

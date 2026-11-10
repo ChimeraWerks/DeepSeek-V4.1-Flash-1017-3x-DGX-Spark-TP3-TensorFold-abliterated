@@ -54,4 +54,7 @@ test {
     _ = @import("decisions.zig");
     _ = @import("decisions_test.zig");
     _ = @import("prepare_gate.zig");
+    _ = @import("strict_schema.zig");
+    _ = @import("recipe_prompt_test.zig");
+    _ = @import("recipe_extra_test.zig");
 }
