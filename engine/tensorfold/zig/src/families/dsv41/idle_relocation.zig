@@ -2,6 +2,7 @@
 //! the native host, not emulated by this module. Wire bytes are fixed little endian.
 const std = @import("std");
 const Link = @import("link.zig").Link;
+const frame_transaction = @import("frame_transaction.zig");
 pub const Move = struct { generation: u64, from: u64, to: u64, len: u64, bytes: u64 };
 pub const budget_ns = 5 * std.time.ns_per_s;
 pub const State = struct {
@@ -63,10 +64,17 @@ pub fn leader(host: anytype, mv: Move, peers: []const ?Link, primary: ?Link, wor
         var frame: [58]u8 = undefined;
         frame[0] = 12;
         std.mem.writeInt(u64, frame[1..9], step.*, .little);
-        step.* += 1;
         const payload = request(phase_id, mv, deadline -| Link.monotonicNs());
         @memcpy(frame[9..], &payload);
-        for (peers[0 .. world - 1]) |p| try p.?.sendWithin(&frame, deadline);
+        var transaction: frame_transaction.Transaction = .{};
+        try transaction.preflight(&frame, step.*);
+        // Keep the single-rank relocation's local sequence convention.
+        if (world == 1) step.* += 1;
+        for (peers[0 .. world - 1], 0..) |p, i| {
+            try transaction.enterPeer(step, i, world - 1);
+            try p.?.sendWithin(&frame, deadline);
+            transaction.sentPeer(i, world - 1);
+        }
         if (phase_id == 1) {
             if (Link.monotonicNs() >= deadline) return error.TransferTimeout;
             try host.copy(mv, deadline);

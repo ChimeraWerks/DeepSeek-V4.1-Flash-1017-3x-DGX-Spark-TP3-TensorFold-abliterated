@@ -37,6 +37,7 @@ const idle_relocation = @import("idle_relocation.zig");
 const idle_protocol = @import("idle_protocol.zig");
 const cache_batch = @import("cache_batch.zig");
 const round_timing = @import("round_timing.zig");
+const frame_transaction = @import("frame_transaction.zig");
 
 const be = lanes.backend;
 const Model = model.Model;
@@ -137,26 +138,37 @@ test "outer follower decoder covers every enum byte and open chunk policy" {
     }
 }
 
-test "outer follower decoder audit reproduces an unsent frame step gap" {
+test "outer follower decoder unsent frame allocation preserves the next step" {
     var backing: [512]u8 = undefined;
     var allocator: std.heap.FixedBufferAllocator = .init(&backing);
     var m: Model = undefined;
     var ln: Lanes = .{ .gpa = allocator.allocator(), .m = &m, .peer = .{ .fd = -1 } };
     defer ln.wire.deinit(ln.gpa);
     try std.testing.expect(try ln.begin(.verify));
-    const unsent = ln.step - 1;
+    const unsent = ln.step;
     // No flush or device access occurs. The remainder of this request's frame cannot allocate.
-    try std.testing.expectError(error.OutOfMemory, ln.wire.buf.appendNTimes(ln.gpa, 0, 1024));
+    const too_big: [1024]u8 = @splat(0);
+    try std.testing.expectError(error.OutOfMemory, ln.wire.bytes(ln.gpa, &too_big));
+    try std.testing.expectEqual(unsent, ln.step);
+    try std.testing.expectError(error.BadFrame, ln.wire.preflight(ln.step));
     try std.testing.expect(try ln.begin(.done));
     var reader: Reader = .{ .b = ln.wire.buf.items };
     _ = try reader.int(u8);
-    try std.testing.expectEqual(unsent + 1, try reader.int(u64));
-    // The real follower still expects `unsent` and returns OutOfStep.
+    try std.testing.expectEqual(unsent, try reader.int(u64));
+    try ln.wire.preflight(ln.step);
 }
 
 
 comptime {
     std.debug.assert(@backingInt(Kind.rank_wire) == @import("rank_wire.zig").lanes_kind);
+}
+
+fn dropFrame(step: u64, id: u64) [17]u8 {
+    var frame: [17]u8 = undefined;
+    frame[0] = @intFromEnum(Kind.snap_drop);
+    std.mem.writeInt(u64, frame[1..9], step, .little);
+    std.mem.writeInt(u64, frame[9..17], id, .little);
+    return frame;
 }
 
 const SliceFrame = struct {
@@ -167,6 +179,7 @@ const SliceFrame = struct {
     next_rows: u32 = 0,
 };
 fn putSlice(w: *Wire, gpa: std.mem.Allocator, f: SliceFrame) !void {
+    errdefer w.valid = false;
     try w.int(gpa, u8, @intFromBool(f.abort));
     if (f.abort) return;
     if (f.hi <= f.lo or f.args.n == 0) return error.BadSlice;
@@ -197,22 +210,43 @@ fn getSlice(r: *Reader) !SliceFrame {
 /// A frame being written.
 pub const Wire = struct {
     buf: std.ArrayList(u8) = .empty,
+    valid: bool = false,
+    // Test-only exact growth makes each append an allocation fault point.
+    test_exact_capacity: bool = false,
+    transaction: frame_transaction.Transaction = .{},
 
     pub fn begin(w: *Wire, gpa: std.mem.Allocator, kind: Kind, step: u64) !void {
+        try w.transaction.reset();
+        w.valid = false;
         w.buf.clearRetainingCapacity();
         try w.int(gpa, u8, @backingInt(kind));
         try w.int(gpa, u64, step);
+        w.valid = true;
     }
 
     pub fn int(w: *Wire, gpa: std.mem.Allocator, comptime T: type, v: T) !void {
         var b: [@sizeOf(T)]u8 = undefined;
         std.mem.writeInt(T, &b, v, .little);
-        try w.buf.appendSlice(gpa, &b);
+        try w.bytes(gpa, &b);
+    }
+
+    pub fn bytes(w: *Wire, gpa: std.mem.Allocator, b: []const u8) !void {
+        errdefer w.valid = false;
+        if (@import("builtin").is_test and w.test_exact_capacity) {
+            try w.buf.ensureTotalCapacityPrecise(gpa, w.buf.items.len + b.len);
+            w.buf.appendSliceAssumeCapacity(b);
+        } else try w.buf.appendSlice(gpa, b);
+    }
+
+    pub fn preflight(w: *Wire, step: u64) !void {
+        if (!w.valid) return error.BadFrame;
+        try w.transaction.preflight(w.buf.items, step);
     }
 
     pub fn ids(w: *Wire, gpa: std.mem.Allocator, v: []const i32) !void {
+        errdefer w.valid = false;
         try w.int(gpa, u32, @intCast(v.len));
-        try w.buf.ensureUnusedCapacity(gpa, v.len * 4);
+        if (!@import("builtin").is_test or !w.test_exact_capacity) try w.buf.ensureUnusedCapacity(gpa, v.len * 4);
         for (v) |x| try w.int(gpa, i32, x);
     }
 
@@ -223,6 +257,7 @@ pub const Wire = struct {
 
 /// Present only when startup word[6] bit24 agreed. Off is byte-for-byte legacy.
 fn writeGreedyHeadMode(w: *Wire, gpa: std.mem.Allocator, enabled: bool, use_head: bool) !void {
+    errdefer w.valid = false;
     if (!enabled) {
         if (use_head) return error.BadGreedyHeadMode;
         return;
@@ -239,6 +274,7 @@ fn readGreedyHeadMode(r: *Reader, enabled: bool, unsupported: bool) !bool {
 
 /// Present only when startup word[6] bit25 agreed. Zero keeps full logits.
 fn writeSampleHeadCount(w: *Wire, gpa: std.mem.Allocator, enabled: bool, count: usize) !void {
+    errdefer w.valid = false;
     if (count > 64 or (!enabled and count != 0)) return error.BadGreedyHeadMode;
     if (enabled) try w.int(gpa, u8, @intCast(count));
 }
@@ -253,6 +289,7 @@ fn readSampleHeadCount(r: *Reader, enabled: bool, unsupported: bool) !usize {
 /// A verify frame's window: slot, extent, first position, absorb, ids; TF_DS_KV_SHARD (`sharded`) adds its extent's
 /// part (u8) and generation (u64), so a follower refuses a round for a reused extent. Off, the bytes are as ever.
 pub fn writeWin(w: *Wire, gpa: std.mem.Allocator, win: Win, sharded: bool) !void {
+    errdefer w.valid = false;
     try w.int(gpa, u32, @intCast(win.slot));
     try w.int(gpa, u64, win.base);
     try w.int(gpa, u64, win.end);
@@ -627,6 +664,7 @@ pub const Lanes = struct {
     logit_dump_serial: u64 = 0,
     short_continuation: bool = false, // experimental full-decoder resume; disabled unless explicitly qualified
     wire: Wire = .{},
+    closing: bool = false, // teardown: a lost follower is reported, not a new fault (done and aborts stay best effort)
     move_deadline: ?u64 = null,
     fills: std.AutoHashMapUnmanaged(*lanes.Stream, Fill) = .empty,
     streams: std.AutoHashMapUnmanaged(*const lanes.Stream, Lane) = .empty,
@@ -700,6 +738,7 @@ pub const Lanes = struct {
 
     /// Tells rank 1 to stop, then frees the host state (the model is the caller's).
     pub fn deinit(self: *Lanes) void {
+        self.closing = true;
         self.wakeRdma();
         const cleanup = cuda.context_health.cleanupMark();
         self.stopKv();
@@ -839,17 +878,39 @@ pub const Lanes = struct {
     /// The frame being built goes to rank 1 (after `begin` and the fields), or to ranks 1-3 on the four-node split.
     fn flush(self: *Lanes) !void {
         if (self.peer == null) return;
-        for (self.m.followers()) |l| {
-            const peer = l orelse return error.TransferFailed;
-            if (self.move_deadline) |deadline| try peer.sendWithin(self.wire.buf.items, deadline) else try peer.send(self.wire.buf.items);
+        if (!self.wire.valid) return error.BadFrame;
+        try self.broadcast(self.wire.buf.items, &self.wire.transaction);
+    }
+
+    fn broadcast(self: *Lanes, frame: []const u8, transaction: *frame_transaction.Transaction) !void {
+        try transaction.preflight(frame, self.step);
+        const peers = self.m.followers();
+        if (peers.len == 0) return error.TransferFailed;
+        for (peers) |peer| if (peer == null) return error.TransferFailed;
+        for (peers, 0..) |l, i| {
+            try transaction.enterPeer(&self.step, i, peers.len);
+            const peer = l.?;
+            const sent = if (self.move_deadline) |deadline| peer.sendWithin(frame, deadline) else peer.send(frame);
+            // Teardown reports instead; the partial transaction still refuses every later frame.
+            sent catch |err| {
+                if (self.closing) return err;
+                self.m.pairFault(err);
+            };
+            transaction.sentPeer(i, peers.len);
         }
+    }
+
+    fn preflightFrame(self: *Lanes) !void {
+        try self.wire.preflight(self.step);
+        const peers = self.m.followers();
+        if (peers.len == 0) return error.TransferFailed;
+        for (peers) |peer| if (peer == null) return error.TransferFailed;
     }
 
     fn begin(self: *Lanes, kind: Kind) !bool {
         self.wakeRdma(); // every command can precede CUDA, a graph vote, a restore or a relocation
         if (self.peer == null) return false;
         try self.wire.begin(self.gpa, kind, self.step);
-        self.step += 1;
         return true;
     }
 
@@ -896,7 +957,12 @@ pub const Lanes = struct {
     pub fn agreeGraphVote(self: *Lanes) !void {
         if (!try self.begin(.graph_vote_agree)) return error.NoLink;
         try self.wire.int(self.gpa, u8, 1);
-        try graph_vote.agreeSpill(self.m.followers(), self.wire.buf.items, self.m.gvote.?.timeout_ns);
+        const deadline = link.Link.monotonicNs() +| self.m.gvote.?.timeout_ns;
+        const previous = self.move_deadline;
+        self.move_deadline = deadline;
+        defer self.move_deadline = previous;
+        try self.flush();
+        try graph_vote.receiveSpill(self.m.followers(), deadline);
     }
 
     /// Union of occupied intervals, without allocation or double-counting overlapping snapshots.
@@ -1030,7 +1096,7 @@ pub const Lanes = struct {
     fn kvSendRw(ctx: *anyopaque, sub: []const u8) anyerror!void {
         const self = of(ctx);
         if (try self.begin(.rank_wire)) {
-            try self.wire.buf.appendSlice(self.gpa, sub);
+            try self.wire.bytes(self.gpa, sub);
             try self.flush();
         }
     }
@@ -1217,7 +1283,7 @@ pub const Lanes = struct {
                     try self.wire.int(gpa, u64, sp.len);
                 }
                 try self.wire.int(gpa, u64, off);
-                try self.wire.buf.appendSlice(gpa, rows[off..][0..n]);
+                try self.wire.bytes(gpa, rows[off..][0..n]);
                 try self.flush();
             }
             off += n;
@@ -2154,6 +2220,7 @@ pub const Lanes = struct {
         sn.* = .{ .complete = complete, .decoded = complete or continuation, .id = self.next_snap, .at = at, .base = l.base, .end = l.end, .part = l.part, .buf = try cuda.DeviceBuffer.alloc(self.m.ctx.d, self.m.snapBytes()), .slot = @intCast(l.slot) };
         errdefer sn.buf.free();
         try self.snaps.append(self.gpa, sn);
+        errdefer _ = self.snaps.orderedRemove(std.mem.indexOfScalar(*Snap, self.snaps.items, sn).?);
         self.next_snap += 1;
         self.kv_clock +|= 1;
         sn.last_use = self.kv_clock;
@@ -2209,7 +2276,9 @@ pub const Lanes = struct {
         }
         pub fn send(b: *DropBatch, rank: usize) !void {
             const peer = b.lanes_.m.followers()[rank] orelse return error.TransferFailed;
+            try b.lanes_.wire.transaction.enterPeer(&b.lanes_.step, rank, b.followerCount());
             try peer.sendWithin(b.lanes_.wire.buf.items, b.deadline);
+            b.lanes_.wire.transaction.sentPeer(rank, b.followerCount());
         }
         pub fn freeLocal(b: *DropBatch) !void {
             b.sent = link.Link.monotonicNs();
@@ -2260,6 +2329,7 @@ pub const Lanes = struct {
         if (try self.begin(.snap_drop_many)) {
             try self.wire.int(self.gpa, u32, @intCast(saved.len));
             for (ids[0..saved.len]) |id| try self.wire.int(self.gpa, u64, id);
+            try self.preflightFrame();
         }
         var transaction: DropBatch = .{ .lanes_ = self, .saved = saved, .step = step, .deadline = deadline };
         try cache_batch.release(&transaction);
@@ -2280,10 +2350,17 @@ pub const Lanes = struct {
         const sn: *Snap = @ptrCast(@alignCast(saved));
         const i = std.mem.indexOfScalar(*Snap, self.snaps.items, sn) orelse return;
         _ = self.snaps.orderedRemove(i);
-        if (self.spill) |t| t.dropSnap(sn.id); // (rule b: a pending small-state capture of its buffer done first)
-        if (self.begin(.snap_drop) catch false) {
-            self.wire.int(self.gpa, u64, sn.id) catch {};
-            self.flush() catch |err| std.log.err("dsv41: rank 1 kept a dropped prompt state: {s}", .{@errorName(err)});
+        if (self.spill) |t| t.dropSnap(sn.id); // pending captures finish before release
+        self.wakeRdma();
+        if (self.peer != null) {
+            // A void release cannot refuse an allocation. Its complete fixed
+            // frame needs no heap storage, even under memory pressure.
+            const frame = dropFrame(self.step, sn.id);
+            var transaction: frame_transaction.Transaction = .{};
+            self.broadcast(&frame, &transaction) catch |err| {
+                if (!self.closing) self.m.pairFault(err);
+                std.log.err("dsv41: rank 1 kept a dropped prompt state: {s}", .{@errorName(err)});
+            };
         }
         // TF_DS_KV_SHARD: the planner's record goes too (deferred while a copy or carry still reads its rows)
         if (self.kv) |k| k.drop(sn.id) catch |err| std.log.err("dsv41: the parts' planner kept a dropped prompt state: {s}", .{@errorName(err)});
@@ -2406,7 +2483,7 @@ pub const Lanes = struct {
             else => return error.BadFrame,
         };
         if (try self.begin(k)) {
-            try self.wire.buf.appendSlice(self.gpa, sub);
+            try self.wire.bytes(self.gpa, sub);
             try self.flush();
         }
     }
@@ -4426,7 +4503,8 @@ test "keyed draft frame round trip through both TP3 follower links and off bytes
     const temps = [_]f64{ 0.7, 0 };
     const top_ks = [_]u32{ 20, 1023 };
     for ([_]bool{ false, true }) |keyed| {
-        try ln.wire.begin(a, if (keyed) .pass_keyed else .pass, 31);
+        ln.step = 31;
+        try ln.wire.begin(a, if (keyed) .pass_keyed else .pass, ln.step);
         try writePass(&ln.wire, a, &tokens, &q0, &slots, 5, if (keyed) .{ .seeds = &seeds, .temps = &temps, .top_ks = &top_ks } else null);
         if (!keyed) {
             var legacy: Wire = .{};
@@ -4470,7 +4548,8 @@ test "keyed draft frame round trip through both TP3 follower links and off bytes
     }
     // both follower links reject a top_k the kernel cannot mirror.
     const too_large = [_]u32{ 20, 1024 };
-    try ln.wire.begin(a, .pass_keyed, 32);
+    ln.step = 32;
+    try ln.wire.begin(a, .pass_keyed, ln.step);
     try writePass(&ln.wire, a, &tokens, &q0, &slots, 5, .{ .seeds = &seeds, .temps = &temps, .top_ks = &too_large });
     try ln.flush();
     for (&peers) |*peer| {
@@ -4683,4 +4762,233 @@ test "round timing actual backend hook fences only when opted in" {
     ln.clean_round_timing = true;
     ln.backend().beginTiming();
     try std.testing.expectEqual(@as(usize, 1), Fake.syncs);
+}
+
+// Both variants exercise the optional wire fields, not a second protocol.
+fn transactionFixture(w: *Wire, a: std.mem.Allocator, kind: Kind, variant: bool, step: u64) !void {
+    try w.begin(a, kind, step);
+    switch (kind) {
+        .fill_begin => {
+            try w.int(a, u32, 2); try w.int(a, u64, 64);
+            try w.ids(a, &.{ 7, 11, 13 });
+        },
+        .fill_chunk => {
+            try w.int(a, u64, 64); try w.int(a, u32, 32); try w.int(a, u64, 16);
+            if (variant) try w.int(a, u32, 32);
+        },
+        .verify => {
+            try w.int(a, u32, 1);
+            try writeGreedyHeadMode(w, a, variant, variant);
+            try writeSampleHeadCount(w, a, variant, if (variant) 3 else 0);
+            try writeWin(w, a, .{ .slot = 2, .base = 64, .end = 256, .start = 16, .absorb = true, .ids = &.{ 7, 11, 13 }, .part = 1, .gen = 9 }, variant);
+        },
+        .pass, .pass_keyed => try writePass(w, a, &.{ 7, 11 }, &.{ 64, 128 }, &.{ 2, 3 }, 5, if (kind == .pass_keyed) .{ .seeds = &.{ 17, 19 }, .temps = &.{ 0.5, 1 }, .top_ks = &.{ 20, 30 } } else null),
+        .snap_save => { try w.int(a, u64, 17); try w.int(a, u32, 2); },
+        .snap_restore => {
+            try w.int(a, u64, 17); try w.int(a, u32, 2);
+            try w.int(a, u64, 64); try w.int(a, u64, 128); try w.int(a, u64, 32);
+        },
+        .snap_drop => try w.int(a, u64, 17),
+        .fill_images => {
+            try w.int(a, u32, 2);
+            for ([_]u64{ 16, 32, 64, 32 }) |v| try w.int(a, u64, v);
+            try w.int(a, u64, 0);
+            try w.bytes(a, &.{ 1, 2, 3, 4, 5, 6, 7, 8 });
+        },
+        .done, .rdma_idle => {},
+        .rank_wire => {
+            var sub: [rank_wire.max_frame]u8 = undefined;
+            const bytes = try rank_wire.encode(&sub, .{ .op = .forget, .from = 0, .epoch = 3, .txn = 0, .seq = 7 }, .{ .forget = .{ .point = @splat(5) } });
+            try w.bytes(a, bytes);
+        },
+        .idle_move => {
+            const payload = idle_relocation.request(@intFromBool(variant), .{ .generation = 17, .from = 64, .to = 128, .len = 32, .bytes = 4096 }, 12345);
+            try w.bytes(a, &payload);
+        },
+        .fill_resume => { try w.int(a, u32, 2); try w.int(a, u64, 64); },
+        .graph_vote_agree => try w.int(a, u8, 1),
+        .snap_drop_many => {
+            const n: usize = if (variant) 16 else 2;
+            try w.int(a, u32, @intCast(n));
+            for (0..n) |i| try w.int(a, u64, i + 1);
+        },
+        .fill_slice => try putSlice(w, a, if (variant) .{ .abort = true } else .{ .lo = 0, .hi = 4, .args = .{ .start = 64, .n = 32, .replay = 16 }, .next_rows = 32 }),
+    }
+}
+
+const TransactionPeers = struct {
+    m: Model = undefined,
+    peers: [2]link.Link = undefined,
+    fn init(t: *@This()) !void {
+        t.m.world = 3; t.m.rank = 0; t.m.fan = .{}; t.m.ring = null;
+        for (&t.peers, 0..) |*peer, i| {
+            var pair: [2]std.c.fd_t = undefined;
+            if (std.c.socketpair(std.c.AF.UNIX, std.c.SOCK.STREAM, 0, &pair) != 0) return error.SocketFailed;
+            t.m.fan.links[i] = .{ .fd = pair[0] };
+            peer.* = .{ .fd = pair[1] };
+        }
+    }
+    fn deinit(t: *@This()) void {
+        t.m.fan.close();
+        for (&t.peers) |*peer| peer.close();
+    }
+    fn accept(t: *@This(), expected_step: u64, kind: Kind, expected: []const u8) !void {
+        for (t.peers) |peer| {
+            var buf: [4096]u8 = undefined;
+            const bytes = try peer.recvBy(&buf, link.Link.monotonicNs() + std.time.ns_per_s);
+            var r: Reader = .{ .b = bytes };
+            try std.testing.expectEqual(kind, try decodeOuterKind(try r.int(u8)));
+            const step = try r.int(u64);
+            if (step != expected_step) return error.OutOfStep;
+            try std.testing.expectEqualSlices(u8, expected, bytes);
+        }
+    }
+};
+
+test "frame transaction sweeps Nth allocation at every append of every outer kind" {
+    var peers: TransactionPeers = .{};
+    try peers.init(); defer peers.deinit();
+    var failures: usize = 0;
+    var successes: usize = 0;
+    inline for (@typeInfo(Kind).@"enum".field_values) |field| {
+        const kind: Kind = @enumFromInt(field);
+        for ([_]bool{ false, true }) |variant| for ([_]bool{ false, true }) |exact| {
+            var fail_index: usize = 0;
+            while (true) : (fail_index += 1) {
+                if (fail_index > 100) return error.MissingAllocationTermination;
+                var fail = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index, .resize_fail_index = 0 });
+                const a = fail.allocator();
+                var ln: Lanes = .{ .gpa = a, .m = &peers.m, .peer = peers.m.fan.links[0], .step = 41 };
+                ln.wire.test_exact_capacity = exact;
+                defer ln.wire.deinit(a);
+                if (transactionFixture(&ln.wire, a, kind, variant, ln.step)) |_| {
+                    try std.testing.expect(!fail.has_induced_failure);
+                    try ln.flush();
+                    try std.testing.expectEqual(@as(u64, 42), ln.step);
+                    try std.testing.expectEqual(frame_transaction.State.committed, ln.wire.transaction.state);
+                    try peers.accept(41, kind, ln.wire.buf.items);
+                    try std.testing.expect(try ln.begin(.done));
+                    try ln.flush();
+                    try peers.accept(42, .done, ln.wire.buf.items);
+                    successes += 1;
+                    break;
+                } else |err| {
+                    failures += 1;
+                    try std.testing.expectEqual(error.OutOfMemory, err);
+                    try std.testing.expect(fail.has_induced_failure);
+                    try std.testing.expectEqual(@as(u64, 41), ln.step);
+                    try std.testing.expectEqual(frame_transaction.State.never_sent, ln.wire.transaction.state);
+                    try std.testing.expectError(error.BadFrame, ln.flush());
+                    for (peers.peers) |peer| try std.testing.expect(!try peer.readable(0));
+                    fail.fail_index = std.math.maxInt(usize);
+                    try std.testing.expect(try ln.begin(.done));
+                    try ln.flush();
+                    try peers.accept(41, .done, ln.wire.buf.items);
+                }
+            }
+        };
+    }
+    std.debug.print("frame allocation sweep: {d} failing allocations, {d} successful variants\n", .{ failures, successes });
+}
+
+test "frame transaction real TP3 broadcast faults before either peer exit 75 for every kind" {
+    inline for (@typeInfo(Kind).@"enum".field_values) |field| for (0..2) |bad_peer| {
+        const child = std.c.fork();
+        if (child == 0) {
+            var peers: TransactionPeers = .{};
+            peers.init() catch std.process.exit(2);
+            _ = std.c.close(peers.peers[bad_peer].fd);
+            var ln: Lanes = .{ .gpa = std.heap.page_allocator, .m = &peers.m, .peer = peers.m.fan.links[0], .step = 41 };
+            transactionFixture(&ln.wire, ln.gpa, @enumFromInt(field), false, ln.step) catch std.process.exit(3);
+            ln.flush() catch std.process.exit(4);
+            std.process.exit(5);
+        }
+        if (child < 0) return error.ForkFailed;
+        var status: c_int = 0;
+        try std.testing.expectEqual(child, std.c.waitpid(child, &status, 0));
+        try std.testing.expectEqual(@as(c_int, 75 << 8), status);
+    };
+}
+
+test "frame transaction golden bytes every kind and optional payload" {
+    inline for (@typeInfo(Kind).@"enum".field_values) |field| for ([_]bool{ false, true }) |variant| {
+        var wire: Wire = .{};
+        defer wire.deinit(std.testing.allocator);
+        try transactionFixture(&wire, std.testing.allocator, @enumFromInt(field), variant, 41);
+        var expected: [256]u8 = undefined;
+        const bytes = try std.fmt.hexToBytes(&expected, transaction_goldens[field][@intFromBool(variant)]);
+        try std.testing.expectEqualSlices(u8, bytes, wire.buf.items);
+        if (field == @intFromEnum(Kind.snap_drop)) try std.testing.expectEqualSlices(u8, bytes, &dropFrame(41, 17));
+    };
+}
+
+const transaction_goldens = [_][2][]const u8{
+    .{ "", "" },
+    .{ "01290000000000000002000000400000000000000003000000070000000b0000000d000000", "01290000000000000002000000400000000000000003000000070000000b0000000d000000" },
+    .{ "0229000000000000004000000000000000200000001000000000000000", "022900000000000000400000000000000020000000100000000000000020000000" },
+    .{ "03290000000000000001000000020000004000000000000000000100000000000010000000000000000103000000070000000b0000000d000000", "032900000000000000010000000103020000004000000000000000000100000000000010000000000000000103000000070000000b0000000d000000010900000000000000" },
+    .{ "04290000000000000002000000050000000700000000000000400000000000000002000000000000000b0000000000000080000000000000000300000000000000", "04290000000000000002000000050000000700000000000000400000000000000002000000000000000b0000000000000080000000000000000300000000000000" },
+    .{ "052900000000000000110000000000000002000000", "052900000000000000110000000000000002000000" },
+    .{ "062900000000000000110000000000000002000000400000000000000080000000000000002000000000000000", "062900000000000000110000000000000002000000400000000000000080000000000000002000000000000000" },
+    .{ "0729000000000000001100000000000000", "0729000000000000001100000000000000" },
+    .{ "08290000000000000002000000100000000000000020000000000000004000000000000000200000000000000000000000000000000102030405060708", "08290000000000000002000000100000000000000020000000000000004000000000000000200000000000000000000000000000000102030405060708" },
+    .{ "092900000000000000", "092900000000000000" },
+    .{ "0a290000000000000052570200250000000300000000000000000000000000000007000000000000000505050505050505050505050505050505050505050505050505050505050505", "0a290000000000000052570200250000000300000000000000000000000000000007000000000000000505050505050505050505050505050505050505050505050505050505050505" },
+    .{ "0b2900000000000000", "0b2900000000000000" },
+    .{ "0c290000000000000000110000000000000040000000000000008000000000000000200000000000000000100000000000003930000000000000", "0c290000000000000001110000000000000040000000000000008000000000000000200000000000000000100000000000003930000000000000" },
+    .{ "0d2900000000000000020000004000000000000000", "0d2900000000000000020000004000000000000000" },
+    .{ "", "" },
+    .{ "0f290000000000000001", "0f290000000000000001" },
+    .{ "1029000000000000000200000001000000000000000200000000000000", "102900000000000000100000000100000000000000020000000000000003000000000000000400000000000000050000000000000006000000000000000700000000000000080000000000000009000000000000000a000000000000000b000000000000000c000000000000000d000000000000000e000000000000000f000000000000001000000000000000" },
+    .{ "11290000000000000002000000050000000700000000000000400000000000000002000000000000001100000000000000000000000000e03f140000000b00000000000000800000000000000003000000000000001300000000000000000000000000f03f1e000000", "11290000000000000002000000050000000700000000000000400000000000000002000000000000001100000000000000000000000000e03f140000000b00000000000000800000000000000003000000000000001300000000000000000000000000f03f1e000000" },
+    .{ "122900000000000000000000000004000000400000000000000020000000100000000000000020000000", "12290000000000000001" },
+};
+
+test "frame transaction actual single and batch cleanup keep transport faults fatal" {
+    for ([_]bool{ false, true }) |batch| for (0..2) |bad_peer| {
+        const child = std.c.fork();
+        if (child == 0) {
+            var peers: TransactionPeers = .{};
+            peers.init() catch std.process.exit(2);
+            _ = std.c.close(peers.peers[bad_peer].fd);
+            var ln: Lanes = .{ .gpa = std.heap.page_allocator, .m = &peers.m, .peer = peers.m.fan.links[0] };
+            // Transport must terminate before either undefined device buffer is used.
+            var a: Snap = .{ .id = 17, .at = 32, .base = 64, .buf = undefined, .stale = true };
+            var b: Snap = .{ .id = 18, .at = 32, .base = 128, .buf = undefined, .stale = true };
+            ln.snaps.appendSlice(ln.gpa, &.{ &a, &b }) catch std.process.exit(3);
+            if (batch) Lanes.snapDropManyFn(&ln, &.{ &a, &b }) else Lanes.snapDropFn(&ln, &a);
+            std.process.exit(5);
+        }
+        if (child < 0) return error.ForkFailed;
+        var status: c_int = 0;
+        try std.testing.expectEqual(child, std.c.waitpid(child, &status, 0));
+        try std.testing.expectEqual(@as(c_int, 75 << 8), status);
+    };
+}
+
+
+test "frame transaction serializer validation refusal cannot flush partial fields" {
+    var wire: Wire = .{};
+    defer wire.deinit(std.testing.allocator);
+    try wire.begin(std.testing.allocator, .fill_slice, 41);
+    try std.testing.expectError(error.BadSlice, putSlice(&wire, std.testing.allocator, .{}));
+    try std.testing.expectError(error.BadFrame, wire.preflight(41));
+    try wire.begin(std.testing.allocator, .done, 41);
+    try wire.preflight(41);
+}
+
+test "frame transaction teardown done stays best effort and never replays" {
+    var peers: TransactionPeers = .{};
+    try peers.init();
+    defer peers.deinit();
+    // Follower 1 already left: teardown reports it instead of exiting 75 (the done was `catch {}` before).
+    _ = std.c.shutdown(peers.peers[0].fd, std.c.SHUT.RDWR);
+    var ln: Lanes = .{ .gpa = std.testing.allocator, .m = &peers.m, .peer = peers.m.fan.links[0], .step = 41, .closing = true };
+    defer ln.wire.deinit(ln.gpa);
+    try std.testing.expectError(error.PeerDown, ln.send(.done));
+    try std.testing.expectEqual(@as(u64, 42), ln.step);
+    try std.testing.expectEqual(frame_transaction.State.partly_sent, ln.wire.transaction.state);
+    try std.testing.expect(!try peers.peers[1].readable(0));
+    // The partial step is never reused for another frame.
+    try std.testing.expectError(error.TransferFailed, ln.begin(.done));
 }

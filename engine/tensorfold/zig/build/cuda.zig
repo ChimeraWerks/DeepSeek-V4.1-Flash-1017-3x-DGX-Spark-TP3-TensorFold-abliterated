@@ -245,6 +245,7 @@ pub fn hostTests(b: *std.Build, draft_ids: *std.Build.Module, step: *std.Build.S
     const mods = family(b, host, .debug, cuda, draft_ids);
     const eng = engines(b, host, .debug, cuda, mods.lanes, mods.nemotron, mods.core);
     b.step("test-kv-loopback", "Loopback fixture connection and worker lifetimes").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{ "loopback fixture", "over a loopback link:" } })).step);
+    b.step("test-frame-transactions", "Transactional rank frame allocation, TP3 transport and wire bytes, CPU only").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{ "frame transaction", "outer follower decoder", "idle relocation", "cache batch", "graph vote" } })).step);
     b.step("test-round-timing", "Opt-in round fences and graph timing without logging, CPU only").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{ "round timing", "graph telemetry" } })).step);
     const draft_cal_tests = b.step("test-draft-calibration", "Draft survival, first depth, allocator and TP3 settings host regressions");
     draft_cal_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = mods.lanes })).step);
