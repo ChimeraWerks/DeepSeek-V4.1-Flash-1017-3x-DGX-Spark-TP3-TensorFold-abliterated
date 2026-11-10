@@ -4,6 +4,18 @@ DeepSeek V4.1 Flash 1017 abliterated EXL3 3.84 bpw runs across three NVIDIA DGX 
 
 v1.2 uses engine base `30a9647` with exactly two non-runtime edits in `zig/src/server/metrics.zig`. A documentation comment and a test name describe external metrics samplers generically. Serving logic is unchanged by them. Rebuild comparison results: `release/build-verification.json`.
 
+## 2026-11-10 four API fixes from reports against DeepSeek's serving code
+
+In production since 2026-11-10: main `65de2d9`, the same flags and kernel images as the entry below. Checked live after the restart: 24 short and 2 long fixed replies byte-identical to the previous production's, identical seeded replies, the mixed-load probe, decode at one and four requests no slower than the same session's baseline, the penalties and logprobs probes, and ten end-to-end checks of the fixes below.
+
+Each open pull request and issue of `deepseek-ai/deepseek-recipe` since our pin was checked against this server, which shares no code with it. Four described defects that exist here too; each fix has a test that fails on the old code. A request that was handled correctly before gets the same prompt and the same reply, except that an `include_usage` stream gains the null fields.
+
+- A Responses request whose history calls a bare tool named like a declared namespace's alias (`ns::run` beside namespace `ns` with tool `run`) had both mapped to one name. History names are reserved first and the namespace tool is shown to the model as `ns::run_1`; names returned to the client do not change (he-yufeng, PR 41 and issue 40).
+- A Chat Completions stream with `stream_options.include_usage` now carries `"usage": null` on every chunk before the final usage chunk, as the OpenAI API does. Streams without it are byte-identical to before, usage on the finish chunk included (Afloat16, PR 38).
+- An Anthropic Messages history in which one assistant turn's tool calls arrive as adjacent assistant messages was refused with a 400. An assistant message holding only `tool_use` blocks is now joined to the calling assistant message before it, only where the history was refused before; `count_tokens` counts the joined prompt (pood1e, PR 49).
+- A model reply with a self-closing DSML parameter tag was returned as a successful tool call with empty arguments. It is now left as text, in whole replies and in streams alike (reported by wqy0812, issue 61).
+- Regression tests for the reports that do not affect this server (strict schema lowering in PRs 31 to 39 and 51, special-token stops, the full-context boundary, synthetic alias collisions, quoted terminators), and `strict_schema.zig` is now part of the server test root, where its tests ran nowhere before. One report stays open: PR 60 (current-turn reasoning in the prompt) could only be checked against a reduced template.
+
 ## 2026-11-10 penalties and logprobs on, frames that fail to build, a prompt-load trace
 
 In production since 2026-11-10: main `157d42a` with `TF_DS_PENALTIES=1`, `TF_DS_REPLY_LOGPROBS=1` and `TF_DS_PARK_GRAPHS=1` added to the flags of the entry below, the same kernel images plus the penalties and logprobs images. Checked live after the restart: 24 short and 2 long fixed replies byte-identical to the previous production's, identical seeded replies at `top_k` 0 and 20, four kinds of reply (seeded, greedy, thinking, four together) identical alone and beside a cold 30,012-token prompt and identical to the previous production's, the mixed-load probe, decode at one and four requests within 2% of the same session's baseline, the checkpoint and uncached scenarios, and the penalties and logprobs probes (20 of 20 checks each).
