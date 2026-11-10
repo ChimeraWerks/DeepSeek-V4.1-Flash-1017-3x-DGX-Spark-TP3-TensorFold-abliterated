@@ -11,6 +11,7 @@ pub const Sampling = struct {
     top_k: u32 = 20,
     top_p: f64 = 0.95,
     min_p: f64 = 0.0,
+    penalties: @import("penalties.zig").Settings = .{},
 
     /// ln(min_p), -inf when off.
     pub fn minLog(s: Sampling) f64 {

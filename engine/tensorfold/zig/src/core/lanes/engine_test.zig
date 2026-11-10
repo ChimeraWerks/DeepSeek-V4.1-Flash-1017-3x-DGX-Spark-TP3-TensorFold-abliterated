@@ -517,3 +517,134 @@ test "an armed gate still forces the opener" {
     defer gpa.free(gated);
     try std.testing.expectEqualSlices(u32, &.{30}, gated);
 }
+
+
+test "penalties fake backend greedy sampled draft rollback and stream isolation" {
+    const penalty = @import("penalties.zig");
+    const settings = [_]penalty.Settings{ .{}, .{ .presence = 1.5, .frequency = 0.7 },
+        .{ .presence = -0.5, .frequency = -0.3, .repetition = 1.3, .window = 5 },
+        .{ .presence = 1, .include_prompt = true, .repetition = 2, .window = 100 } };
+    for ([_]f64{0,0.8}) |temperature| for (settings) |p| {
+        const sample: Sampling = .{ .seed = 123, .temperature = temperature, .top_k = 20, .top_p = 0.9, .min_p = 0.05, .penalties = p };
+        const prompts = [_][]const u32{ &.{1,5,1,5,1,5}, &.{2,3,2,3,2,3}, &.{8,8,8,9} };
+        var together: [3]Case = undefined;
+        for (&together,prompts) |*c,prompt| c.* = .{ .prompt = prompt, .sampling = sample, .drafts = true, .max_new = 100 };
+        const drafted = try run(&together);
+        defer free(drafted);
+        for (&together) |*c| c.drafts = false;
+        const serial = try run(&together);
+        defer free(serial);
+        for (drafted,serial,together) |d,s,c| {
+            try std.testing.expectEqualSlices(u32,s,d);
+            const alone = try run(&.{c});
+            defer free(alone);
+            try std.testing.expectEqualSlices(u32,s,alone[0]);
+        }
+    };
+}
+
+test "reply logprobs drafts on and off retain each committed row and discard rejected rows" {
+    const lp = @import("logprob.zig");
+    var wanted: std.ArrayList(lp.Row) = .empty;
+    defer wanted.deinit(gpa);
+    var ids: std.ArrayList(u32) = .empty;
+    defer ids.deinit(gpa);
+    for ([_]bool{ false, true }) |drafts| {
+        var cfg = try model();
+        defer cfg.deinit(gpa);
+        var target: fake.Fake = .{ .gpa = gpa };
+        defer target.deinit();
+        var clock: fake.FixedClock = .{};
+        var engine = Engine.init(gpa, &cfg, target.backend(), clock.clock());
+        defer engine.deinit();
+        var proposer = try SuffixLookup.init(gpa, .{ .min_match = 4 });
+        defer proposer.deinit();
+        var s = try sm.Stream.init(gpa, .{ .id = "scored", .prompt = &.{ 3, 7, 2, 5 }, .max_new = 60, .sampling = .{ .seed = 171 }, .drafts = drafts, .proposer = proposer.proposer(), .logprobs = 5, .think_budget = 20, .think_close = &.{ 90, 91, 92 }, .think_end = 91 });
+        defer s.deinit(gpa);
+        try engine.addStream(&s);
+        while (engine.activeCount() > 0) try engine.step();
+        try std.testing.expectEqual(s.emitted().len, s.score_rows.items.len);
+        for (s.emitted(), s.score_rows.items) |t, row| try std.testing.expectEqual(t, row.chosen.id);
+        if (!drafts) {
+            try wanted.appendSlice(gpa, s.score_rows.items);
+            try ids.appendSlice(gpa, s.emitted());
+        } else {
+            try std.testing.expect(s.accepted > 0);
+            try std.testing.expect(s.drafted > s.accepted);
+            try std.testing.expectEqualSlices(u32, ids.items, s.emitted());
+            for (wanted.items, s.score_rows.items) |a, b| {
+                try std.testing.expectEqual(a.chosen.logprob, b.chosen.logprob);
+                try std.testing.expectEqual(a.count, b.count);
+                for (a.top[0..a.count], b.top[0..b.count]) |x, y| {
+                    try std.testing.expectEqual(x.id, y.id);
+                    try std.testing.expectEqual(x.logprob, y.logprob);
+                }
+            }
+        }
+    }
+}
+
+test "reply logprobs off keeps tokens rounds clocks and score allocation unchanged" {
+    var ids: std.ArrayList(u32) = .empty;
+    defer ids.deinit(gpa);
+    var clocks: u64 = 0;
+    var rounds: u64 = 0;
+    for ([_]bool{ false, true }) |scored| {
+        var cfg = try model();
+        defer cfg.deinit(gpa);
+        var target: fake.Fake = .{ .gpa = gpa };
+        defer target.deinit();
+        var clock: fake.FixedClock = .{};
+        var engine = Engine.init(gpa, &cfg, target.backend(), clock.clock());
+        defer engine.deinit();
+        var s = try sm.Stream.init(gpa, .{ .id = "off", .prompt = &.{ 3, 7, 2, 5 }, .max_new = 32, .sampling = .{ .seed = 171 }, .drafts = false, .logprobs = if (scored) 0 else null });
+        defer s.deinit(gpa);
+        try engine.addStream(&s);
+        while (engine.activeCount() > 0) try engine.step();
+        if (!scored) {
+            try std.testing.expect(s.score_hook == null);
+            try std.testing.expectEqual(@as(usize, 0), s.score_rows.capacity);
+            try ids.appendSlice(gpa, s.emitted());
+            clocks = clock.calls;
+            rounds = target.rounds;
+        } else {
+            try std.testing.expectEqualSlices(u32, ids.items, s.emitted());
+            try std.testing.expectEqual(ids.items.len, s.score_rows.items.len);
+            try std.testing.expectEqual(clocks, clock.calls);
+            try std.testing.expectEqual(rounds, target.rounds);
+        }
+    }
+}
+
+test "reply logprobs a rejected merge ends only its stream and the next scored stream runs" {
+    var cfg = try model();
+    defer cfg.deinit(gpa);
+    var target: fake.Fake = .{ .gpa = gpa, .reject_score = .{ .id = "bad", .at = 3 } };
+    defer target.deinit();
+    var clock: fake.FixedClock = .{};
+    var engine = Engine.init(gpa, &cfg, target.backend(), clock.clock());
+    defer engine.deinit();
+    var bad = try sm.Stream.init(gpa, .{ .id = "bad", .prompt = &.{ 3, 7, 2, 5 }, .max_new = 16, .sampling = .{ .seed = 171 }, .drafts = false, .logprobs = 2 });
+    defer bad.deinit(gpa);
+    var good = try sm.Stream.init(gpa, .{ .id = "good", .prompt = &.{ 4, 1, 6, 5 }, .max_new = 16, .sampling = .{ .seed = 172 }, .drafts = false, .logprobs = 2 });
+    defer good.deinit(gpa);
+    try engine.addStream(&bad);
+    try engine.addStream(&good);
+    while (engine.activeCount() > 0) try engine.step();
+    try std.testing.expect(bad.finished and bad.reason == .@"error");
+    try std.testing.expect(std.mem.indexOf(u8, bad.problem, "could not score") != null);
+    try std.testing.expectEqual(@as(usize, 3), bad.emitted().len); // the rejected token never landed
+    try std.testing.expectEqual(bad.emitted().len, bad.score_rows.items.len);
+    try std.testing.expect(good.finished and good.reason != .@"error");
+    try std.testing.expectEqual(good.emitted().len, good.score_rows.items.len);
+    const released = target.release_calls;
+    try std.testing.expect(released >= 2); // the failed stream released the normal way, with the other
+    // the next scored stream (a reused backend lane) scores every token
+    var next = try sm.Stream.init(gpa, .{ .id = "next", .prompt = &.{ 3, 7, 2, 5 }, .max_new = 16, .sampling = .{ .seed = 171 }, .drafts = false, .logprobs = 2 });
+    defer next.deinit(gpa);
+    try engine.addStream(&next);
+    while (engine.activeCount() > 0) try engine.step();
+    try std.testing.expect(next.finished and next.reason != .@"error");
+    try std.testing.expectEqual(next.emitted().len, next.score_rows.items.len);
+    try std.testing.expect(next.emitted().len > 3);
+}

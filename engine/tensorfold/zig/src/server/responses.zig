@@ -172,7 +172,7 @@ pub fn post(srv: *Server, conn: *Conn, a: Allocator) void {
             .ok => |v| v,
             .err => return refuse(conn, a, "the request body is not JSON", 400, null),
         };
-        const r = translate_mod.translate(&cx, body, History{ .srv = srv }) catch return refuse(conn, a, cx.message, 400, null);
+        const r = translate_mod.translateWith(&cx, body, History{ .srv = srv }, srv.info.logprobs) catch return refuse(conn, a, cx.message, 400, null);
         break :blk .{ r, body };
     };
     const t = request[0];
@@ -245,6 +245,7 @@ const Reply = struct {
     cx: *Cx,
     items: std.ArrayList(*json.Object) = .empty,
     current: ?*json.Object = null,
+    raw_scores: std.ArrayList(Value) = .empty,
     calls: std.AutoArrayHashMapUnmanaged(i64, *json.Object) = .empty,
     tools: response_tools.Set = .{},
     custom: std.AutoArrayHashMapUnmanaged(*json.Object, CustomInput) = .empty,
@@ -349,7 +350,7 @@ const Reply = struct {
         } else {
             const part = item.get("content").?.array[0].object;
             if (std.mem.eql(u8, item.get("type").?.string, "message")) {
-                try r.event("response.output_text.done", &.{ .{ "item_id", where_id }, .{ "output_index", where_index }, .{ "content_index", .{ .int = "0" } }, .{ "text", part.get("text").? }, .{ "logprobs", .{ .array = &.{} } } });
+                try r.event("response.output_text.done", &.{ .{ "item_id", where_id }, .{ "output_index", where_index }, .{ "content_index", .{ .int = "0" } }, .{ "text", part.get("text").? }, .{ "logprobs", part.get("logprobs").? } });
             } else {
                 try r.event("response.reasoning_text.done", &.{ .{ "item_id", where_id }, .{ "output_index", where_index }, .{ "content_index", .{ .int = "0" } }, .{ "text", part.get("text").? } });
             }
@@ -368,6 +369,23 @@ const Reply = struct {
         if (std.mem.eql(u8, kind, "message")) {
             try r.event("response.output_text.delta", &.{ .{ "item_id", where_id }, .{ "output_index", where_index }, .{ "content_index", .{ .int = "0" } }, .{ "delta", .{ .string = text } }, .{ "logprobs", .{ .array = &.{} } } });
         } else try r.event("response.reasoning_text.delta", &.{ .{ "item_id", where_id }, .{ "output_index", where_index }, .{ "content_index", .{ .int = "0" } }, .{ "delta", .{ .string = text } } });
+    }
+
+    fn scores(r: *Reply, value: Value) E!void {
+        const rows = value.get("content") orelse return;
+        if (rows != .array or rows.array.len == 0) return;
+        r.raw_scores.appendSlice(r.a, rows.array) catch return error.Closed;
+        // The raw ledger also includes reasoning, control and tool tokens. Scores never open or close items.
+        try r.event("response.logprobs.delta", &.{.{ "logprobs", rows }});
+        const item = r.current orelse return;
+        if (!std.mem.eql(u8, item.get("type").?.string, "message")) return;
+        const part = item.get("content").?.array[0].object;
+        const old = part.get("logprobs").?.array;
+        const all = r.a.alloc(Value, old.len + rows.array.len) catch return error.Closed;
+        @memcpy(all[0..old.len], old);
+        @memcpy(all[old.len..], rows.array);
+        try r.put(part, "logprobs", .{ .array = all });
+        try r.event("response.output_text.delta", &.{ .{ "item_id", item.get("id").? }, .{ "output_index", try r.int(r.index(item)) }, .{ "content_index", .{ .int = "0" } }, .{ "delta", .{ .string = "" } }, .{ "logprobs", rows } });
     }
 
     fn textOf(v: ?Value) ?[]const u8 {
@@ -448,6 +466,7 @@ const Reply = struct {
         const final = json.copyObject(r.a, r.base) catch return error.Closed;
         try r.put(final, "status", .{ .string = status });
         try r.put(final, "output", try r.itemsValue());
+        if (r.raw_scores.items.len > 0) try r.put(final, "logprobs", .{ .array = r.raw_scores.items });
         try r.put(final, "usage", try r.usage(chat_usage));
         if (incomplete) {
             const d = try r.obj();
@@ -487,6 +506,7 @@ const Reply = struct {
         const choices = p.get("choices");
         const choice: Value = if (choices != null and choices.? == .array and choices.?.array.len > 0) choices.?.array[0] else .null;
         try r.delta(if (choice.get("delta")) |d| d else .null);
+        if (choice.get("logprobs")) |scores_| if (scores_ != .null) try r.scores(scores_);
         if (choice.get("finish_reason")) |f| if (f.truthy()) {
             _ = try r.finish(if (f == .string) f.string else null, p.get("usage"), p.get("tensorfold"));
         };
@@ -508,6 +528,7 @@ const Reply = struct {
         };
         try r.put(d, "tool_calls", .{ .array = calls.items });
         try r.delta(.{ .object = d });
+        if (choice.get("logprobs")) |scores_| if (scores_ != .null) try r.scores(scores_);
         const reason = choice.get("finish_reason");
         return r.finish(if (reason != null and reason.? == .string) reason.?.string else null, data.get("usage"), data.get("tensorfold"));
     }
@@ -619,4 +640,33 @@ test "Responses model DSML output restores custom and namespace calls in streame
     const calls = mapped[0].get("tool_calls").?.array;
     try std.testing.expectEqualStrings("files::read", calls[1].get("function").?.get("name").?.string);
     try std.testing.expectEqualStrings(incremental.array[0].get("input").?.string, (try json.parse(a, calls[0].get("function").?.get("arguments").?.string)).ok.get("input").?.string);
+}
+
+
+test "reply logprobs Responses preserve raw ledger without opening or closing output items" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var cx: Cx = .{ .a = a };
+    var r: Reply = .{ .srv = undefined, .a = a, .conn = undefined, .base = try json.newObject(a), .streaming = false, .keep = false, .added = &.{}, .cx = &cx };
+    const value = (try json.parse(a, "{\"content\":[{\"token\":\"x\",\"bytes\":null,\"logprob\":-1.25,\"top_logprobs\":[]}]}" )).ok;
+    try r.scores(value);
+    try std.testing.expectEqual(@as(usize, 0), r.items.items.len);
+    try r.write("reasoning", "think");
+    const thought = r.current.?;
+    try r.scores(value);
+    try std.testing.expectEqual(thought, r.current.?);
+    try std.testing.expectEqual(@as(usize, 1), r.items.items.len);
+    try r.write("message", "answer");
+    try r.scores(value);
+    try r.scores(value);
+    const part = r.current.?.get("content").?.array[0];
+    try std.testing.expectEqual(@as(usize, 2), part.get("logprobs").?.array.len);
+    _ = try r.open("function_call", "call1", "read");
+    const call = r.current.?;
+    try r.scores(value);
+    try std.testing.expectEqual(call, r.current.?);
+    const final = try r.finish("length", null, null);
+    try std.testing.expectEqual(@as(usize, 3), final.get("output").?.array.len);
+    try std.testing.expectEqual(@as(usize, 5), final.get("logprobs").?.array.len);
 }

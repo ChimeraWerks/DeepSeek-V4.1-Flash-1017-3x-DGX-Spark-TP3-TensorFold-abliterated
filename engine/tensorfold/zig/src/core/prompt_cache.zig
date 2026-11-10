@@ -427,6 +427,8 @@ pub const Rules = struct {
     min_gap: u32 = 256,
     /// Shorter prompts keep nothing: below it a mark's extra prompt call costs more than a later turn's reuse saves.
     min_prompt: u32 = 4096,
+    ladder_gap: u32 = 0, // opt-in intermediate cancellation checkpoints
+    keep_slack: u32 = 0,
     /// The family's own resume grid (dsv41: its 2048-row chunk; 0: none): durable points and shared marks stand on it.
     grid: u32 = 0,
     /// The rows a resumed pass replays at its end (dsv41: the window): a state is usable only this far from the end.
@@ -1255,6 +1257,13 @@ pub const Store = struct {
         const fork_index = want.items.len;
         if (fork_at > from) try want.append(a, fork_at);
         try want.appendSlice(a, shared);
+        if (s.rules.ladder_gap > 0) {
+            const top = @min(prompt.len -| @max(s.rules.keep_slack, s.rules.lookahead +| 1), std.math.maxInt(u32));
+            var at: u64 = @as(u64, from) + s.rules.ladder_gap;
+            while (at < top) : (at += s.rules.ladder_gap) {
+                try want.append(a, s.rules.floorGrid(@intCast(at)));
+            }
+        }
         for (want.items, 0..) |w, k| {
             const at = if (s.rules.planned) floorStart(starts, w) else w;
             if (at <= from or at + s.rules.lookahead > prompt.len or at >= prompt.len or !s.usable(at, starts)) continue;
@@ -3190,4 +3199,37 @@ test "cache batch dead run stops at scoped borrowers and retains their accountin
     s.unpin(borrowed);
     try std.testing.expectEqual(@as(u64, 0), s.held);
     try std.testing.expectEqual(@as(usize, 3), f.drops);
+}
+
+test "cache cancellation ladder is opt-in aligned budgeted and resumes above last rung" {
+    const a = std.testing.allocator;
+    const prompt = try a.alloc(u32, 300000);
+    defer a.free(prompt);
+    @memset(prompt, 7);
+    var f: K2aFake = .{};
+    var s = Store.init(a, f.family(true), .{ .grid = 2048, .window = 128 }, 2);
+    defer s.deinit();
+    const off = try s.marks(a, prompt, 0, 0, &.{}, &.{}, &.{});
+    defer a.free(off);
+    try std.testing.expectEqual(@as(usize, 0), off.len);
+    s.rules.ladder_gap = 65536;
+    s.rules.keep_slack = 128 + 8192;
+    const on = try s.marks(a, prompt, 0, 0, &.{}, &.{}, &.{});
+    defer a.free(on);
+    try std.testing.expectEqualSlices(u32, &.{ 65536, 131072, 196608, 262144 }, on);
+    // Cancel after the third complete rung: normal store eviction holds the byte budget.
+    for (on[0..3]) |at| try std.testing.expect(s.keep(prompt, at, null, &.{}));
+    try std.testing.expect(s.held <= s.budget);
+    try std.testing.expectEqual(@as(usize, 2), s.entries.items.len);
+    try std.testing.expectEqual(@as(u32, 196608), s.find(prompt, &.{}).?.at);
+    const resumed = try s.marks(a, prompt, 196608, 0, &.{}, &.{}, &.{});
+    defer a.free(resumed);
+    try std.testing.expectEqualSlices(u32, &.{262144}, resumed);
+    const short = try s.marks(a, prompt[0..70000], 0, 0, &.{}, &.{}, &.{});
+    defer a.free(short);
+    try std.testing.expectEqual(@as(usize, 0), short.len);
+    s.rules.planned = true;
+    const planned = try s.marks(a, prompt, 0, 0, &.{}, &.{ 0, 61440, 126976, 192512, 258048 }, &.{});
+    defer a.free(planned);
+    try std.testing.expectEqualSlices(u32, &.{ 61440, 126976, 192512, 258048 }, planned);
 }

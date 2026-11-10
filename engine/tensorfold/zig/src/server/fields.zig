@@ -75,6 +75,51 @@ pub fn parseNumbers(cx: *Cx, fields: Value) errors.Refused!Value {
     return .{ .object = parsed };
 }
 
+/// The request's penalty fields (lanes Settings' plain values). parseNumbers leaves them raw, so a server without
+/// penalties sees the body exactly as before they existed.
+pub const Penalties = struct { presence: f64 = 0, frequency: f64 = 0, repetition: f64 = 1, window: u32 = 0, include_prompt: bool = false };
+
+/// The penalty fields of the merged sampling options. on (the engine started with penalties): each field checked and
+/// converted, out-of-range values refused. off: presence_penalty, frequency_penalty and repetition_penalty stay accepted
+/// and ignored in any form, as they always were here (clients send them routinely); the two fields only this engine's
+/// penalties define are refused when one asks for something other than its neutral value (repetition_penalty_window 0,
+/// penalty_include_prompt false). A null field is absent.
+pub fn penalties(cx: *Cx, options: Value, on: bool) errors.Refused!Penalties {
+    if (!on) {
+        if (options.field("repetition_penalty_window")) |v| if (!if (toInt(cx.a, v) catch null) |n| std.mem.eql(u8, n.int, "0") else false)
+            return refuseWithout(cx, "repetition_penalty_window");
+        if (options.field("penalty_include_prompt")) |v| if (!(v == .bool and !v.bool))
+            return refuseWithout(cx, "penalty_include_prompt");
+        return .{};
+    }
+    var out: Penalties = .{};
+    for ([_][]const u8{ "presence_penalty", "frequency_penalty", "repetition_penalty" }, [_]*f64{ &out.presence, &out.frequency, &out.repetition }) |name, slot| {
+        const value = options.field(name) orelse continue;
+        const n = toFloat(value) orelse return cx.fail(.request, "{s} must be a finite number or null", .{name});
+        if (!std.mem.eql(u8, name, "repetition_penalty") and @abs(n.float) > 2) return cx.refuse("presence_penalty and frequency_penalty must be between -2 and 2");
+        if (std.mem.eql(u8, name, "repetition_penalty") and n.float <= 0) return cx.refuse("repetition_penalty must be positive");
+        slot.* = n.float;
+    }
+    if (options.field("repetition_penalty_window")) |value| {
+        const n = (toInt(cx.a, value) catch null) orelse return cx.fail(.request, "{s} must be an integer or null", .{"repetition_penalty_window"});
+        const count = n.int64() orelse return cx.refuse("repetition_penalty_window is out of range");
+        if (count < 0 or count > std.math.maxInt(u32)) return cx.refuse("repetition_penalty_window must be between 0 and 4294967295");
+        out.window = @intCast(count);
+    } else if (out.repetition != 1) {
+        // clients send repetition_penalty alone: it then covers the whole reply
+        out.window = std.math.maxInt(u32);
+    }
+    if (options.field("penalty_include_prompt")) |v| {
+        if (v != .bool) return cx.refuse("penalty_include_prompt must be a boolean or null");
+        out.include_prompt = v.bool;
+    }
+    return out;
+}
+
+fn refuseWithout(cx: *Cx, name: []const u8) errors.Refused {
+    return cx.fail(.request, "{s} requires sampling penalties, but this engine was started without penalties", .{name});
+}
+
 /// ``int(value)`` for an int, an integral float or a numeric string; null where Python raises.
 fn toInt(a: Allocator, v: Value) Allocator.Error!?Value {
     switch (v) {
@@ -291,8 +336,11 @@ pub fn effortLevels(a: Allocator, template: []const u8) Allocator.Error![]const 
     return found.items;
 }
 
-/// ``probability_options``: n must be 1, and logprobs are refused (no engine reports them yet).
+/// ``probability_options``: n must be 1; old callers retain unsupported logprobs.
 pub fn probabilityOptions(cx: *Cx, body: Value) errors.Refused!void {
+    return probabilityOptionsWith(cx, body, false);
+}
+pub fn probabilityOptionsWith(cx: *Cx, body: Value, supported: bool) errors.Refused!void {
     if (body.field("n")) |n| if (n != .int or !std.mem.eql(u8, n.int, "1")) return cx.refuse("n must be 1; multiple choices are not supported");
     const enabled = body.field("logprobs");
     if (enabled) |e| if (e != .bool) return cx.refuse("logprobs must be a boolean or null");
@@ -301,7 +349,13 @@ pub fn probabilityOptions(cx: *Cx, body: Value) errors.Refused!void {
         if (n == null or n.? < 0 or n.? > 20) return cx.refuse("top_logprobs must be an integer between 0 and 20, or null");
         if (enabled == null or !enabled.?.bool) return cx.refuse("top_logprobs requires logprobs: true");
     }
-    if (enabled != null and enabled.?.bool) return cx.refuse("logprobs are not supported by this model or backend");
+    if (!supported and enabled != null and enabled.?.bool) return cx.refuse("logprobs are not supported by this model or backend");
+}
+
+pub fn logprobCount(cx: *Cx, body: Value, supported: bool) errors.Refused!?u8 {
+    try probabilityOptionsWith(cx, body, supported);
+    if (!json.truthyField(body, "logprobs")) return null;
+    return @intCast(if (body.field("top_logprobs")) |v| v.int64().? else 0);
 }
 
 const media = [_][]const u8{ "image", "images", "image_url", "input_image", "audio", "input_audio", "video", "video_url" };
@@ -330,4 +384,67 @@ test "efforts and numbers" {
     defer arena.deinit();
     try std.testing.expectEqualStrings("-12", (try pyIntText(arena.allocator(), " -0_12 ")).?);
     try std.testing.expect(try pyIntText(arena.allocator(), "8.0") == null);
+}
+
+
+test "penalties request fields validate numbers and prompt boolean" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    for ([_][]const u8{
+        "{\"presence_penalty\":3}", "{\"frequency_penalty\":-3}",
+        "{\"repetition_penalty\":0}", "{\"repetition_penalty_window\":-1}",
+        "{\"repetition_penalty_window\":4294967296}", "{\"repetition_penalty_window\":1.5}",
+        "{\"penalty_include_prompt\":1}", "{\"presence_penalty\":\"nan\"}"
+    }) |body| {
+        const parsed = try json.parse(cx.a,body);
+        try std.testing.expectError(error.Refused,penalties(&cx,try parseNumbers(&cx,parsed.ok),true));
+    }
+    const valid = try json.parse(cx.a,"{\"presence_penalty\":-2,\"frequency_penalty\":2,\"repetition_penalty\":1.2,\"repetition_penalty_window\":5,\"penalty_include_prompt\":true}");
+    const got = try penalties(&cx,try parseNumbers(&cx,valid.ok),true);
+    try std.testing.expectEqual(@as(f64,-2),got.presence);
+    try std.testing.expectEqual(@as(u32,5),got.window);
+    try std.testing.expect(got.include_prompt);
+    // repetition_penalty alone covers the whole reply; a null window is absent; a neutral value sets no window
+    for ([_][]const u8{ "{\"repetition_penalty\":1.1}", "{\"repetition_penalty\":1.1,\"repetition_penalty_window\":null}" }) |body|
+        try std.testing.expectEqual(@as(u32,std.math.maxInt(u32)),(try penalties(&cx,try parseNumbers(&cx,(try json.parse(cx.a,body)).ok),true)).window);
+    try std.testing.expectEqual(@as(u32,0),(try penalties(&cx,try parseNumbers(&cx,(try json.parse(cx.a,"{\"repetition_penalty\":1}")).ok),true)).window);
+    try std.testing.expectEqual(@as(u32,0),(try penalties(&cx,try parseNumbers(&cx,(try json.parse(cx.a,"{\"repetition_penalty\":1.1,\"repetition_penalty_window\":0}")).ok),true)).window);
+}
+
+test "penalties off keeps the legacy fields raw and ignored, refuses window and prompt inclusion" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    // parse_numbers never touched presence_penalty or frequency_penalty: any form passes through unchanged
+    const legacy = (try json.parse(cx.a,"{\"presence_penalty\":\"abc\",\"frequency_penalty\":7,\"repetition_penalty\":\"x\"}")).ok;
+    const parsed = try parseNumbers(&cx,legacy);
+    try std.testing.expectEqualStrings("abc",parsed.get("presence_penalty").?.string);
+    try std.testing.expectEqualStrings("7",parsed.get("frequency_penalty").?.int);
+    try std.testing.expectEqual(Penalties{},try penalties(&cx,parsed,false));
+    for ([_][]const u8{ "{\"repetition_penalty\":1.1}", "{\"repetition_penalty\":0}", "{\"repetition_penalty\":\"x\"}", "{\"repetition_penalty_window\":0}", "{\"penalty_include_prompt\":false}", "{\"repetition_penalty_window\":null}" }) |body|
+        try std.testing.expectEqual(Penalties{},try penalties(&cx,(try json.parse(cx.a,body)).ok,false));
+    for ([_][]const u8{ "{\"repetition_penalty_window\":64}", "{\"repetition_penalty_window\":\"x\"}", "{\"penalty_include_prompt\":true}", "{\"penalty_include_prompt\":1}" }) |body| {
+        try std.testing.expectError(error.Refused,penalties(&cx,(try json.parse(cx.a,body)).ok,false));
+        try std.testing.expect(std.mem.indexOf(u8,cx.message,"started without penalties") != null);
+    }
+}
+
+test "reply logprobs range checks and off request behavior" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    for ([_][]const u8{ "-1", "21", "1.5", "true", "\"3\"" }) |n| {
+        const body = (try json.parse(cx.a, try std.fmt.allocPrint(cx.a, "{{\"logprobs\":true,\"top_logprobs\":{s}}}", .{n}))).ok;
+        try std.testing.expectError(error.Refused, probabilityOptionsWith(&cx, body, true));
+    }
+    for (0..21) |n| {
+        const body = (try json.parse(cx.a, try std.fmt.allocPrint(cx.a, "{{\"logprobs\":true,\"top_logprobs\":{d}}}", .{n}))).ok;
+        try std.testing.expectEqual(@as(?u8, @intCast(n)), try logprobCount(&cx, body, true));
+        try std.testing.expectError(error.Refused, probabilityOptionsWith(&cx, body, false));
+    }
+    const plain = (try json.parse(cx.a, "{}")).ok;
+    try std.testing.expectEqual(@as(?u8, null), try logprobCount(&cx, plain, true));
+    try probabilityOptions(&cx, plain);
 }

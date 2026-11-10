@@ -24,6 +24,7 @@ const Stats = api.Stats;
 const SubmitError = api.SubmitError;
 
 const Share = @import("prefill_share.zig").Share;
+const Lend = @import("prefill_lend.zig").Lend;
 const prefix = @import("lane_host_prefix.zig");
 
 pub const LaneHost = struct {
@@ -80,6 +81,8 @@ pub const LaneHost = struct {
     filling: ?*Job = null,
     between_err: ?anyerror = null,
     share: Share = .{},
+    lend: Lend = .{}, // TF_FILL_LEND=1, requires the existing wall-time share
+    rank_uncached: bool = false, // TF_FILL_UNCACHED=1, admitted but unstarted cache hits
     slice_fill_at: i96 = 0, // end of the previous park, or chunk start
     slice_decode_ns: i64 = 0, // current long chunk: parks are decode occupancy, not prefill
     prefix: prefix.Wait = .{},
@@ -152,6 +155,8 @@ pub const LaneHost = struct {
         fill_began: bool = false,
         fill_wait: u32 = 0,
         fill_at: u32 = 0,
+        fill_work_ns: i64 = 0,
+        fill_lent_ns: i64 = 0,
         prefill_sent: bool = false, // a lone driver's prefilled event went out
         began: i96 = 0,
         prefilled: ?i96 = null,
@@ -269,7 +274,7 @@ pub const LaneHost = struct {
         enforced.cache_salt = true;
         var ms: i96 = 0;
         if (std.c.getenv("TF_DS_PREFILL_INTERLEAVE_MS")) |v| ms = std.fmt.parseInt(u32, std.mem.span(v), 10) catch 0;
-        return .{ .gpa = gpa, .io = io, .core = core, .info_ = enforced, .share = Share.fromEnv(), .prefix = prefix.Wait.fromEnv(), .interleave_ns = ms * std.time.ns_per_ms };
+        return .{ .gpa = gpa, .io = io, .core = core, .info_ = enforced, .share = Share.fromEnv(), .lend = Lend.fromEnv(), .prefix = prefix.Wait.fromEnv(), .interleave_ns = ms * std.time.ns_per_ms, .rank_uncached = if (std.c.getenv("TF_FILL_UNCACHED")) |v| std.mem.eql(u8, std.mem.span(v), "1") else false };
     }
 
     /// The tier's switches (before start). Telemetry is published from here on when either is on: a tier on the cache
@@ -359,7 +364,10 @@ pub const LaneHost = struct {
     }
 
     fn infoFn(ctx: *anyopaque) Info {
-        return self(ctx).info_;
+        const h = self(ctx);
+        var info = h.info_;
+        info.logprobs = if (h.core.backend.vtable.logprobs) |f| f(h.core.backend.ptr) else false;
+        return info;
     }
 
     fn submitFn(ctx: *anyopaque, id: Id, request: *const Request, sink: Sink) SubmitError!void {
@@ -466,6 +474,8 @@ pub const LaneHost = struct {
     fn send(h: *LaneHost, job: *Job) void {
         const emitted = job.stream.emitted();
         if (emitted.len > job.delivered) {
+            if (job.stream.logprobs != null)
+                emit(job, .{ .logprobs = job.stream.score_rows.items[job.delivered..emitted.len] });
             emit(job, .{ .tokens = emitted[job.delivered..] });
             h.noteDecoded(emitted.len - job.delivered);
             job.delivered = emitted.len;
@@ -779,6 +789,7 @@ pub const LaneHost = struct {
             .prefill_only = job.warm != null,
             .eos = r.eos,
             .sampling = r.sampling,
+            .logprobs = r.logprobs,
             .drafts = r.drafts,
             .proposer = job.proposer.proposer(),
             .stop_check = if (r.stop) |s| .{ .ptr = s.ctx, .check = s.check } else null,
@@ -860,12 +871,17 @@ pub const LaneHost = struct {
         h.core.hold_finished = true;
         defer h.core.hold_finished = false;
         while (true) {
+            const lending = h.lendEnabled();
+            const round_start = if (lending) std.Io.Clock.awake.now(h.io).toNanoseconds() else 0;
+            const emitted = if (lending) h.replyEmitted() else 0;
+            const runnable = if (lending) h.core.runnableCount() else 0;
             h.core.step() catch |err| {
                 if (h.peer_monitor) |*monitor| monitor.signal(err);
                 h.between_err = err;
                 return err;
             };
             if (h.broken()) return error.PeerDown;
+            if (lending) h.lend.rounded(@intCast(@max(0, std.Io.Clock.awake.now(h.io).toNanoseconds() - round_start)), h.replyEmitted() -| emitted, runnable);
             for (h.admitted.items) |job| {
                 if (job == h.filling or job.prefilled == null) continue;
                 h.send(job); // streaming only; finish/release waits until the chunk closes
@@ -1067,6 +1083,8 @@ pub const LaneHost = struct {
         job.started = false;
         job.fill_began = false;
         job.fill_wait = 0;
+        job.fill_work_ns = 0;
+        job.fill_lent_ns = 0;
         job.fill_at = 0; // progress belongs to the destroyed attempt, not the retry
         job.reached = 0;
         job.began = 0;
@@ -1194,6 +1212,13 @@ pub const LaneHost = struct {
         return false;
     }
 
+    fn fillRemaining(h: *const LaneHost, job: *const Job) usize {
+        var at = job.fill_at;
+        if (h.rank_uncached and !job.fill_began and !job.stream.reuse_failed)
+            at = @max(at, @max(job.stream.cached, job.stream.reuse.at));
+        return job.stream.prompt_len -| at;
+    }
+
     /// Select within one class, aging after eight skips, otherwise foreground then least work.
     fn pickFill(h: *LaneHost, short: bool) ?*Job {
         var best: ?*Job = null;
@@ -1203,8 +1228,8 @@ pub const LaneHost = struct {
             const b = best orelse { best = job; continue; };
             const aged = job.fill_wait >= 8;
             const baged = b.fill_wait >= 8;
-            const remaining = job.stream.prompt_len -| job.fill_at;
-            if (if (aged != baged) aged else if (aged) job.fill_wait > b.fill_wait else if ((job.warm == null) != (b.warm == null)) job.warm == null else remaining < b.stream.prompt_len -| b.fill_at) best = job;
+            const remaining = h.fillRemaining(job);
+            if (if (aged != baged) aged else if (aged) job.fill_wait > b.fill_wait else if ((job.warm == null) != (b.warm == null)) job.warm == null else remaining < h.fillRemaining(b)) best = job;
         }
         return best;
     }
@@ -1262,6 +1287,35 @@ pub const LaneHost = struct {
         } else _ = h.drop(job, h.words(err));
     }
 
+    fn lendEnabled(h: *const LaneHost) bool {
+        return h.lend.on and h.share.p < 1 and h.stepped();
+    }
+
+    fn replyEmitted(h: *const LaneHost) u64 {
+        var n: u64 = 0;
+        for (h.admitted.items) |j| if (j.started and j.prefilled != null) { n +|= j.stream.emitted().len; };
+        return n;
+    }
+
+    fn lendAfter(h: *LaneHost, filled: *Job, work_ns: i64) void {
+        // fillAt can finish or destroy the job. Compare identity before dereferencing it.
+        const job = for (h.admitted.items) |j| {
+            if (j == filled and j.prefilled == null) break j;
+        } else return;
+        job.fill_work_ns +|= @max(0, work_ns);
+        const completed = job.fill_at -| job.stream.cached;
+        const remaining = job.stream.prompt_len -| job.fill_at;
+        var soonest: ?f64 = null;
+        for (h.admitted.items) |j| {
+            if (!j.started or j.prefilled == null or j.stream.finished or j.stream.paused) continue;
+            if (h.lend.replyNs(j.stream.budgetLeft(), remaining, completed, job.fill_work_ns)) |ns|
+                soonest = @min(soonest orelse ns, ns);
+        }
+        const loan = Lend.grant(job.fill_work_ns, job.fill_lent_ns, soonest orelse return);
+        job.fill_lent_ns += loan;
+        h.share.debt_ns +|= loan;
+    }
+
     fn runFills(h: *LaneHost) void {
         if (!h.stepped()) return;
         // A tier may have just deferred a queued admission: absence of an active restore is not paid debt.
@@ -1285,7 +1339,9 @@ pub const LaneHost = struct {
         h.slice_decode_ns = 0;
         h.fillAt(job);
         if (h.broken()) return;
-        h.share.sliced(@intCast(std.Io.Clock.awake.now(h.io).toNanoseconds() - before), h.slice_decode_ns, decoding);
+        const elapsed: i64 = @intCast(std.Io.Clock.awake.now(h.io).toNanoseconds() - before);
+        h.share.sliced(elapsed, h.slice_decode_ns, decoding);
+        if (h.lendEnabled()) h.lendAfter(job, @max(0, elapsed - h.slice_decode_ns));
     }
 
     fn broken(h: *LaneHost) bool {
@@ -1350,14 +1406,21 @@ pub const LaneHost = struct {
         h.unlock();
         if (h.core.learner) |l| l.advanceTo(@intCast(std.Io.Clock.awake.now(h.io).toNanoseconds()));
         const owed = h.share.debt_ns > 0;
-        const round_start = if (owed) std.Io.Clock.awake.now(h.io).toNanoseconds() else 0;
+        const lending = h.lendEnabled();
+        const round_start = if (owed or lending) std.Io.Clock.awake.now(h.io).toNanoseconds() else 0;
+        const emitted = if (lending) h.replyEmitted() else 0;
+        const runnable = if (lending) h.core.runnableCount() else 0;
         h.core.step() catch |e| {
             if (h.peer_monitor) |*monitor| monitor.signal(e);
             if (h.broken()) return true;
             h.failAll(@errorName(e));
             return true;
         };
-        if (owed) h.share.rounded(@intCast(std.Io.Clock.awake.now(h.io).toNanoseconds() - round_start));
+        if (owed or lending) {
+            const ns: i64 = @intCast(std.Io.Clock.awake.now(h.io).toNanoseconds() - round_start);
+            if (owed) h.share.rounded(ns);
+            if (lending) h.lend.rounded(ns, h.replyEmitted() -| emitted, runnable);
+        }
         var i: usize = 0;
         while (i < h.admitted.items.len) {
             const job = h.admitted.items[i];
@@ -2377,6 +2440,7 @@ test "stepped prefill long prompts interleave exact tokens and bound short burst
         fn event(ctx: *anyopaque, id: Id, ev: *const Event) void {
             const o: *@This() = @ptrCast(@alignCast(ctx));
             switch (ev.*) {
+                .logprobs => {},
                 .tokens => |ts| {
                     if (id <= 3) o.tokens[id - 1].appendSlice(std.testing.allocator, ts) catch unreachable;
                     if (id == 1) o.burst = 0;
@@ -3355,6 +3419,7 @@ const RoomRig = struct {
         fn event(ptr: *anyopaque, _: Id, e: *const Event) void {
             const b: *Reply = @ptrCast(@alignCast(ptr));
             switch (e.*) {
+                .logprobs => {},
                 .prefilled => |v| b.cached = v,
                 .finished => |v| b.done = v.reason,
                 .tokens => |v| b.tokens.appendSlice(a, v) catch unreachable,
@@ -4001,3 +4066,429 @@ test "prefill slice nojoin fake backend runs before read completion and holds fi
         host.closeAll();
     }
 }
+
+test "stepped prefill uncached tail ranks pinned admission and discards failed restore estimates" {
+    const a = std.testing.allocator;
+    var core: lanes.Engine = undefined;
+    var host = LaneHost.init(a, std.testing.io, &core, .{ .lanes = 2 });
+    defer host.admitted.deinit(a);
+    const rows: [4096]u32 = @splat(3);
+    const warm: Request = .{ .prompt = &rows, .max_tokens = 1 };
+    const cold: Request = .{ .prompt = rows[0..2048], .max_tokens = 1 };
+    var first: LaneHost.Job = .{ .host = &host, .id = 1, .request = &warm, .sink = undefined };
+    first.stream = try lanes.Stream.init(a, .{ .id = "cached", .prompt = warm.prompt, .max_new = 1 });
+    defer first.stream.deinit(a);
+    var second: LaneHost.Job = .{ .host = &host, .id = 2, .request = &cold, .sink = undefined };
+    second.stream = try lanes.Stream.init(a, .{ .id = "cold", .prompt = cold.prompt, .max_new = 1 });
+    defer second.stream.deinit(a);
+    first.stream.reuse.at = 4000;
+    try host.admitted.appendSlice(a, &.{ &first, &second });
+    host.rank_uncached = false;
+    try std.testing.expect(host.pickFill(false).? == &second);
+    host.rank_uncached = true;
+    try std.testing.expectEqual(@as(u32, 96), host.fillRemaining(&first));
+    try std.testing.expect(host.pickFill(false).? == &first);
+    first.stream.reuse_failed = true;
+    try std.testing.expectEqual(@as(u32, 4096), host.fillRemaining(&first));
+    try std.testing.expect(host.pickFill(false).? == &second);
+    first.stream.reuse_failed = false;
+    first.fill_began = true; // actual begin rejected the optimistic prefix
+    try std.testing.expectEqual(@as(u32, 4096), host.fillRemaining(&first));
+    first.fill_at = 3072;
+    try std.testing.expectEqual(@as(u32, 1024), host.fillRemaining(&first));
+    try std.testing.expect(host.pickFill(false).? == &first);
+    second.fill_wait = 8; // a cache hit never defeats aging
+    try std.testing.expect(host.pickFill(false).? == &second);
+    first.fill_wait = 8;
+    try std.testing.expect(host.pickFill(false).? == &first); // stable equal-age tie
+}
+
+const FairnessClock = struct {
+    var ns: i96 = 0;
+    var reads: usize = 0;
+    fn now(_: ?*anyopaque, _: std.Io.Clock) std.Io.Timestamp { reads += 1; return .{ .nanoseconds = ns }; }
+    fn chunk(_: *anyopaque, _: *lanes.Stream, _: usize) void { ns += 100 * std.time.ns_per_ms; }
+    fn round(_: *anyopaque) void { ns += 40 * std.time.ns_per_ms; }
+    fn quiet(_: *anyopaque, _: Id, _: *const Event) void {}
+};
+
+test "stepped prefill lending adds one account bounded by actual prompt work with virtual time" {
+    for ([_]bool{ false, true }) |on| {
+        const a = std.testing.allocator;
+        var cfg = try lanes.Config.init(a, .{ .exact_width = 1 }, 8, 7);
+        defer cfg.deinit(a);
+        var target: lanes.fake.Fake = .{ .gpa = a };
+        defer target.deinit();
+        var clock: lanes.fake.FixedClock = .{};
+        var core = lanes.Engine.init(a, &cfg, target.stepped(), clock.clock());
+        defer core.deinit();
+        var vt = std.testing.io.vtable.*;
+        vt.now = FairnessClock.now;
+        var io = std.testing.io;
+        io.vtable = &vt;
+        var host = LaneHost.init(a, io, &core, .{ .lanes = 3 });
+        defer host.stop();
+        defer host.closeAll();
+        host.lend = .{ .on = on };
+        host.share = .{ .p = 0.5 };
+        host.rank_uncached = false;
+        FairnessClock.ns = 0;
+        FairnessClock.reads = 0;
+        const sink: Sink = .{ .ctx = &host, .event = FairnessClock.quiet };
+        const reply: Request = .{ .prompt = &.{ 2, 3 }, .max_tokens = 100, .drafts = false };
+        try host.engine().submit(1, &reply, sink);
+        host.admitBatch();
+        host.runFills();
+        target.round_hook = FairnessClock.round;
+        target.round_ctx = &host;
+        _ = host.runIteration(); // real outer round supplies the reply-rate sample
+        if (on) try std.testing.expectEqual(@as(f64, 40 * std.time.ns_per_ms), host.lend.ns_round);
+        const rows: [8192]u32 = @splat(5);
+        const req: Request = .{ .prompt = &rows, .max_tokens = 1, .drafts = false };
+        target.prefill_chunks = 8;
+        target.prefill_hook = FairnessClock.chunk;
+        target.prefill_hook_ctx = &host;
+        try host.engine().submit(2, &req, sink);
+        host.admitBatch();
+        const filling = host.admitted.items[1];
+        host.runFills();
+        try std.testing.expectEqual(@as(i64, 100 * std.time.ns_per_ms), host.share.debt_ns); // reply too long
+        if (on) try std.testing.expectEqual(@as(i64, 100 * std.time.ns_per_ms), filling.fill_work_ns);
+        // Use the real sampler's measured cost with a reply now near its requested limit.
+        const decoder = host.admitted.items[0];
+        decoder.stream.max_new = @intCast(decoder.stream.emitted().len + 1);
+        host.share.debt_ns = 0;
+        host.runFills();
+        try std.testing.expectEqual(@as(i64, (if (on) @as(i64, 140) else 100) * std.time.ns_per_ms), host.share.debt_ns);
+        try std.testing.expectEqual(@as(i64, if (on) 40 * std.time.ns_per_ms else 0), filling.fill_lent_ns);
+        if (on) try std.testing.expect(filling.fill_lent_ns <= @divTrunc(filling.fill_work_ns, 4));
+        _ = host.runIteration(); // terminal decoder counted before host delivery frees it
+        if (on) try std.testing.expectEqual(@as(u32, 2), host.lend.rounds);
+        target.round_hook = null;
+        target.prefill_hook = null;
+        host.engine().cancel(2);
+        host.takeCancels();
+        host.runFills();
+        try std.testing.expectEqual(@as(i64, 0), host.share.debt_ns);
+    }
+}
+
+const FairnessAudit = struct {
+    host: *LaneHost,
+    short: *const Request,
+    scenario: enum { burst, cancel_long, cancel_short, two_long } = .burst,
+    injected: bool = false,
+    long_chunks: usize = 0,
+    shorts: usize = 0,
+    shorts_since: usize = 0,
+    max_shorts: usize = 0,
+    next_id: Id = 3,
+    done: usize = 0,
+    reasons: [2]?Reason = .{ null, null },
+    trace: [4096]u32 = @splat(0),
+    n: usize = 0,
+    fn put(x: *@This(), v: u32) void { x.trace[x.n] = v; x.n += 1; }
+    fn chunk(ptr: *anyopaque, s: *lanes.Stream, c: usize) void {
+        const x: *@This() = @ptrCast(@alignCast(ptr));
+        FairnessClock.ns += 100 * std.time.ns_per_ms;
+        x.put(@intCast(s.prompt_len * 16 + c));
+        if (s.prompt_len != 8192) return;
+        x.long_chunks += 1;
+        x.max_shorts = @max(x.max_shorts, x.shorts_since);
+        x.shorts_since = 0;
+        if (x.injected) return;
+        x.injected = true;
+        x.host.engine().submit(2, x.short, .{ .ctx = x, .event = event }) catch unreachable;
+        if (x.scenario == .cancel_long) x.host.engine().cancel(1);
+        if (x.scenario == .cancel_short) x.host.engine().cancel(2);
+    }
+    fn event(ptr: *anyopaque, id: Id, ev: *const Event) void {
+        const x: *@This() = @ptrCast(@alignCast(ptr));
+        switch (ev.*) {
+            .tokens => |ts| for (ts) |t| { x.put(0x1000000 + @as(u32, @intCast(id)) * 256 + t); },
+            .finished => |end| {
+                x.put(0x2000000 + @as(u32, @intCast(id)) * 16 + @intFromEnum(end.reason));
+                x.done += 1;
+                if (x.done == (if (x.scenario == .burst) @as(usize, 33) else 2)) x.host.closing = true;
+                if (id <= 2) x.reasons[id - 1] = end.reason;
+                if (id != 1) {
+                    x.shorts += 1;
+                    x.shorts_since += 1;
+                    if (x.scenario == .burst and x.next_id <= 33) {
+                        x.host.engine().submit(x.next_id, x.short, .{ .ctx = x, .event = event }) catch unreachable;
+                        x.next_id += 1;
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+};
+
+const FairnessBackend = struct {
+    var audit: *FairnessAudit = undefined;
+    var inner: *const lanes.backend.Backend.VTable = undefined;
+    fn begin(p: *anyopaque, s: *lanes.Stream) anyerror!void { audit.put(0x3000000 + @as(u32, @intCast(s.prompt_len))); return inner.prefill_begin.?(p, s); }
+    fn step(p: *anyopaque, s: *lanes.Stream) anyerror!bool { audit.put(0x4000000 + @as(u32, @intCast(s.prompt_len))); return inner.prefill_step.?(p, s); }
+    fn end(p: *anyopaque, s: *lanes.Stream) void { audit.put(0x5000000 + @as(u32, @intCast(s.prompt_len))); inner.prefill_end.?(p, s); }
+    fn first(p: *anyopaque, s: *lanes.Stream, at: u64) anyerror!u64 { audit.put(0x6000000 + @as(u32, @intCast(at))); return inner.first(p, s, at); }
+    fn read(p: *anyopaque, handle: u64) anyerror!u32 { audit.put(0x7000000 + @as(u32, @intCast(handle))); return inner.read(p, handle); }
+    fn queue(p: *anyopaque, s: *lanes.Stream, feed: lanes.backend.Feed, at: u64) anyerror!u64 { audit.put(0x8000000 + @as(u32, @intCast(at))); return inner.queue(p, s, feed, at); }
+    fn release(p: *anyopaque, s: *lanes.Stream) void { audit.put(0x9000000 + @as(u32, @intCast(s.prompt_len))); inner.release(p, s); }
+};
+
+test "stepped prefill audit late arrivals bounded bursts two longs and both cancellations" {
+    const a = std.testing.allocator;
+    for ([_]@FieldType(FairnessAudit, "scenario"){ .burst, .cancel_long, .cancel_short, .two_long }) |scenario| {
+        var cfg = try lanes.Config.init(a, .{ .exact_width = 1 }, 8, 7);
+        defer cfg.deinit(a);
+        var target: lanes.fake.Fake = .{ .gpa = a, .prefill_chunks = 16 };
+        defer target.deinit();
+        var clock: lanes.fake.FixedClock = .{};
+        var core = lanes.Engine.init(a, &cfg, target.stepped(), clock.clock());
+        defer core.deinit();
+        var vt = std.testing.io.vtable.*;
+        vt.now = FairnessClock.now;
+        var io = std.testing.io;
+        io.vtable = &vt;
+        var host = LaneHost.init(a, io, &core, .{ .lanes = 3 });
+        defer host.stop();
+        defer host.closeAll();
+        host.lend = .{};
+        host.rank_uncached = false;
+        host.share = .{};
+        FairnessClock.ns = 0;
+        FairnessClock.reads = 0;
+        const rows: [8192]u32 = @splat(5);
+        const other: [4096]u32 = @splat(3);
+        const req: Request = .{ .prompt = &rows, .max_tokens = 1, .drafts = false };
+        const second: Request = .{ .prompt = if (scenario == .two_long) &other else &.{ 2, 3 }, .max_tokens = 1, .drafts = false };
+        var audit: FairnessAudit = .{ .host = &host, .short = &second, .scenario = scenario };
+        FairnessBackend.audit = &audit;
+        FairnessBackend.inner = target.stepped().vtable;
+        var backend = FairnessBackend.inner.*;
+        backend.prefill_begin = FairnessBackend.begin;
+        backend.prefill_step = FairnessBackend.step;
+        backend.prefill_end = FairnessBackend.end;
+        backend.first = FairnessBackend.first;
+        backend.read = FairnessBackend.read;
+        backend.queue = FairnessBackend.queue;
+        backend.release = FairnessBackend.release;
+        core.backend.vtable = &backend;
+        target.prefill_hook = FairnessAudit.chunk;
+        target.prefill_hook_ctx = &audit;
+        try host.engine().submit(1, &req, .{ .ctx = &audit, .event = FairnessAudit.event });
+        const expected: usize = if (scenario == .burst) 33 else 2;
+        var iterations: usize = 0;
+        while (audit.done < expected and iterations < 1000) : (iterations += 1) _ = host.runIteration();
+        try std.testing.expectEqual(expected, audit.done);
+        try std.testing.expectEqual(@as(?Reason, if (scenario == .cancel_long) .cancelled else .length), audit.reasons[0]);
+        try std.testing.expectEqual(@as(?Reason, if (scenario == .cancel_short) .cancelled else .length), audit.reasons[1]);
+        if (scenario == .burst) {
+            try std.testing.expect(audit.max_shorts <= host.info_.lanes);
+            try std.testing.expectEqual(@as(usize, 16), audit.long_chunks);
+            try std.testing.expect(iterations <= 17); // sixteen long turns, at most three short passes per turn
+        }
+        if (scenario == .two_long) {
+            // After eight skips the larger fill advances before the smaller one's whole pass ends.
+            const next_long = std.mem.indexOfScalar(u32, audit.trace[0..audit.n], 8192 * 16 + 1).?;
+            const end_short = std.mem.indexOfScalar(u32, audit.trace[0..audit.n], 4096 * 16 + 15).?;
+            try std.testing.expect(next_long < end_short);
+        }
+        const golden: struct { calls: usize, reads: usize, hash: u64 } = switch (scenario) {
+            .burst => .{ .calls = 1287, .reads = 659, .hash = 0x960fe73db91b1e9c },
+            .cancel_long => .{ .calls = 44, .reads = 22, .hash = 0x42519592d214fba0 },
+            .cancel_short => .{ .calls = 40, .reads = 51, .hash = 0xd7474cf5b4c55760 },
+            .two_long => .{ .calls = 78, .reads = 102, .hash = 0xffd0451e86820a3f },
+        };
+        try std.testing.expectEqual(golden.calls, audit.n);
+        try std.testing.expectEqual(golden.reads, FairnessClock.reads);
+        try std.testing.expectEqual(golden.hash, std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(audit.trace[0..audit.n])));
+        try std.testing.expectEqual(@as(usize, 0), target.lanes.count());
+    }
+}
+
+test "stepped prefill uncached real pinned lookup cuts in and keeps exact tokens" {
+    const a = std.testing.allocator;
+    var cfg = try lanes.Config.init(a, .{ .exact_width = 1 }, 8, 7);
+    defer cfg.deinit(a);
+    var target: lanes.fake.Fake = .{ .gpa = a };
+    defer target.deinit();
+    var clock: lanes.fake.FixedClock = .{};
+    var core = lanes.Engine.init(a, &cfg, target.stepped(), clock.clock());
+    defer core.deinit();
+    var store = pc.Store.init(a, .{ .ptr = &target, .vtable = &.{ .bytes = RoomRig.bytes, .save = RoomRig.save, .restore = RoomRig.restore, .drop = RoomRig.drop } }, .{ .min_prompt = 0, .min_gap = 4 }, 1 << 20);
+    defer store.deinit();
+    var host = LaneHost.init(a, std.testing.io, &core, .{ .lanes = 3 });
+    host.cache = &store;
+    host.rank_uncached = true;
+    host.lend = .{};
+    host.share = .{};
+    host.prefix.ns = 0;
+    defer host.stop();
+    defer host.closeAll();
+    const warm: [8192]u32 = @splat(3);
+    const cold: [4096]u32 = @splat(5);
+    var priming = try lanes.Stream.init(a, .{ .id = "prime", .prompt = warm[0..8176], .max_new = 1 });
+    defer priming.deinit(a);
+    try target.backend().prefill(&priming);
+    defer target.backend().release(&priming);
+    try std.testing.expect(store.keep(warm[0..8176], 8176, &priming, &.{}));
+    target.prefill_chunks = 8;
+    const cold_req: Request = .{ .prompt = &cold, .max_tokens = 1, .drafts = false };
+    const warm_req: Request = .{ .prompt = &warm, .max_tokens = 1, .drafts = false };
+    var result: RoomRig.Reply = .{};
+    defer result.deinit();
+    const Quiet = struct { fn event(_: *anyopaque, _: Id, _: *const Event) void {} };
+    const quiet: Sink = .{ .ctx = &host, .event = Quiet.event };
+    try host.engine().submit(1, &cold_req, quiet);
+    host.admitBatch();
+    const long = host.admitted.items[0];
+    host.fillAt(long);
+    try host.engine().submit(2, &warm_req, result.sink());
+    host.admitBatch();
+    const resumed = host.admitted.items[1];
+    try std.testing.expect(resumed.entry != null);
+    try std.testing.expectEqual(@as(u32, 8176), resumed.stream.reuse.at);
+    try std.testing.expectEqual(@as(u32, 0), resumed.stream.cached);
+    try std.testing.expectEqual(@as(u32, 0), resumed.fill_at);
+    try std.testing.expect(!resumed.fill_began);
+    try std.testing.expect(host.pickFill(false).? == resumed);
+    for (0..16) |_| { if (result.done != null) break; host.runFills(); }
+    try std.testing.expectEqual(@as(?Reason, .length), result.done);
+    try std.testing.expectEqual(@as(?u32, 8176), result.cached);
+    try std.testing.expectEqual(@as(usize, 1), result.tokens.items.len);
+    try std.testing.expectEqual(lanes.fake.next(&warm, null, warm.len), result.tokens.items[0]);
+    try std.testing.expect(long.fill_at < cold.len);
+    host.engine().cancel(1);
+    host.takeCancels();
+}
+
+test "stepped prefill lending samples parks including held terminal streams once" {
+    const Case = struct { p: f64 = 0.5, cap_ms: i64 = 250, finish: bool = false, survivor: bool = false, paused: bool = false, cancel: bool = false, rounds: u64, debt_ms: i64 };
+    for ([_]Case{
+        .{ .p = 1, .rounds = 2, .debt_ms = 0 },
+        .{ .rounds = 6, .debt_ms = 60 },
+        .{ .cap_ms = 0, .rounds = 6, .debt_ms = 60 },
+        .{ .cap_ms = 80, .rounds = 4, .debt_ms = 140 },
+        .{ .cap_ms = 1, .rounds = 2, .debt_ms = 220 },
+        .{ .finish = true, .rounds = 1, .debt_ms = 260 },
+        .{ .finish = true, .survivor = true, .rounds = 6, .debt_ms = 60 },
+        .{ .paused = true, .rounds = 0, .debt_ms = 0 },
+        .{ .cancel = true, .rounds = 1, .debt_ms = 60 },
+    }) |case| {
+        const gpa = std.testing.allocator;
+        var cfg = try lanes.Config.init(gpa, .{ .exact_width = 8, .hidden_rows = true }, 8, 7);
+        defer cfg.deinit(gpa);
+        var target: lanes.fake.Fake = .{ .gpa = gpa };
+        defer target.deinit();
+        var clock: lanes.fake.FixedClock = .{};
+        var core = lanes.Engine.init(gpa, &cfg, target.stepped(), clock.clock());
+        defer core.deinit();
+        const Watch = struct {
+            var ns: i96 = 0;
+            var reads: usize = 0;
+            host: *LaneHost,
+            target: *lanes.fake.Fake,
+            cancel: bool,
+            baseline: usize = 0,
+            rounds: u64 = 0,
+            parks: usize = 0,
+            park_rounds: u64 = 0,
+            park_reads: usize = 0,
+            expected: [2]u64,
+            done: usize = 0,
+            good: bool = true,
+            fn now(_: ?*anyopaque, _: std.Io.Clock) std.Io.Timestamp { reads += 1; return .{ .nanoseconds = ns }; }
+            fn event(ctx: *anyopaque, _: Id, ev: *const Event) void {
+                const w: *@This() = @ptrCast(@alignCast(ctx));
+                if (ev.* == .finished) w.done += 1;
+                if (w.host.core.hold_finished) {
+                    w.good = w.good and w.target.release_calls == w.baseline and w.done == 0;
+                    w.good = w.good and w.host.queued.items.len == 1;
+                }
+            }
+            fn park(ctx: *anyopaque, _: *lanes.Stream) void {
+                const w: *@This() = @ptrCast(@alignCast(ctx));
+                w.good = w.good and w.target.release_calls == w.baseline and w.done == 0;
+                if (w.parks > 0) w.checkPark();
+                w.park_rounds = w.rounds;
+                w.park_reads = reads;
+                w.parks += 1;
+                ns += 100 * std.time.ns_per_ms;
+            }
+            fn checkPark(w: *@This()) void {
+                w.good = w.good and w.rounds - w.park_rounds == w.expected[w.parks - 1];
+                if (w.host.share.p >= 1) w.good = w.good and reads - w.park_reads == 3;
+            }
+            fn round(ctx: *anyopaque) void {
+                const w: *@This() = @ptrCast(@alignCast(ctx));
+                w.good = w.good and w.host.core.hold_finished;
+                w.good = w.good and w.target.release_calls == w.baseline;
+                w.rounds += 1;
+                ns += 40 * std.time.ns_per_ms;
+                if (w.cancel) w.host.engine().cancel(2);
+            }
+            fn tail(ctx: *anyopaque, _: *lanes.Stream, _: usize) void {
+                const w: *@This() = @ptrCast(@alignCast(ctx));
+                w.checkPark();
+                ns += 100 * std.time.ns_per_ms;
+            }
+        };
+        Watch.ns = 0;
+        Watch.reads = 0;
+        var vt = std.testing.io.vtable.*;
+        vt.now = Watch.now;
+        var io = std.testing.io;
+        io.vtable = &vt;
+        var host = LaneHost.init(gpa, io, &core, .{ .lanes = 4 });
+        defer host.stop();
+        host.share = .{};
+        const per_park: u64 = if (case.p >= 1 or case.cap_ms == 1) 1 else if (case.cap_ms == 80) 2 else 3;
+        var watch: Watch = .{ .host = &host, .target = &target, .cancel = case.cancel,
+            .expected = if (case.paused) .{ 0, 0 } else if ((case.finish and !case.survivor) or case.cancel) .{ 1, 0 } else .{ per_park, per_park } };
+        const prompt_a = [_]u32{ 2, 7, 1, 8 };
+        const prompt_b: [1024]u32 = @splat(5);
+        const req_a: Request = .{ .prompt = &prompt_a, .max_tokens = if (case.finish) 2 else 100 };
+        const req_b: Request = .{ .prompt = &prompt_b, .max_tokens = 1 };
+        try host.engine().submit(1, &req_a, .{ .ctx = &watch, .event = Watch.event });
+        host.admitBatch();
+        host.runFills();
+        if (case.paused) host.admitted.items[0].stream.paused = true;
+        var req_survivor = req_a;
+        req_survivor.max_tokens = 100;
+        if (case.survivor) {
+            try host.engine().submit(4, &req_survivor, .{ .ctx = &watch, .event = Watch.event });
+            host.admitBatch();
+            host.runFills();
+        }
+        try host.engine().submit(2, &req_b, .{ .ctx = &watch, .event = Watch.event });
+        host.admitBatch();
+        try host.engine().submit(3, &req_a, .{ .ctx = &watch, .event = Watch.event });
+        host.share = .{ .p = case.p, .park_max_ns = case.cap_ms * std.time.ns_per_ms };
+        host.lend = .{ .on = true };
+        watch.baseline = target.release_calls;
+        target.prefill_slices = 3;
+        target.slice_hook = Watch.park;
+        target.slice_ctx = &watch;
+        target.round_hook = Watch.round;
+        target.round_ctx = &watch;
+        target.prefill_hook = Watch.tail;
+        target.prefill_hook_ctx = &watch;
+        host.runFills();
+        try std.testing.expectEqual(@as(u32, @intCast(if (case.p < 1) case.rounds else 0)), host.lend.rounds);
+        try std.testing.expect(watch.good);
+        try std.testing.expectEqual(case.rounds, watch.rounds);
+        try std.testing.expectEqual(case.debt_ms * std.time.ns_per_ms, host.share.debt_ns);
+        try std.testing.expectEqual(@as(i64, @intCast(case.rounds)) * 40 * std.time.ns_per_ms, host.slice_decode_ns);
+        try std.testing.expect(!core.hold_finished);
+        try std.testing.expectEqual(@as(usize, 1), host.queued.items.len);
+        if (case.finish) try std.testing.expectEqual(@as(usize, 2), watch.done);
+        target.prefill_slices = 0;
+        target.slice_hook = null;
+        target.round_hook = null;
+        target.prefill_hook = null;
+        host.closeAll();
+    }
+}
+

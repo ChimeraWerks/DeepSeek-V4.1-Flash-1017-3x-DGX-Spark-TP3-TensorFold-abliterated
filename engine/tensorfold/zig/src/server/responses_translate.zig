@@ -11,7 +11,7 @@ const Cx = errors.Cx;
 const Allocator = std.mem.Allocator;
 
 /// Fields a chat completion reads as they are: OpenAI's and this server's own.
-const passed = [_][]const u8{ "model", "temperature", "top_p", "top_k", "min_p", "seed", "stream", "parallel_tool_calls", "stop", "draft", "thinking_budget", "ignore_eos", "priority", "return_token_ids", "chat_template_kwargs" };
+const passed = [_][]const u8{ "model", "temperature", "top_p", "top_k", "min_p", "presence_penalty", "frequency_penalty", "repetition_penalty", "repetition_penalty_window", "penalty_include_prompt", "seed", "stream", "parallel_tool_calls", "stop", "draft", "thinking_budget", "ignore_eos", "priority", "return_token_ids", "chat_template_kwargs" };
 const refused = [_][2][]const u8{
     .{ "background", "background responses are not supported: send the request and wait for it" },
     .{ "conversation", "conversations are not supported: send previous_response_id or the items" },
@@ -289,9 +289,24 @@ fn format(cx: *Cx, text: ?Value) errors.Refused!?Value {
 
 /// A Responses request as the chat completion that runs it; ``history`` reads a stored conversation.
 pub fn translate(cx: *Cx, body: Value, history: anytype) errors.Refused!Request {
+    return translateWith(cx, body, history, false);
+}
+pub fn translateWith(cx: *Cx, original: Value, history: anytype, supported: bool) errors.Refused!Request {
+    var body = original;
+    if (supported and body == .object) {
+        var scored = body.field("top_logprobs") != null;
+        if (body.get("include")) |inc| if (inc == .array) for (inc.array) |v| {
+            if (v == .string and std.mem.eql(u8, v.string, "message.output_text.logprobs")) scored = true;
+        };
+        if (scored) {
+            const copy = try json.copyObject(cx.a, body.object);
+            try copy.put(cx.a, "logprobs", .{ .bool = true });
+            body = .{ .object = copy };
+        }
+    }
     const a = cx.a;
     if (body != .object) return cx.refuse("the request body must be a JSON object");
-    try fields.probabilityOptions(cx, body);
+    try fields.probabilityOptionsWith(cx, body, supported);
     for (refused) |r| if (json.truthyField(body, r[0])) return cx.refuse(r[1]);
     if (body.get("include")) |inc| if (inc.truthy()) {
         var parts: std.ArrayList([]const u8) = .empty;
@@ -300,6 +315,7 @@ pub fn translate(cx: *Cx, body: Value, history: anytype) errors.Refused!Request 
             // nothing is encrypted. Clients built on the Responses API (Pi and others) send it with every reasoning request.
             .array => |items| for (items) |i| {
                 if (i == .string and std.mem.eql(u8, i.string, "reasoning.encrypted_content")) continue;
+                if (supported and i == .string and std.mem.eql(u8, i.string, "message.output_text.logprobs")) continue;
                 try parts.append(a, try tool_specs.pyStr(a, i));
             },
             .object => |o| for (o.keys()) |k| try parts.append(a, k),
@@ -309,7 +325,7 @@ pub fn translate(cx: *Cx, body: Value, history: anytype) errors.Refused!Request 
         if (parts.items.len > 0) return cx.fail(.request, "include is not supported ({s}): reasoning comes as text in its reasoning item, and nothing is encrypted", .{try std.mem.join(a, ", ", parts.items)});
     };
     if (body.field("truncation")) |t| if (!(t == .string and std.mem.eql(u8, t.string, "disabled"))) return cx.refuse("truncation must be \"disabled\": a prompt too long for the context is refused");
-    if (json.truthyField(body, "top_logprobs")) return cx.refuse("top_logprobs is not supported");
+    if (!supported and json.truthyField(body, "top_logprobs")) return cx.refuse("top_logprobs is not supported");
     const meta_raw = body.get("metadata");
     const metadata: Value = if (meta_raw != null and meta_raw.?.truthy()) meta_raw.? else .{ .object = try json.newObject(a) };
     const meta_ok = metadata == .object and metadata.object.count() <= 16 and for (metadata.object.keys(), metadata.object.values()) |k, v| {
@@ -335,6 +351,10 @@ pub fn translate(cx: *Cx, body: Value, history: anytype) errors.Refused!Request 
     const choice = try toolChoice(cx, body.get("tool_choice"), set.offered, &set);
     const chat = try json.newObject(a);
     for (passed) |k| if (body.get(k)) |v| try chat.put(a, k, v);
+    if (json.truthyField(body, "logprobs")) {
+        try chat.put(a, "logprobs", .{ .bool = true });
+        if (body.get("top_logprobs")) |v| try chat.put(a, "top_logprobs", v);
+    }
     var msgs: std.ArrayList(Value) = .empty;
     if (instructions != null and instructions.?.string.len > 0) {
         const sys = try json.newObject(a);

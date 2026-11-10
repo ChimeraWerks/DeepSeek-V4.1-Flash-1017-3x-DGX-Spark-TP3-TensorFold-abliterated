@@ -9,6 +9,7 @@ pub const Id = u64;
 
 /// One request's sampling (Python's exact_sampling.Sampling); a request without one decodes greedily.
 pub const Sampling = lanes.Sampling;
+pub const LogprobRow = lanes.logprob.Row;
 
 /// A prompt's reproducible seed (``seed_for``), for requests that name none.
 pub const seedFor = lanes.sampling.seedFor;
@@ -66,6 +67,7 @@ pub const DraftDepth = struct { drafted: u32 = 0, reached: u32 = 0, kept: u32 = 
 
 /// A reply to decode. The request and every slice in it stay valid until its ``finished`` event.
 pub const Request = struct {
+    logprobs: ?u8 = null,
     prompt: []const u32,
     /// Prefix-cache namespace only; no effect on model tokens or sampling.
     cache_namespace: ?[32]u8 = null,
@@ -131,6 +133,7 @@ pub const Stats = struct {
 };
 
 pub const Event = union(enum) {
+    logprobs: []const lanes.logprob.Row,
     /// The prompt is in the cache: ``cached`` of its tokens came from a kept prefix.
     prefilled: u32,
     /// Tokens committed for this request, in order; valid only during the call.
@@ -150,6 +153,7 @@ pub const Effort = struct { name: []const u8, value: i64 };
 
 /// What the engine serves, fixed once it has loaded.
 pub const Info = struct {
+    logprobs: bool = false,
     name: []const u8 = "lanes",
     /// Enforces per-request prefix namespaces (salted requests never use
     /// unsalted learned disk states). Unsupported engines refuse cache_salt.
@@ -163,6 +167,7 @@ pub const Info = struct {
     /// The engine observes loop_guard requests in its lane stream.
     loop_guard: bool = false,
     structures: bool = false,
+    penalties: bool = false,
     /// Prompt rows a prefill chunk at most, for the server's chunk starts (0: the engine cuts prompts itself).
     prefill_step: u32 = 0,
     /// A line the server prints once at startup (the engine's memory plan); empty: none.

@@ -141,6 +141,7 @@ pub const Vision = struct {
 };
 
 pub const Spec = struct {
+    logprobs: ?u8 = null,
     id: []const u8,
     prompt: []const u32,
     max_new: u32,
@@ -189,6 +190,12 @@ pub const Between = struct {
 };
 
 pub const Stream = struct {
+    logprobs: ?u8 = null,
+    score_hook: ?struct {
+        ptr: *anyopaque,
+        call: *const fn (*anyopaque, *Stream, u64, u32, u8) anyerror!@import("logprob.zig").Row,
+    } = null,
+    score_rows: std.ArrayList(@import("logprob.zig").Row) = .empty,
     id: []const u8,
     prompt_len: usize,
     max_new: u32,
@@ -268,6 +275,7 @@ pub const Stream = struct {
             .prefill_only = spec.prefill_only,
             .eos = spec.eos,
             .sampling = spec.sampling,
+            .logprobs = spec.logprobs,
             .drafts = spec.drafts,
             .proposer = if (spec.drafts) spec.proposer else null,
             .stop_check = spec.stop_check,
@@ -296,6 +304,7 @@ pub const Stream = struct {
     }
 
     pub fn deinit(s: *Stream, gpa: Allocator) void {
+        s.score_rows.deinit(gpa);
         if (s.gate) |*g| g.deinit(gpa);
         s.context.deinit(gpa);
         s.force.deinit(gpa);
@@ -486,6 +495,22 @@ pub const Stream = struct {
         var landed: usize = 0;
         for (tokens) |t| {
             if (s.finished) break;
+            if (s.logprobs) |k| {
+                const hook = s.score_hook orelse return error.LogprobsUnsupported;
+                if (k > 20) return error.BadTopLogprobs;
+                const row = hook.call(hook.ptr, s, s.context.items.len, t, k) catch |err| switch (err) {
+                    // a score the backend could not form after its ranks agreed (non-finite or empty
+                    // distribution): this stream ends with an error, the token unlanded, every other stream runs on
+                    error.LogprobRowRejected => {
+                        s.finished = true;
+                        s.reason = .@"error";
+                        s.problem = "the engine could not score a chosen token (non-finite or empty distribution)";
+                        break;
+                    },
+                    else => return err,
+                };
+                try s.score_rows.append(gpa, row);
+            }
             try s.context.append(gpa, t);
             landed += 1;
             if (s.gate) |*g| g.observe(gpa, t) catch return error.OutOfMemory;

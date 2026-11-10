@@ -34,6 +34,8 @@ const kernels = [_]Kernel{
     .{ .name = "dsv41_rdma", .src = "dsv41/rdma_gather", .flags = &.{"-O3"} }, // ours: the decode gathers' RDMA kernel pair
     .{ .name = "dsv41_port", .flags = torch_ops, .opt_in = true }, // ours: the GLM port's spill block staging (port_kernels.zig; fetch/select/union are dsv41_shard)
     .{ .name = "dsv41_sample_cand", .flags = torch_ops, .opt_in = true }, // sampled rows' bounded top candidates
+    .{ .name = "dsv41_penalties", .flags = torch_ops, .opt_in = true },
+    .{ .name = "dsv41_logprobs", .flags = torch_ops, .opt_in = true }, // reply logprobs' raw shard summaries
     .{ .name = "dsv41_keyed", .flags = torch_ops, .opt_in = true }, // isolated keyed draft noise
 };
 
@@ -90,7 +92,9 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     const prebuilt = b.option([]const u8, "fatbins", "absolute directory of prebuilt <name>.fatbin files to embed");
     const sms = b.option([]const u8, "sm", "SASS targets, comma separated (121; later 120,89)") orelse "121";
     const port_kernels = b.option(bool, "port_kernels", "also build and embed the GLM port's opt-in kernels (dsv41_port.cu: tf-dsv41-port, spill v2's one-launch staging)") orelse false;
+    const reply_logprobs = b.option(bool, "reply_logprobs", "embed opt-in raw shard logprob summaries") orelse false;
     const sample_cand = b.option(bool, "sample_cand", "embed the opt-in dsv41_sample_cand kernel") orelse false;
+    const penalties = b.option(bool, "penalties", "embed opt-in exact request penalties") orelse false;
     const keyed_draft = b.option(bool, "keyed_draft", "embed the opt-in dsv41_keyed proposal noise kernel") orelse false;
     // the compiler's version text is an input of every fatbin, so a new nvcc rebuilds them all
     const version: ?std.Build.LazyPath = if (prebuilt == null and nvcc != null) blk: {
@@ -101,7 +105,7 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     var images: [kernels.len]?std.Build.LazyPath = @splat(null);
     const fatbin_step = b.step("fatbins", "Build and install the CUDA kernel fatbins alone");
     for (kernels, &images) |k, *image| {
-        if (k.opt_in and !(if (std.mem.eql(u8, k.name, "dsv41_sample_cand")) sample_cand else if (std.mem.eql(u8, k.name, "dsv41_keyed")) keyed_draft else port_kernels)) continue;
+        if (k.opt_in and !(if (std.mem.eql(u8, k.name, "dsv41_penalties")) penalties else if (std.mem.eql(u8, k.name, "dsv41_logprobs")) reply_logprobs else if (std.mem.eql(u8, k.name, "dsv41_sample_cand")) sample_cand else if (std.mem.eql(u8, k.name, "dsv41_keyed")) keyed_draft else port_kernels)) continue;
         if (prebuilt) |dir| {
             image.* = b.graph.cwdRelativePath(b.pathJoin(&.{ dir, b.fmt("{s}.fatbin", .{k.name}) }));
         } else if (nvcc) |tool| {
@@ -383,6 +387,12 @@ pub fn hostTests(b: *std.Build, draft_ids: *std.Build.Module, step: *std.Build.S
     for ([_]*std.Build.Module{ eng.api, eng.dsv41, server_tests }) |m| {
         room_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m, .filters = &.{ "restore room", "parked", "restore", "aggregate tier", "spill flags", "spill CLI", "cache metrics" } })).step);
     }
+    const logprob_tests = b.step("test-reply-logprobs", "Raw shard summaries, committed token custody and API logprob checks");
+    for ([_]*std.Build.Module{ mods.lanes, eng.api, eng.engines, eng.dsv41, server_tests }) |m|
+        logprob_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m, .filters = &.{ "reply logprobs", "raw logprob" } })).step);
+    const penalty_tests = b.step("test-penalties", "Request penalties, speculative history, wire and refusal tests, CPU only");
+    for ([_]*std.Build.Module{ mods.lanes, eng.dsv41, server_tests }) |m|
+        penalty_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m, .filters = &.{"penalties"} })).step);
     const structured_tests = b.step("test-structured-output", "Focused grammar, DSML and masked-row host tests");
     for ([_]*std.Build.Module{ mods.lanes, eng.api, eng.dsv41, server_tests }) |m| {
         structured_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m, .filters = &.{ "structured output", "grammar", "DSML" } })).step);

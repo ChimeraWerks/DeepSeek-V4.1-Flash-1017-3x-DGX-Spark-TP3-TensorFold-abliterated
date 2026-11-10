@@ -33,6 +33,7 @@ pub const Fake = struct {
     lanes: std.AutoHashMapUnmanaged(*Stream, Lane) = .empty,
     drawn: std.ArrayList(u32) = .empty, // handle -> token
     release_calls: usize = 0, // count invocations, including erroneous duplicate releases
+    reject_score: ?struct { id: []const u8, at: usize } = null, // the stream's score at that many emitted tokens fails its merge
     rounds: u64 = 0,
     capture_timing: CaptureTiming = .none,
     timing_dirty: bool = false,
@@ -82,13 +83,24 @@ pub const Fake = struct {
     fn timingClean(ptr: *anyopaque) bool { return !self(ptr).timing_dirty; }
 
     pub fn backend(x: *Fake) be.Backend {
-        return .{ .ptr = x, .vtable = &.{ .prefill = prefill, .first = first, .first_masked = firstMasked, .queue = queue, .read = read, .verify = verify, .keep = keep, .draft = draft, .held = heldDrafts, .release = release, .begin_timing = beginTiming, .timing_clean = timingClean } };
+        return .{ .ptr = x, .vtable = &.{ .logprobs = supportsLogprobs, .prefill = prefill, .first = first, .first_masked = firstMasked, .queue = queue, .read = read, .verify = verify, .keep = keep, .draft = draft, .held = heldDrafts, .release = release, .begin_timing = beginTiming, .timing_clean = timingClean } };
     }
 
     pub fn stepped(x: *Fake) be.Backend {
-        return .{ .ptr = x, .vtable = &.{ .prefill = prefill, .prefill_begin = beginFill, .prefill_step = stepFill, .prefill_end = endFill, .first = first, .first_masked = firstMasked, .queue = queue, .read = read, .verify = verify, .keep = keep, .draft = draft, .held = heldDrafts, .release = release } };
+        return .{ .ptr = x, .vtable = &.{ .logprobs = supportsLogprobs, .prefill = prefill, .prefill_begin = beginFill, .prefill_step = stepFill, .prefill_end = endFill, .first = first, .first_masked = firstMasked, .queue = queue, .read = read, .verify = verify, .keep = keep, .draft = draft, .held = heldDrafts, .release = release } };
+    }
+    fn supportsLogprobs(_: *anyopaque) bool { return true; }
+    fn score(ptr: *anyopaque, s: *Stream, position: u64, token: u32, k: u8) anyerror!@import("logprob.zig").Row {
+        if (position != s.context.items.len) return error.LogprobPosition;
+        const x: *Fake = @ptrCast(@alignCast(ptr));
+        if (x.reject_score) |r| if (std.mem.eql(u8, r.id, s.id) and s.emitted().len == r.at) return error.LogprobRowRejected;
+        const peak = next(s.context.items, null, position);
+        var row: [vocab]f32 = undefined;
+        for (&row, 0..) |*v, i| v.* = -@as(f32, @floatFromInt((i + vocab - peak) % vocab));
+        return @import("logprob.zig").reference(&row, token, k);
     }
     fn beginFill(ptr: *anyopaque, s: *Stream) anyerror!void {
+        if (s.logprobs != null) s.score_hook = .{ .ptr = ptr, .call = score };
         const x = self(ptr);
         if (x.refuse_sampled and s.sampling != null) return error.SamplingRefused;
         if (x.refuse_full > 0 and x.lanes.count() > 0 and !x.lanes.contains(s)) {
@@ -144,11 +156,31 @@ pub const Fake = struct {
     fn draw(x: *Fake, l: *Lane, s: *Stream, position: u64) !u64 {
         if (s.prefill_only) x.warm_sample += 1;
         if (position != l.history.items.len) return error.PositionMismatch;
-        try x.drawn.append(x.gpa, x.targetNext(l.history.items, s.sampling, position));
+        try x.drawn.append(x.gpa, try x.targetNext(l.history.items, s.sampling, position, s.prompt_len));
         return x.drawn.items.len - 1;
     }
 
-    fn targetNext(x: *Fake, history: []const u32, sampling: ?Sampling, position: u64) u32 {
+    fn targetNext(x: *Fake, history: []const u32, sampling: ?Sampling, position: u64, prompt_len: usize) !u32 {
+        if (sampling) |s| if (s.penalties.active()) {
+            const p = @import("penalties.zig");
+            const seq = try x.gpa.alloc(i32,history.len);
+            defer x.gpa.free(seq);
+            for (history,seq) |id,*t| t.* = @intCast(id);
+            var counts: [vocab]p.Counts = undefined;
+            try p.counts(&counts,seq,prompt_len,s.penalties,0);
+            var values: [vocab]f64 = undefined;
+            var ids: [vocab]u64 = undefined;
+            var best: usize = 0;
+            const center = next(history,null,position);
+            for (&values,&ids,counts,0..) |*v,*id,c,i| {
+                const raw: f32 = 4 - @as(f32,@floatFromInt((i+vocab-center)%vocab))*0.125;
+                v.* = p.apply(raw,c,s.penalties);
+                id.* = i;
+                if (v.* > values[best]) best = i;
+            }
+            if (s.temperature <= 0) return @intCast(best);
+            return @intCast(try @import("sampling.zig").choose(x.gpa,&values,&ids,position,s));
+        };
         if (x.cycle_after) |start| if (history.len >= x.probe_prompt) {
             const reply = history[x.probe_prompt..];
             if (std.mem.indexOfScalar(u32, reply, 91)) |close| {
@@ -174,6 +206,7 @@ pub const Fake = struct {
     }
 
     fn prefill(ptr: *anyopaque, s: *Stream) anyerror!void {
+        if (s.logprobs != null) s.score_hook = .{ .ptr = ptr, .call = score };
         const x = self(ptr);
         if (x.refuse_sampled and s.sampling != null) return error.SamplingRefused;
         const got = try x.lanes.getOrPut(x.gpa, s);
@@ -280,7 +313,7 @@ pub const Fake = struct {
                 while (at >= 0) : (at = parents[@intCast(at)]) try path.insert(x.gpa, 0, l.rows.items[@intCast(at)]);
                 try l.history.appendSlice(x.gpa, path.items);
                 if (w.positions[r] != l.history.items.len) return error.PositionMismatch;
-                o.sampled[r] = x.targetNext(l.history.items, w.stream.sampling, w.positions[r]);
+                o.sampled[r] = try x.targetNext(l.history.items, w.stream.sampling, w.positions[r], w.stream.prompt_len);
                 if (w.masks.len > 0) {
                     const words = w.masks.len / l.rows.items.len;
                     o.sampled[r] = try allowed(o.sampled[r], w.masks[r * words ..][0..words]);
@@ -320,7 +353,7 @@ pub const Fake = struct {
             try guess.append(x.gpa, pending);
             for (0..r.depth) |j| {
                 const at = r.position + j;
-                var t = x.targetNext(guess.items, r.stream.sampling, at);
+                var t = try x.targetNext(guess.items, r.stream.sampling, at, r.stream.prompt_len);
                 if ((at *% 2654435761 + j) % 5 == 0) t = (t + 1) % vocab; // a wrong guess now and then
                 try l.held.append(x.gpa, t);
                 try guess.append(x.gpa, t);

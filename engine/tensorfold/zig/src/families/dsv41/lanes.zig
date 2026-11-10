@@ -21,6 +21,7 @@ const draft = @import("draft.zig");
 const sampling = @import("sampling.zig");
 const keyed_draft = @import("keyed_draft.zig");
 const penalty_pool = @import("penalty_pool.zig");
+const reply_lp = @import("reply_logprobs.zig");
 const greedy_head = @import("decode_greedy_head.zig");
 const link = @import("link.zig");
 const graph_vote = @import("graph_vote.zig");
@@ -68,7 +69,9 @@ pub var logits_sha = false;
 /// shard_xfer/shard_finish, the digest checks). Both on together share one rank_wire Leader (Lanes.rw, rank 0) and
 /// one Follower a follower (PairFollower): one Tracker sees every frame of the pair. Kind 11 is the
 /// coordinated RDMA idle boundary (not the old, untracked spill notes); all ranks need this version.
-pub const Kind = enum(u8) { fill_begin = 1, fill_chunk = 2, verify = 3, pass = 4, snap_save = 5, snap_restore = 6, snap_drop = 7, fill_images = 8, done = 9, rank_wire = 10, idle_move = 12, fill_resume = 13, graph_vote_agree = 15, fill_slice = 18, rdma_idle = 11, snap_drop_many = cache_batch.kind, pass_keyed = 17 };
+const penalties = @import("logit_penalties.zig");
+
+pub const Kind = enum(u8) { verify_penalties = penalties.verify_kind, prompt_penalties = penalties.prompt_kind, logprobs = reply_lp.frame_kind, fill_begin = 1, fill_chunk = 2, verify = 3, pass = 4, snap_save = 5, snap_restore = 6, snap_drop = 7, fill_images = 8, done = 9, rank_wire = 10, idle_move = 12, fill_resume = 13, graph_vote_agree = 15, fill_slice = 18, rdma_idle = 11, snap_drop_many = cache_batch.kind, pass_keyed = 17 };
 
 // Shared with the real follower loop; reserved/unknown outer kinds fail closed.
 fn decodeOuterKind(raw: u8) !Kind {
@@ -90,6 +93,9 @@ fn decodeOuterKind(raw: u8) !Kind {
             cache_batch.kind => .snap_drop_many,
             17 => .pass_keyed,
             18 => .fill_slice,
+            penalties.verify_kind => .verify_penalties,
+            penalties.prompt_kind => .prompt_penalties,
+            reply_lp.frame_kind => .logprobs,
             else => return error.BadFrame,
         };
 }
@@ -98,14 +104,14 @@ fn decodeOuterKind(raw: u8) !Kind {
 /// between slices (each round's verify and draft pass, plain or keyed). Any other outer operation would run inside the chunk.
 fn openChunkAllows(kind: Kind) bool {
     return switch (kind) {
-        .fill_slice, .verify, .pass, .pass_keyed => true,
+        .fill_slice, .verify, .verify_penalties, .pass, .pass_keyed, .logprobs => true,
         else => false,
     };
 }
 
 test "keyed draft pass frame is admitted while a prefill slice chunk is open" {
-    for ([_]Kind{ .fill_slice, .verify, .pass, .pass_keyed }) |k| try std.testing.expect(openChunkAllows(k));
-    for ([_]Kind{ .fill_begin, .fill_chunk, .snap_save, .snap_restore, .snap_drop, .fill_images, .done, .rank_wire, .rdma_idle, .idle_move, .fill_resume, .graph_vote_agree, .snap_drop_many }) |k| try std.testing.expect(!openChunkAllows(k));
+    for ([_]Kind{ .fill_slice, .verify, .verify_penalties, .pass, .pass_keyed, .logprobs }) |k| try std.testing.expect(openChunkAllows(k));
+    for ([_]Kind{ .fill_begin, .fill_chunk, .snap_save, .snap_restore, .snap_drop, .fill_images, .done, .rank_wire, .rdma_idle, .idle_move, .fill_resume, .graph_vote_agree, .snap_drop_many, .prompt_penalties }) |k| try std.testing.expect(!openChunkAllows(k));
 }
 
 test "outer follower decoder accepts fill_resume 13 and rejects reserved kinds" {
@@ -121,10 +127,10 @@ test "outer follower decoder covers every enum byte and open chunk policy" {
         if (std.enums.fromInt(Kind, byte)) |kind| {
             try std.testing.expectEqual(kind, try decodeOuterKind(byte));
             const allowed = switch (kind) {
-                .verify, .pass, .pass_keyed, .fill_slice => true,
+                .verify, .verify_penalties, .pass, .pass_keyed, .fill_slice, .logprobs => true,
                 .fill_begin, .fill_chunk, .snap_save, .snap_restore, .snap_drop,
                 .fill_images, .done, .rank_wire, .idle_move, .fill_resume,
-                .graph_vote_agree, .rdma_idle, .snap_drop_many => false,
+                .graph_vote_agree, .rdma_idle, .snap_drop_many, .prompt_penalties => false,
             };
             try std.testing.expectEqual(allowed, openChunkAllows(kind));
             var wire: Wire = .{};
@@ -191,6 +197,18 @@ fn getSlice(r: *Reader) !SliceFrame {
         .next_rows = try r.int(u32),
     };
     if (f.hi <= f.lo or f.args.n == 0 or r.rest().len != 0) return error.BadFrame;
+    return f;
+}
+
+fn putLogprobs(w: *Wire, gpa: std.mem.Allocator, f: reply_lp.Frame) !void {
+    try f.validate();
+    inline for (.{ "op", "slot", "row", "token", "k" }) |field| try w.int(gpa, u32, @field(f, field));
+}
+fn getLogprobs(r: *Reader) !reply_lp.Frame {
+    var f: reply_lp.Frame = undefined;
+    inline for (.{ "op", "slot", "row", "token", "k" }) |field| @field(f, field) = try r.int(u32);
+    if (r.rest().len != 0) return error.BadFrame;
+    try f.validate();
     return f;
 }
 
@@ -542,6 +560,9 @@ const Lane = struct {
     part: u8 = 0,
     gen: u64 = 0,
     decoding: bool = false,
+    scored: bool = false,
+    score_start: u64 = 0,
+    score_row: u32 = 0,
     first: u64 = 0, // the prompt's draw (a handle)
     first_row: []f32 = &.{}, // this stream's full prompt row while a grammar may redraw it
     held: [draft.max_block]u32 = undefined,
@@ -649,6 +670,7 @@ pub const Lanes = struct {
     pressure_planner: bool = false,
     short_reuse: bool = false,
     continuation_donors: bool = false,
+    cache_grow: bool = false, // TF_KV_CACHE_GROW: rank-zero replicated placement only
     adaptive_prefix: bool = false,
     first_continuation: bool = false,
     relocate_max_bytes: usize = 0,
@@ -658,6 +680,7 @@ pub const Lanes = struct {
     penalty_disabled: bool = false,
     clean_round_timing: bool = false,
     prefill_yield: bool = false, // TF_DS_PREFILL_YIELD=1; otherwise the whole prompt remains one host call
+    cancel_checkpoints: bool = false,
 
     spill: ?*SpillTier = null, // --spill-dir/--spill-gib: the spill tier (native.zig opens it; null: off, nothing changes)
     kv: ?*kv_lanes.Kv = null, // TF_DS_KV_SHARD: the parts' planner (startKv, at open; null: the switch off)
@@ -688,12 +711,14 @@ pub const Lanes = struct {
             if (std.c.getenv("TF_KV_PRESSURE_PLANNER")) |v| ln.pressure_planner = v[0] == '1';
         if (std.c.getenv("TF_KV_SHORT_REUSE")) |v| ln.short_reuse = std.mem.eql(u8, std.mem.span(v), "1");
         if (std.c.getenv("TF_KV_CONTINUATION_DONOR")) |v| ln.continuation_donors = std.mem.eql(u8, std.mem.span(v), "1");
+        if (std.c.getenv("TF_KV_CACHE_GROW")) |v| ln.cache_grow = std.mem.eql(u8, std.mem.span(v), "1");
         if (std.c.getenv("TF_CACHE_ADAPTIVE_PREFIX")) |v| ln.adaptive_prefix = std.mem.eql(u8, std.mem.span(v), "1");
         ln.first_continuation = cache_batch.Flags.fromEnv().first_continuation;
             if (std.c.getenv("TF_KV_RELOCATE_MAX_BYTES")) |v| {
                 const n = std.fmt.parseInt(usize, std.mem.sliceTo(v, 0), 10) catch 0;
                 ln.relocate_max_bytes = @min(n, pressure.hard_copy_bytes);
             }
+            ln.cancel_checkpoints = model.prefill128.enabled("TF_DS_PREFILL_CHECKPOINTS");
         }
         return ln;
     }
@@ -728,6 +753,7 @@ pub const Lanes = struct {
     }
 
     const vt_whole: be.Backend.VTable = .{
+        .logprobs = supportsLogprobs,
         .prefill = prefillFn,
         .first = firstFn, .first_masked = firstMaskedFn, .held = heldFn, .queue = queueFn, .read = readFn,
         .verify = verifyFn, .keep = keepFn, .draft = draftFn,
@@ -1233,6 +1259,8 @@ pub const Lanes = struct {
         if (self.fills.contains(s)) return error.PrefillAlreadyStarted;
         try self.fills.ensureUnusedCapacity(gpa, 1);
         const t0 = m.now();
+        const ps = penalties.get(s.sampling);
+        try penalties.admit(ps,m.penalty_on,m.world,m.two != null,m.decode_greedy_head or m.decode_sample_head,s.images.len != 0);
         const ids = s.prompt();
         const len = ids.len;
         if (len == 0) return error.EmptyPrompt;
@@ -1273,11 +1301,12 @@ pub const Lanes = struct {
             } else s.reuse_failed = true;
         };
         const base = if (parted) |pp| pp.base else if (kept != null and !moved) kept.?.base else try self.placeKept(taken[0..nt], size, kept);
+        if (self.cache_grow and parted == null) if (kept) |sn| { moved = base != sn.base; };
         if (kept) |sn| {
             sn.wanted = 0;
             if (!moved) sn.end = @max(sn.end, base + size); // its extent now: the next resume in place finds it held
         }
-        if (kept) |sn| if (moved and sn.stale) { // the placement needed the kept rows' room: the prompt runs from 0
+        if (kept) |sn| if ((moved or self.cache_grow) and sn.stale) { // the placement needed the kept rows' room: the prompt runs from 0
             kept = null;
             s.reuse_failed = true;
         };
@@ -1500,6 +1529,21 @@ pub const Lanes = struct {
         if (s.images.len == 0) if (s.reuse.hook) |k| k.at(k.ptr, s, @intCast(len));
         // a state read back from disk: the drafter's rings were rebuilt by the replay before the first draft
         try f.source_facts.finish(m, self.spill != null and m.drafting(), slot, len);
+        m.penalty_prompt = 0;
+        const ps = penalties.get(s.sampling);
+        if (!s.prefill_only and ps.active()) {
+            const request: penalties.Request = .{ .settings = ps, .prompt_len = s.prompt_len };
+            var custody: greedy_head.Custody = .{};
+            errdefer custody.failed(m) catch unreachable;
+            if (try self.begin(.prompt_penalties)) {
+                try self.wire.int(gpa,u32,@intCast(slot));
+                try penalties.write(&self.wire,gpa,request);
+                custody.active = true;
+                try self.flush();
+            }
+            try m.penalizePrompt(self.seqs[slot].items,request);
+            custody.active = false;
+        }
         var cand_count: usize = 0;
         if (m.cand != 0 and s.grammar == null and !s.prefill_only and !logits_sha and self.logit_dump_dir == null) {
             if (s.sampling) |sm| {
@@ -1541,12 +1585,42 @@ pub const Lanes = struct {
         } else try self.drawToken(logits, len, s.sampling);
         const lane = self.streams.getPtr(s).?;
         lane.first = self.take(token);
+        if (s.logprobs != null) {
+            if (!supportsLogprobs(self)) return error.LogprobsUnsupported;
+            _ = try self.scoreFrame(.{ .op = 0, .slot = @intCast(slot) });
+            lane.scored = true;
+            s.score_hook = .{ .ptr = self, .call = scoreToken };
+        }
         if (s.grammar != null) {
             // TP3 can interleave 16 prefills; a single shared "last prompt row" loses another stream's draw.
             lane.first_row = try gpa.realloc(lane.first_row, logits.len);
             @memcpy(lane.first_row, logits);
         }
         return true;
+    }
+
+    fn supportsLogprobs(ptr: *anyopaque) bool {
+        const m = of(ptr).m;
+        return m.reply_logprobs and m.two == null and m.eng.world == 3 and cuda.kernels.dsv41_logprobs.len != 0;
+    }
+    fn scoreFrame(self: *Lanes, f: reply_lp.Frame) !?lanes.logprob.Row {
+        try f.validate();
+        // Once a score frame can reach a follower, failures must not unwind through collective cleanup.
+        if (try self.begin(.logprobs)) {
+            putLogprobs(&self.wire, self.gpa, f) catch |err| self.m.pairFault(err);
+            self.flush() catch |err| self.m.pairFault(err);
+        }
+        const shards = self.m.reply_scores.run(self.m, f) catch |err| self.m.pairFault(err);
+        if (f.op == 0 or f.op == 3) return null;
+        // every rank has finished this frame's collectives: a bad merge is this request's, not the group's
+        return try reply_lp.mergeRow(shards, f.token, f.k);
+    }
+    fn scoreToken(ptr: *anyopaque, s: *lanes.Stream, position: u64, token: u32, k: u8) anyerror!lanes.logprob.Row {
+        const self = of(ptr);
+        const l = self.streams.getPtr(s) orelse return error.UnknownStream;
+        const row = try reply_lp.rowFor(s.prompt_len, position, l.score_start, l.score_row, window_rows);
+        return (try self.scoreFrame(.{ .op = if (row == null) 1 else 2, .slot = @intCast(l.slot),
+            .row = row orelse 0, .token = token, .k = k })) orelse error.NoLogprobRow;
     }
 
     fn firstFn(ptr: *anyopaque, s: *lanes.Stream, position: u64) anyerror!u64 {
@@ -1595,22 +1669,32 @@ pub const Lanes = struct {
         try self.roundWins(windows, &ids, &wins);
         const words = maskWords(m.cfg.tokenVocab()); // TP3 pads the physical head to 129408, grammar sees 129280
         const masked = for (windows) |w| { if (w.masks.len > 0) break true; } else false;
+        const penalized = for (windows) |w| { if (penalties.get(w.stream.sampling).active()) break true; } else false;
+        var penalty_requests: [max_streams]penalties.Request = undefined;
+        if (penalized) {
+            if (!m.penalty_on or m.world != 3 or m.two != null) return error.PenaltiesUnavailable;
+            if (m.decode_greedy_head or m.decode_sample_head) return error.PenaltiesReducedHead;
+            for (windows,0..) |w,k| penalty_requests[k] = .{ .settings = penalties.get(w.stream.sampling), .prompt_len = w.stream.prompt_len };
+        }
         const use_head = greedy_head.eligible(m.decode_greedy_head, m.two != null, windows);
         const sample_head_count = greedy_head.sampleCount(m.decode_sample_head and m.cand != 0, m.two != null, m.vocab, windows);
         var head_custody: greedy_head.Custody = .{};
         errdefer head_custody.failed(m) catch unreachable;
         const t0 = m.now();
-        if (try self.begin(.verify)) {
+        if (try self.begin(if (penalized) .verify_penalties else .verify)) {
             try self.wire.int(gpa, u32, @intCast(windows.len));
             try writeGreedyHeadMode(&self.wire, gpa, m.decode_greedy_head, use_head);
             try writeSampleHeadCount(&self.wire, gpa, m.decode_sample_head, sample_head_count);
             for (wins[0..windows.len]) |w| try writeWin(&self.wire, gpa, w, self.kv != null);
-            head_custody.active = use_head or sample_head_count != 0; // BEFORE even a partial peer send
+            head_custody.active = penalized or use_head or sample_head_count != 0; // BEFORE even a partial peer send
             try self.flush();
         }
         const t1 = m.now();
         if (self.spill) |t| for (wins[0..windows.len]) |w| t.bump(w.base + w.start, w.base + w.start + w.ids.len);
         const rows = try self.built.build(gpa, &self.seqs, wins[0..windows.len]);
+        m.rd.penalty = null;
+        defer m.rd.penalty = null;
+        if (penalized) try m.preparePenalties(rows,penalty_requests[0..windows.len]);
         // Bounded two-row lookahead: all stream anchors before second rows.
         // Full-vocabulary unconstrained draws only; other modes use baseline.
         var requests: [penalty_pool.max_jobs]penalty_pool.Request = undefined;
@@ -1643,7 +1727,7 @@ pub const Lanes = struct {
             if (active_pool) |p| p.finish(); // also on GPU/transport/sampling failure
         }
         // Registered after worker cleanup: pair-end before any unwind/drain.
-        head_custody.active = use_head or sample_head_count != 0;
+        head_custody.active = penalized or use_head or sample_head_count != 0;
         errdefer head_custody.failed(m) catch unreachable;
         if (sample_head_count != 0)
             try greedy_head.verifySample(m, rows, self.built.absorb[0..windows.len], sample_head_count)
@@ -1708,6 +1792,10 @@ pub const Lanes = struct {
         for (windows, out, 0..) |w, *o, k| {
             const row0 = self.built.wins[k].row;
             const l = self.streams.getPtr(w.stream).?;
+            if (w.stream.logprobs != null) {
+                l.score_start = w.positions[0];
+                l.score_row = @intCast(row0);
+            }
             @memcpy(o.drafts[0..w.held], l.held[0..w.held]);
             @memcpy(o.drafts[w.held..][0..w.tokens.len], w.tokens);
             if (greedy and w.masks.len == 0) {
@@ -2029,6 +2117,14 @@ pub const Lanes = struct {
             }
             if (self.pressure_planner) if (try self.planPressure(live, size, protected)) |base| return base;
             var choice = try pressure.plan(gpa, states.items, live, size, self.m.pool_cap, options);
+            if (choice == null and self.cache_grow) if (protected) |sn| {
+                if (self.canGrowHere(live, size, sn)) {
+                    // Guard pending spill readers before any tail can be overwritten.
+                    self.staleOver(sn.base + sn.at, sn.base + size, sn);
+                    if (self.spill) |t| if (t.broken) |err| return err;
+                    return sn.base;
+                }
+            };
             if (choice == null) {
                 // Only true pressure may sacrifice the requested source. The
                 // caller already handles its invalidation by restarting cold.
@@ -2054,6 +2150,20 @@ pub const Lanes = struct {
             }
             return plan.base;
         }
+    }
+
+    fn canGrowHere(self: *const Lanes, live: []const [2]usize, size: usize, source: *const Snap) bool {
+        if (self.kv != null or source.stale or source.loading or size < source.at or
+            source.base > self.m.pool_cap or size > self.m.pool_cap - source.base) return false;
+        const end = source.base + size;
+        if (clashes(live, source.base, end)) return false;
+        for (self.snaps.items) |sn| {
+            if (sn == source or sn.stale) continue;
+            // Loading restores reserve their whole extent, including an unwritten tail.
+            const stop = if (sn.loading) @max(sn.base + sn.at, sn.end) else sn.base + sn.at;
+            if ((sn.loading or sn.held > 0) and sn.base < end and source.base < stop) return false;
+        }
+        return true;
     }
 
     fn waitIdleCopy(m: *Model, deadline: u64) !void {
@@ -2144,6 +2254,7 @@ pub const Lanes = struct {
     /// The live state at `at` (the pass stands at that chunk end): the slot's own part copied, the extent's rows kept.
     pub fn snapSaveFn(ptr: *anyopaque, owner: ?*anyopaque, at: u32) anyerror!*anyopaque {
         const self = of(ptr);
+        if (self.cancel_checkpoints and self.m.rs.live) return error.OpenPrefillChunk;
         const s: *const lanes.Stream = @ptrCast(@alignCast(owner orelse return error.NoStream));
         const l = self.streams.getPtr(s) orelse return error.UnknownStream;
         const complete = at == s.prompt_len and s.emitted().len == 0;
@@ -2424,6 +2535,10 @@ pub const Lanes = struct {
         if (s.images.len == 0 and s.finished and (s.reason == .stop or s.reason == .length)) {
             const at = std.mem.alignBackward(usize, @intCast(s.cache_len), 2);
             if (at > s.prompt_len and at <= s.context.items.len) if (s.reuse.hook) |k| k.at(k.ptr, s, @intCast(at));
+        }
+        if (self.streams.getPtr(s).?.scored) {
+            const l = self.streams.getPtr(s).?;
+            _ = self.scoreFrame(.{ .op = 3, .slot = @intCast(l.slot) }) catch |err| self.m.pairFault(err);
         }
         const kv = self.streams.fetchRemove(s).?;
         self.gpa.free(kv.value.first_row);
@@ -2941,6 +3056,7 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
     errdefer if (relocation_custody) (Model.SpillDev{ .m = m }).failed(error.TransferFailed);
 
     var fill_base: usize = 0;
+    var slot_penalties: [max_streams]penalties.Request = @splat(.{});
     // TF_DS_KV_SHARD: this rank's copy of the parts' planner, fed rank 0's ops; with the spill tier its stage, stale
     // and move ops guard this rank's own writes and its transfers bump their destinations (kv_lanes.SpillHooks)
     const kvf: ?*kv_lanes.Follower = if (m.kvs != null) try kv_lanes.Follower.init(gpa, m.rank, kvConfig(m), try kv_lanes.Settings.fromEnv(getenv), modelDev(m)) else null;
@@ -3005,11 +3121,15 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
         if (m.rs.live and !openChunkAllows(kind)) return error.OpenPrefillChunk;
         if (!m.rs.live and move_state.pending == null and kind != .idle_move and kind != .fill_slice) if (spill) |sd| sd.service(std.time.ns_per_ms); // relocation does not service unrelated work
         // a chunk's read-ahead of the next is done before anything but that chunk (a prompt's ids may change)
-        if (kind != .fill_chunk and kind != .fill_slice and kind != .snap_save and kind != .snap_restore and kind != .fill_images and kind != .rank_wire) {
+        if (kind != .fill_chunk and kind != .fill_slice and kind != .snap_save and kind != .snap_restore and kind != .fill_images and kind != .prompt_penalties and kind != .rank_wire) {
             if (kind != .idle_move) m.joinParkAhead();
             if (!m.rs.live) m.fill_seq = &.{};
         }
         switch (kind) {
+            .logprobs => {
+                const f = getLogprobs(&r) catch |err| m.pairFault(err);
+                _ = m.reply_scores.run(m, f) catch |err| m.pairFault(err);
+            },
             .rdma_idle => {
                 const dev: Model.SpillDev = .{ .m = m };
                 // m.joinAhead ran before dispatch; synchronize all CUDA streams,
@@ -3065,6 +3185,7 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
                 slot = try r.int(u32);
                 const base = try r.int(u64);
                 if (slot >= max_streams) return error.BadSlot;
+                slot_penalties[slot] = .{};
                 img_rows.clearRetainingCapacity();
                 try r.ids(gpa, &seqs[slot]);
                 fill_base = @intCast(base);
@@ -3107,11 +3228,24 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
                 // an error that parts the ranks (an Engram read this rank could not make) ends the follower; rank 0 ends the pair
                 if (m.fillChunk(seqs[slot].items[0 .. start + n], start, n, replay)) |_| {} else |err| try roundRefused(err);
             },
-            .verify => {
+            .prompt_penalties => {
+                var custody: greedy_head.Custody = .{ .active = true };
+                errdefer custody.failed(m) catch unreachable;
+                if (!m.penalty_on) return error.PenaltiesUnavailable;
+                const ps_slot = try r.int(u32);
+                const request = try penalties.read(&r);
+                if (ps_slot >= max_streams or r.at != r.b.len) return error.BadFrame;
+                try m.penalizePrompt(seqs[ps_slot].items,request);
+                slot_penalties[ps_slot] = request;
+                custody.active = false;
+            },
+            .verify, .verify_penalties => {
+                const penalized = kind == .verify_penalties;
                 // New-format parse failures can strand a leader already in a
                 // collective. This inner errdefer precedes every outer teardown.
-                var head_custody: greedy_head.Custody = .{ .active = m.decode_greedy_head or m.decode_sample_head };
+                var head_custody: greedy_head.Custody = .{ .active = penalized or m.decode_greedy_head or m.decode_sample_head };
                 errdefer head_custody.failed(m) catch unreachable;
+                if (penalized and (!m.penalty_on or m.decode_greedy_head or m.decode_sample_head)) return error.PenaltiesUnavailable;
                 const nw = try r.int(u32);
                 if (nw == 0 or nw > max_streams) return error.BadFrame;
                 const use_head = try readGreedyHeadMode(&r, m.decode_greedy_head, m.two != null);
@@ -3122,16 +3256,29 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
                     // TF_DS_KV_SHARD: a round naming a reused extent (its part or generation not the planner's) fails closed
                     if (kvf) |kf| try kf.checkWin(wins[k].slot, wins[k].base, wins[k].end, @intCast(wins[k].part), wins[k].gen);
                 }
-                if ((m.decode_greedy_head or m.decode_sample_head) and r.at != r.b.len) return error.BadFrame;
+                var penalty_requests: [max_streams]penalties.Request = undefined;
+                var any_penalties = false;
+                if (m.penalty_on) {
+                    for (wins[0..nw],penalty_requests[0..nw]) |win,*p| {
+                        if (win.slot >= max_streams) return error.BadSlot;
+                        p.* = slot_penalties[win.slot];
+                        any_penalties = any_penalties or p.settings.active();
+                    }
+                    if (penalized != any_penalties) return error.BadFrame;
+                }
+                if ((penalized or m.decode_greedy_head or m.decode_sample_head) and r.at != r.b.len) return error.BadFrame;
                 const rows = try built.build(gpa, &seqs, wins[0..nw]);
+                m.rd.penalty = null;
+                defer m.rd.penalty = null;
+                if (penalized) try m.preparePenalties(rows,penalty_requests[0..nw]);
                 if (spill) |sd| for (wins[0..nw]) |w| sd.bump(w.base + w.start, w.base + w.start + w.ids.len);
-                head_custody.active = use_head or sample_head_count != 0; // baseline execution keeps its old error policy
+                head_custody.active = penalized or use_head or sample_head_count != 0; // baseline execution keeps its old error policy
                 const verified = if (sample_head_count != 0)
                     greedy_head.verifySample(m, rows, built.absorb[0..nw], sample_head_count)
                 else
                     greedy_head.verify(m, rows, built.absorb[0..nw], use_head);
                 verified catch |err| {
-                    if (use_head or sample_head_count != 0) return err; // inner custody pair-ends before outer defers
+                    if (penalized or use_head or sample_head_count != 0) return err; // inner custody pair-ends before outer defers
                     try roundRefused(err);
                 };
                 head_custody.active = false;
@@ -3308,6 +3455,56 @@ test "prefix growth relocates instead of overwriting a retained neighbour" {
     try std.testing.expectEqual(@as(usize, 12288 + growth_rows), try l.placeKept(&.{}, 10240, &a));
     try std.testing.expect(!a.stale and !b.stale);
     try std.testing.expect(!l.overwritesKept(12288, 22528, &a));
+}
+
+
+test "pool pressure cache growth keeps a long prefix only when enabled" {
+    for ([_]bool{ false, true }) |enabled| {
+        var m: Model = undefined;
+        m.pool_cap = 524288;
+        var ln: Lanes = .{ .gpa = std.testing.allocator, .m = &m, .peer = null, .cache_grow = enabled, .relocation_enabled = false };
+        defer ln.snaps.deinit(ln.gpa);
+        var source: Snap = .{ .id = 1, .at = 270336, .base = 0, .end = 270336, .buf = undefined, .restored = true };
+        var tail: Snap = .{ .id = 2, .at = 65536, .base = 270336, .end = 370688, .buf = undefined };
+        try ln.snaps.appendSlice(ln.gpa, &.{ &source, &tail });
+        const base = try ln.placeKept(&.{}, 274432, &source);
+        try std.testing.expectEqual(@as(usize, 0), base);
+        try std.testing.expectEqual(!enabled, source.stale);
+        try std.testing.expect(tail.stale);
+    }
+}
+
+test "pool pressure cache growth protects live borrowed loading and pool bounds" {
+    var m: Model = undefined;
+    m.pool_cap = 524288;
+    var ln: Lanes = .{ .gpa = std.testing.allocator, .m = &m, .peer = null, .cache_grow = true, .relocation_enabled = false };
+    defer ln.snaps.deinit(ln.gpa);
+    var source: Snap = .{ .id = 1, .at = 270336, .base = 0, .end = 270336, .buf = undefined };
+    var tail: Snap = .{ .id = 2, .at = 2048, .base = 266240, .end = 370688, .buf = undefined, .loading = true };
+    try ln.snaps.appendSlice(ln.gpa, &.{ &source, &tail });
+    try std.testing.expect(!ln.canGrowHere(&.{}, 274432, &source));
+    tail.loading = false; tail.held = 1;
+    try std.testing.expect(!ln.canGrowHere(&.{}, 274432, &source));
+    tail.held = 0;
+    try std.testing.expect(ln.canGrowHere(&.{}, 274432, &source));
+    try std.testing.expect(!ln.canGrowHere(&.{.{ 270336, 370688 }}, 274432, &source));
+    try std.testing.expect(!ln.canGrowHere(&.{.{ 0, 270336 }}, 274432, &source));
+    source.base = m.pool_cap - source.at;
+    try std.testing.expect(!ln.canGrowHere(&.{}, 274432, &source));
+    source.base = std.math.maxInt(usize);
+    try std.testing.expect(!ln.canGrowHere(&.{}, 274432, &source));
+}
+
+test "pool pressure cache growth prefers a disjoint copy for sibling marks" {
+    var m: Model = undefined;
+    m.pool_cap = 1048576;
+    var ln: Lanes = .{ .gpa = std.testing.allocator, .m = &m, .peer = null, .cache_grow = true, .relocation_enabled = false };
+    defer ln.snaps.deinit(ln.gpa);
+    var source: Snap = .{ .id = 1, .at = 270336, .base = 0, .end = 370688, .buf = undefined };
+    var later: Snap = .{ .id = 2, .at = 368640, .base = 0, .end = 370688, .buf = undefined };
+    try ln.snaps.appendSlice(ln.gpa, &.{ &source, &later });
+    try std.testing.expect(try ln.placeKept(&.{}, 274432, &source) != source.base);
+    try std.testing.expect(!source.stale and !later.stale);
 }
 
 test "placement keeps restore source until genuine pool pressure requires cold fallback" {
@@ -3680,6 +3877,7 @@ const TestDev = struct {
 fn testStream(id: []const u8, saved: ?*Snap) lanes.Stream {
     var s: lanes.Stream = undefined;
     s.id = id;
+    s.logprobs = null;
     s.reuse = .{ .saved = if (saved) |sn| @ptrCast(sn) else null };
     s.reuse_failed = false;
     s.images = &.{};
@@ -4683,4 +4881,61 @@ test "round timing actual backend hook fences only when opted in" {
     ln.clean_round_timing = true;
     ln.backend().beginTiming();
     try std.testing.expectEqual(@as(usize, 1), Fake.syncs);
+}
+
+test "prefill slice cancellation checkpoint refuses before allocation or frame" {
+    var m: Model = undefined;
+    m.rs = .{ .live = true };
+    var ln: Lanes = .{ .gpa = std.testing.allocator, .m = &m, .peer = null, .cancel_checkpoints = true };
+    try std.testing.expectError(error.OpenPrefillChunk, Lanes.snapSaveFn(&ln, null, 65536));
+    try std.testing.expectEqual(@as(usize, 0), ln.snaps.items.len);
+}
+
+
+test "penalties new frames roundtrip and neutral verify bytes unchanged" {
+    const a = std.testing.allocator;
+    var w: Wire = .{};
+    defer w.deinit(a);
+    try w.begin(a,.verify,7);
+    try std.testing.expectEqualSlices(u8,&.{3,7,0,0,0,0,0,0,0},w.buf.items);
+    const p: penalties.Request = .{ .prompt_len = 43, .settings = .{ .presence = 1, .frequency = -1, .repetition = 2, .window = 19, .include_prompt = true } };
+    for ([_]Kind{.prompt_penalties}) |kind| {
+        try w.begin(a,kind,8);
+        try penalties.write(&w,a,p);
+        try std.testing.expectEqual(@as(usize,46),w.buf.items.len);
+        var r: Reader = .{ .b = w.buf.items };
+        try std.testing.expectEqual(kind,try decodeOuterKind(try r.int(u8)));
+        try std.testing.expectEqual(@as(u64,8),try r.int(u64));
+        const got = try penalties.read(&r);
+        try std.testing.expectEqual(p,got);
+        try std.testing.expectEqual(w.buf.items.len,r.at);
+    }
+    try w.begin(a,.verify_penalties,7);
+    try std.testing.expectEqualSlices(u8,&.{19,7,0,0,0,0,0,0,0},w.buf.items);
+    try std.testing.expect(openChunkAllows(.verify_penalties));
+    try std.testing.expect(!openChunkAllows(.prompt_penalties));
+}
+
+test "reply logprobs compact frame and step replay identically on both TP3 followers" {
+    const a = std.testing.allocator;
+    var w: Wire = .{};
+    defer w.deinit(a);
+    for (0..4) |op| {
+        const f: reply_lp.Frame = .{ .op = @intCast(op), .slot = 15, .row = 47, .token = 129279, .k = 20 };
+        try w.begin(a, .logprobs, op + 42);
+        try putLogprobs(&w, a, f);
+        try std.testing.expectEqual(@as(usize, 29), w.buf.items.len);
+        for (0..2) |_| {
+            var r: Reader = .{ .b = w.buf.items };
+            try std.testing.expectEqual(Kind.logprobs, try decodeOuterKind(try r.int(u8)));
+            try std.testing.expectEqual(@as(u64, op + 42), try r.int(u64));
+            try std.testing.expectEqualDeep(f, try getLogprobs(&r));
+        }
+        var short: Reader = .{ .b = w.buf.items[9..28] };
+        try std.testing.expectError(error.ShortFrame, getLogprobs(&short));
+        try w.int(a, u8, 1);
+        var long: Reader = .{ .b = w.buf.items[9..] };
+        try std.testing.expectError(error.BadFrame, getLogprobs(&long));
+    }
+    try std.testing.expect(openChunkAllows(.logprobs));
 }

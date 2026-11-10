@@ -26,8 +26,10 @@ pub const kv_parts = @import("kv_parts.zig");
 pub const Engine = engine.Engine;
 pub const Config = config.Config;
 pub const Model = config.Model;
+pub const logprob = @import("logprob.zig");
 pub const Stream = stream.Stream;
 pub const Sampling = sampling.Sampling;
+pub const penalties = @import("penalties.zig");
 pub const SuffixLookup = proposer.SuffixLookup;
 
 test {
