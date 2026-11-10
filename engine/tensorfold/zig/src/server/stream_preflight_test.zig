@@ -114,6 +114,7 @@ const Seen = struct {
     score_top: usize = 0,
     score_sum: f64 = 0,
     tokens: ?[]const u32 = null,
+    completion_tokens: i64 = -1,
     submissions: usize = 0,
     answer: [2048]u8 = undefined,
     answer_len: usize = 0,
@@ -128,6 +129,10 @@ const Seen = struct {
     gone_at_open: bool = false, // the client is gone when the stream opens
     opened: bool = false,
     events: usize = 0,
+    usage_values: usize = 0, // chunks whose usage is an object
+    usage_nulls: usize = 0, // chunks whose usage is null
+    usage_empty_choices: usize = 0, // usage objects on a chunk with no choices
+    usage_with_finish: usize = 0, // usage objects on the chunk with the finish reason
     role_first: bool = false,
     status: ?u16 = null,
     context_code: bool = false,
@@ -184,6 +189,14 @@ const Seen = struct {
             return;
         }
         const choices = p.get("choices") orelse return;
+        if (p.get("usage")) |usage| {
+            if (usage == .null) c.usage_nulls += 1 else {
+                c.usage_values += 1;
+                c.completion_tokens = usage.get("completion_tokens").?.int64().?;
+                if (choices == .array and choices.array.len == 0) c.usage_empty_choices += 1;
+                if (choices == .array and choices.array.len > 0 and choices.array[0].strField("finish_reason") != null) c.usage_with_finish += 1;
+            }
+        }
         if (choices != .array or choices.array.len == 0) return;
         c.finished(choices.array[0]);
         const delta = choices.array[0].get("delta") orelse return;
@@ -646,5 +659,23 @@ test "reply logprobs Chat and Responses request rows reach whole and streaming r
         try std.testing.expectEqual(@as(usize, 2), response.score_rows);
         try std.testing.expectEqual(@as(usize, 0), response.score_top);
         try std.testing.expectEqual(@as(f64, -2.5), response.score_sum);
+    }
+}
+
+test "recipe 38 requested stream usage is null on every chunk but its own, and an unrequested stream is unchanged" {
+    const prefix = "{\"model\":\"test-model\",\"max_tokens\":2,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]";
+    // OpenAI's contract: usage null on each chunk, then one chunk with no choices that carries it, then [DONE]
+    const requested = try send(.chat, prefix ++ ",\"stream_options\":{\"include_usage\":true}}");
+    try std.testing.expectEqual(@as(usize, 1), requested.usage_values);
+    try std.testing.expectEqual(@as(usize, 1), requested.usage_empty_choices);
+    try std.testing.expectEqual(@as(usize, 0), requested.usage_with_finish);
+    try std.testing.expectEqual(requested.events - 2, requested.usage_nulls);
+    // without include_usage the stream keeps its bytes: no null usage fields, the usage on the finish chunk as before
+    inline for ([_][]const u8{ "}", ",\"stream_options\":{\"include_usage\":false}}" }) |suffix| {
+        const plain = try send(.chat, prefix ++ suffix);
+        try std.testing.expectEqual(@as(usize, 1), plain.usage_values);
+        try std.testing.expectEqual(@as(usize, 1), plain.usage_with_finish);
+        try std.testing.expectEqual(@as(usize, 0), plain.usage_empty_choices);
+        try std.testing.expectEqual(@as(usize, 0), plain.usage_nulls);
     }
 }
