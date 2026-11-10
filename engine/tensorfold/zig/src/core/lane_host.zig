@@ -816,7 +816,7 @@ pub const LaneHost = struct {
         h.unlock();
         defer h.noteLive();
         if (h.stepped() and h.core.log == null) {
-            job.stream.between = .{ .ptr = h, .wanted = sliceWanted, .run = sliceBetween };
+            job.stream.between = .{ .ptr = h, .wanted = sliceWanted, .run = sliceBetween, .timed = h.share.p < 1 };
             return true;
         } // image fills keep their uncached rows per slot
         if (h.loneFits(job)) return h.runLone(job, began);
@@ -3791,4 +3791,123 @@ test "prefill slice share pays each park with cap runnable and held completion" 
         target.prefill_hook = null;
         host.closeAll();
     }
+}
+
+// Hardware, 2026-11-10: TENSORFOLD_PREFILL_SHARE=0.5 with TF_DS_PREFILL_SLICE=5 gave the decoder no rounds beyond the
+// parks. dsv41 enqueues a slice's kernels and returns (model.zig runSlice never synchronizes); the park's round then
+// synchronizes the same stream (verifyRun), so the slice's GPU time was timed as decode and paid the debt it earned.
+// The model here: a slice costs `slice_ns`, run on the host (sync) or queued for the next synchronize (async), which
+// Between.timed brings forward to the slice's end.
+test "prefill slice share debt gives decode rounds between chunks with asynchronous slices" {
+    const gpa = std.testing.allocator;
+    const Sim = struct {
+        var inner: *const lanes.backend.Backend.VTable = undefined;
+        var async_gpu = false;
+        var queued_ns: i64 = 0;
+        var rounds: usize = 0;
+        var marks: [16]usize = undefined;
+        var n_marks: usize = 0;
+        const slice_ns: i64 = 6 * std.time.ns_per_ms;
+        const round_ns: i64 = 1 * std.time.ns_per_ms;
+        fn pause(ns: i64) void {
+            if (ns > 0) std.Io.sleep(std.testing.io, .fromNanoseconds(ns), .awake) catch {};
+        }
+        fn drain() void {
+            pause(queued_ns);
+            queued_ns = 0;
+        }
+        fn enqueue(s: *lanes.Stream) void {
+            if (!async_gpu) return pause(slice_ns);
+            queued_ns += slice_ns;
+            // a backend honouring Between.timed finishes the slice before the park times decode
+            if (s.between) |b| if (b.timed and b.wanted(b.ptr)) drain();
+        }
+        fn slice(_: *anyopaque, s: *lanes.Stream) void {
+            enqueue(s);
+        }
+        fn chunk(_: *anyopaque, s: *lanes.Stream, _: usize) void {
+            enqueue(s);
+            if (n_marks < marks.len) marks[n_marks] = rounds;
+            n_marks += 1;
+        }
+        fn verify(ptr: *anyopaque, windows: []const lanes.backend.Window, out: []lanes.backend.Verified) anyerror!void {
+            drain(); // the round's synchronize waits for queued prompt kernels on the same stream
+            pause(round_ns);
+            rounds += 1;
+            return inner.verify(ptr, windows, out);
+        }
+        fn first(ptr: *anyopaque, s: *lanes.Stream, position: u64) anyerror!u64 {
+            drain(); // the prompt's logits read synchronizes too
+            return inner.first(ptr, s, position);
+        }
+    };
+    const Log = struct {
+        done: [2]bool = .{ false, false },
+        fn event(ctx: *anyopaque, id: Id, ev: *const Event) void {
+            const o: *@This() = @ptrCast(@alignCast(ctx));
+            if (ev.* == .finished and id <= 2) o.done[id - 1] = true;
+        }
+    };
+    const chunks = 8;
+    const parks = 4; // five slices a chunk
+    for ([_]bool{ false, true }) |async_gpu| for ([_]f64{ 1, 0.5 }) |p| {
+        var cfg = try lanes.Config.init(gpa, .{ .exact_width = 8, .hidden_rows = true }, 8, 7);
+        defer cfg.deinit(gpa);
+        var target: lanes.fake.Fake = .{ .gpa = gpa };
+        defer target.deinit();
+        const plain = target.stepped();
+        Sim.inner = plain.vtable;
+        Sim.async_gpu = async_gpu;
+        Sim.queued_ns = 0;
+        Sim.rounds = 0;
+        Sim.n_marks = 0;
+        var vt = plain.vtable.*;
+        vt.verify = Sim.verify;
+        vt.first = Sim.first;
+        var clock: lanes.fake.FixedClock = .{};
+        var core = lanes.Engine.init(gpa, &cfg, .{ .ptr = &target, .vtable = &vt }, clock.clock());
+        defer core.deinit();
+        var host = LaneHost.init(gpa, std.testing.io, &core, .{ .lanes = 3 });
+        defer host.stop();
+        host.share = .{ .p = p };
+        var log: Log = .{};
+        const short = [_]u32{ 2, 7, 1, 8 };
+        const long: [4096]u32 = @splat(5);
+        const decoder: Request = .{ .prompt = &short, .max_tokens = 100000 };
+        const fill: Request = .{ .prompt = &long, .max_tokens = 1 };
+        try host.engine().submit(1, &decoder, .{ .ctx = &log, .event = Log.event });
+        var iterations: usize = 0;
+        while (core.runnableCount() == 0 and iterations < 100) : (iterations += 1) _ = host.runIteration();
+        try std.testing.expectEqual(@as(usize, 1), core.runnableCount());
+        target.prefill_chunks = chunks;
+        target.prefill_slices = parks + 1;
+        target.slice_hook = Sim.slice;
+        target.slice_ctx = &log;
+        target.prefill_hook = Sim.chunk;
+        target.prefill_hook_ctx = &log;
+        try host.engine().submit(2, &fill, .{ .ctx = &log, .event = Log.event });
+        while (!log.done[1] and iterations < 20000) : (iterations += 1) _ = host.runIteration();
+        try std.testing.expect(log.done[1]);
+        try std.testing.expectEqual(@as(usize, chunks), Sim.n_marks);
+        // rounds from one chunk's end to the next: its parks and the rounds between chunks
+        var least: usize = std.math.maxInt(usize);
+        var most: usize = 0;
+        for (Sim.marks[0 .. chunks - 1], Sim.marks[1..chunks]) |a, b| {
+            least = @min(least, b - a);
+            most = @max(most, b - a);
+        }
+        if (p >= 1) {
+            // share off: exactly the parks and one round between chunks, whatever the backend's timing
+            try std.testing.expectEqual(@as(usize, parks + 1), least);
+            try std.testing.expectEqual(@as(usize, parks + 1), most);
+        } else {
+            // a chunk earns ~(5 * 6 - 4 * 1) ms of prompt time: at p = 0.5 about that much decode after its parks
+            try std.testing.expect(least >= parks + 1 + 8);
+        }
+        target.slice_hook = null;
+        target.prefill_hook = null;
+        host.engine().cancel(1);
+        while (!log.done[0] and iterations < 30000) : (iterations += 1) _ = host.runIteration();
+        try std.testing.expect(log.done[0]);
+    };
 }

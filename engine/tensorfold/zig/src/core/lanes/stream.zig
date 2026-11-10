@@ -183,6 +183,9 @@ pub const Between = struct {
     /// Whether any other stream would take a round now (false: the pass keeps going, nothing joined or waited on).
     wanted: *const fn (ptr: *anyopaque) bool,
     run: *const fn (ptr: *anyopaque) anyerror!void,
+    /// The host times `run` as decode and the pass as prompt (TENSORFOLD_PREFILL_SHARE): a backend whose prompt work
+    /// runs asynchronously finishes it before `run` and at a chunk's end while `wanted`, or decode is billed for it.
+    timed: bool = false,
 };
 
 pub const Stream = struct {

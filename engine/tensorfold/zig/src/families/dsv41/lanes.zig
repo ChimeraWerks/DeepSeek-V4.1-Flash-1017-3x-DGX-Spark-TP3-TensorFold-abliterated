@@ -1378,11 +1378,17 @@ pub const Lanes = struct {
                 try self.flush();
             }
             const end = try m.fillSlice(seq[0 .. args.start + args.n], args, lo, hi);
-            if (end != .more) return end == .head;
-            lo = hi;
             const b = s.between.?;
+            // runSlice only enqueues: unsynchronized, the park's round (verifyRun) would wait out this slice's kernels
+            // and the host would bill them to decode, cancelling the share's debt. Share off keeps the old overlap.
+            if (end != .more) {
+                if (b.timed and b.wanted(b.ptr)) try m.stream.synchronize();
+                return end == .head;
+            }
+            lo = hi;
             if (b.wanted(b.ptr)) {
                 m.joinAhead(); // shared Engram hashes and reader pool, not just row arrays
+                if (b.timed) try m.stream.synchronize();
                 try b.run(b.ptr);
             }
             if (s.isCancelled()) {
