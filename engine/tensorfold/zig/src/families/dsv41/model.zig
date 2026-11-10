@@ -21,6 +21,7 @@ const graph_vote = @import("graph_vote.zig");
 const greedy_head = @import("decode_greedy_head.zig");
 const draft = @import("draft.zig");
 const engram = @import("engram.zig");
+pub const engram_keep = @import("engram_keep.zig");
 const engram_io = @import("engram_io.zig");
 const engram_aio = @import("engram_aio.zig");
 const exl3_prefill = @import("exl3_prefill.zig");
@@ -229,6 +230,8 @@ pub const Model = struct {
     aio: ?*engram_aio.Aio = null,
     paio: ?*engram_aio.Aio = null, // the prompt chunks' Engram reads, on a ring of their own
     eh: ?prompt.EngramHost = null,
+    keep_engram: bool = false, // TF_DS_ENGRAM_KEEP, private decode hashes also at outer yields
+    retained: engram_keep.State = .{},
     park_nojoin: bool = false, // TF_DS_PARK_NOJOIN, agreed without changing checkpoint identity
     park_eh: ?prompt.EngramHost = null,
     park_pool: ?*engram_io.Pool = null,
@@ -343,6 +346,8 @@ pub const Model = struct {
         m.aio = null;
         m.paio = null;
         m.eh = null;
+        m.keep_engram = prefill128.enabled("TF_DS_ENGRAM_KEEP");
+        m.retained = .{};
         m.park_nojoin = prefill128.enabled("TF_DS_PARK_NOJOIN");
         m.park_eh = null;
         m.park_pool = null;
@@ -680,7 +685,7 @@ pub const Model = struct {
             // the prompt's collectives pair up only when every rank runs the same kind
             @import("cache_batch.zig").Flags.fromEnv().agreement(@as(u64, @intFromBool(prompt.owned_on)) | @as(u64, @intFromBool(directGather())) << 1 | (m.prefill.bits() << 2) |
                 (if (@import("graph_telemetry.zig").enabled()) @import("graph_telemetry.zig").agreement_bit else 0) | keyed_draft.settingBit(keyed_draft.enabled()) | greedy_head.agreement(m.decode_greedy_head) | (if (m.decode_sample_head) greedy_head.sample_agreement_bit else @as(u64, 0)) |
-                parkAgreement(m.park_nojoin) | @import("draft_head.zig").settingBit(@import("draft_head.zig").enabled()) | (@as(u64, @intFromBool(prompt.bf16_wire_on)) << 52) | (@as(u64, @intFromBool(prompt.owned_router_on)) << 53) | @import("round_timing.zig").agreement(@import("round_timing.zig").enabled())),
+                engram_keep.agreement(m.keep_engram) | parkAgreement(m.park_nojoin) | @import("draft_head.zig").settingBit(@import("draft_head.zig").enabled()) | (@as(u64, @intFromBool(prompt.bf16_wire_on)) << 52) | (@as(u64, @intFromBool(prompt.owned_router_on)) << 53) | @import("round_timing.zig").agreement(@import("round_timing.zig").enabled())),
             draft_words[0], draft_words[1],
             @import("engine_api").Spill.roomWaitMs(if (std.c.getenv("TF_SPILL_ROOM_WAIT_MS")) |v| std.mem.span(v) else null),
         };
@@ -706,6 +711,7 @@ pub const Model = struct {
             try @import("round_timing.zig").check(all[0][6], r[6]);
             try greedy_head.agree(r[6], all[0][6]);
             try keyed_draft.checkAgreement(r[6], all[0][6]);
+            try engram_keep.check(all[0][6], r[6]);
             try prefillAgreement(all[0][6], r[6]);
             try draft_config.check(all[0][7..9].*, r[7..9].*);
             try roomWaitAgreement(all[0][9], r[9]);
@@ -949,11 +955,11 @@ pub const Model = struct {
     }
 
     pub fn independentPark(m: *const Model) bool {
-        return m.park_nojoin and m.rs.live;
+        return (m.park_nojoin and m.rs.live) or (m.keep_engram and (m.rs.live or m.retained.key != null));
     }
 
-    /// Only live parks retain reader custody. Abort, release and row consumption
-    /// still call joinAhead, regardless of the setting.
+    /// Retained future rows also own prompt hashes outside a live slice.
+    /// Abort, release and row consumption still join regardless of the setting.
     pub fn joinParkAhead(m: *Model) void {
         if (!m.independentPark()) m.joinAhead();
     }
@@ -1294,6 +1300,7 @@ pub const Model = struct {
         var trace_scope = trace.begin("model.resetEngramAhead", .phase);
         defer trace_scope.end();
         m.joinAhead();
+        if (m.keep_engram) m.retained.key = null; // TF_DS_ENGRAM_KEEP: joined future rows lose their identity too
         if (m.eh) |*eh| {
             // trace only: ready rows thrown away here (lo, hi: their rows), the next chunk's when a yield resumes
             if (trace_scope.trace != null and eh.ahead_n > 0 and (eh.ahead_ready[0] or eh.ahead_ready[1]))
@@ -1488,11 +1495,57 @@ pub const Model = struct {
         // next chunk start would otherwise take its rows, hashed from the other prompt's ids
         if (m.rs.live) return error.OpenPrefillChunk;
         m.resetEngramAhead();
+        if (m.keep_engram) try m.retained.begin();
+        try m.selectFill(slot, base);
+    }
+
+    /// fill_resume is not a new occupant. openChunk checks the exact identity.
+    pub fn fillResume(m: *Model, slot: usize, base: usize) !void {
+        if (!m.keep_engram) return m.fillBegin(slot, base);
+        if (slot >= m.streams) return error.BadSlot;
+        if (m.rs.live) return error.OpenPrefillChunk;
+        if (m.retained.key) |key| if (key.slot != slot) m.resetEngramAhead();
+        try m.selectFill(slot, base);
+    }
+
+    fn selectFill(m: *Model, slot: usize, base: usize) !void {
         m.spans.clearRetainingCapacity();
         m.ch.spans = &.{};
         m.view = try m.caches.view(&m.eng, slot, base);
         for (m.rings, m.ring_view) |r, *v| v.* = r + slot * m.eng.ringBytes();
         m.fill_slot = slot;
+    }
+
+    fn retainedKey(m: *const Model, seq: []const i32, start: usize, n: usize) ?engram_keep.Key {
+        if (m.kvs != null or m.two != null or m.ch.spans.len != 0) return null;
+        const eh = if (m.eh) |*host| host else return null;
+        const layers: u8 = if (m.prefill.ae or eh.hasher.layers == 1) 1 else 3;
+        return engram_keep.Key.make(m.fill_slot, m.retained.generation, seq, start, n, eh.hasher.ngram, layers);
+    }
+
+    /// A spawn refusal cannot make only one rank drop an otherwise identical key.
+    pub fn retainAhead(m: *Model, seq: []const i32, start: usize, n: usize) void {
+        if (!m.keep_engram) return;
+        m.retained.key = m.retainedKey(seq, start, n);
+        if (m.retained.key != null and m.ahead == null) {
+            const eh = &m.eh.?;
+            if (m.prefill.ae) prompt.engramReadAhead(eh, m.eng.c, seq[0 .. start + n], start, n, 0)
+            else prompt.engramReadAheadAll(eh, m.eng.c, seq[0 .. start + n], start, n);
+        }
+    }
+
+    /// Only the joined result is inspected. A miss leaves the baseline read path.
+    pub fn claimRetained(m: *Model, seq: []const i32, start: usize, n: usize) bool {
+        if (!m.keep_engram) return false;
+        m.joinAhead();
+        const same = if (m.retained.key) |saved| if (m.retainedKey(seq, start, n)) |key| saved.eql(key) else false else false;
+        // a failed future read is retried here, as the reset at a yielded resume did before
+        if (!same or m.eh.?.ahead_err != null) {
+            m.resetEngramAhead();
+            return false;
+        }
+        m.retained.key = null; // single use, even if the chunk subsequently fails
+        return true;
     }
 
     /// TF_DS_KV_SHARD: the filling prompt's view (fillBegin's, at `base`) with its borrowed twins (`on`; `local`: this
@@ -1512,7 +1565,7 @@ pub const Model = struct {
     }
 
     pub fn dropChunk(m: *Model) void {
-        m.joinAhead();
+        if (m.keep_engram) m.resetEngramAhead() else m.joinAhead();
         m.rs = .{};
     }
 
@@ -1545,6 +1598,7 @@ pub const Model = struct {
         // Engram rows read ahead on a thread while the GPU runs the layers before them (the served reader pool's
         // overlap): this chunk's both layers' during the chunk before it (m.ahead), else the first layer's from the
         // chunk's start and the next's once the first is applied
+        if (m.keep_engram) _ = m.claimRetained(seq, start, n);
         var ahead: ?std.Thread = m.ahead;
         m.ahead = null;
         errdefer if (ahead) |th| { var ts = trace.begin("model.openChunk.error_cleanup.thread_join", .wait); defer ts.end(); th.join(); };
@@ -1639,6 +1693,7 @@ pub const Model = struct {
                     m.ahead = if (m.prefill.ae)
                         (blk: { var ts = trace.begin("model.readAhead.spawn", .phase); defer ts.end(); break :blk std.Thread.spawn(.{}, prompt.engramReadAhead, .{ eh, c, m.fill_seq[0 .. start + n + nn], start + n, nn, @as(usize, 0) }); }) catch null
                     else (blk: { var ts = trace.begin("model.readAhead.spawn", .phase); defer ts.end(); break :blk std.Thread.spawn(.{}, prompt.engramReadAheadAll, .{ eh, c, m.fill_seq[0 .. start + n + nn], start + n, nn }); }) catch null;
+                    if (m.keep_engram) m.retainAhead(m.fill_seq, start + n, nn);
                     if (m.engram_audit) std.debug.print("prefill_engram_plan: rank={d} start={d} rows={d} first_layer_only={d}\n", .{ m.rank, start + n, nn, @intFromBool(m.prefill.ae) });
                 }
                 if (pt) |t| try t.mark(m.stream, .engram);
@@ -1932,6 +1987,7 @@ test "decode greedy head actual Model rejects stale logits and invalid row reads
 
 test "decode greedy head actual Model invalid route resets previous readiness without CUDA" {
     var m: Model = undefined;
+    m.keep_engram = false;
     m.greedy_output = .{ .rows = 16 };
     m.rd.greedy_out = 17;
     m.decode_greedy_head = false;
@@ -1975,6 +2031,7 @@ test "decode greedy head actual Model selected output fences then copies only to
     var ctx: cuda.Context = undefined;
     ctx.d = &driver;
     var m: Model = undefined;
+    m.keep_engram = false;
     m.ctx = &ctx;
     m.stream = .{ .d = &driver, .owner = owner, .handle = null };
     m.amax = 0x12340;
@@ -1989,6 +2046,7 @@ test "decode greedy head actual Model selected output fences then copies only to
 
 test "decode greedy head sampled custody refuses stale logits and resets invalid routes" {
     var m: Model = undefined;
+    m.keep_engram = false;
     m.sample_output = 28;
     m.greedy_output = .{ .rows = 2 };
     m.rd.r = 2;
@@ -2030,6 +2088,7 @@ test "prefill slice resume after park validates exact arguments and rejects repl
     try std.testing.expectEqual(@as(?usize, 3), rs.shared.kv_layer);
     try std.testing.expectEqual(@as(usize, 7), rs.floor);
     var model_: Model = undefined;
+    model_.keep_engram = false;
     model_.rs = .{};
     model_.rs = rs;
     model_.rs.ahead = try std.Thread.spawn(.{}, struct {
@@ -2090,6 +2149,7 @@ test "prefill slice nojoin actual custody leaves both reads live until consumpti
         var current: Gate = .{};
         var next: Gate = .{};
         var m: Model = undefined;
+        m.keep_engram = false;
         m.park_nojoin = true;
         m.rs = .{ .live = true, .ahead = try std.Thread.spawn(.{}, Gate.run, .{&current}) };
         m.ahead = try std.Thread.spawn(.{}, Gate.run, .{&next});
@@ -2112,6 +2172,7 @@ test "prefill slice nojoin actual custody leaves both reads live until consumpti
         var g: Gate = .{};
         g.go.store(true, .release);
         var m: Model = undefined;
+        m.keep_engram = false;
         m.park_nojoin = on;
         m.rs = .{ .live = !on };
         m.ahead = try std.Thread.spawn(.{}, Gate.run, .{&g});
@@ -2122,6 +2183,7 @@ test "prefill slice nojoin actual custody leaves both reads live until consumpti
 
 test "prefill slice nojoin off and empty Engram never allocate a decode host" {
     var m: Model = undefined;
+    m.keep_engram = false;
     m.park_nojoin = false;
     m.rs = .{ .live = true };
     m.park_eh = null;
@@ -2137,4 +2199,237 @@ test "prefill slice nojoin off and empty Engram never allocate a decode host" {
     m.eh = null;
     try std.testing.expect(try m.roundEngram() == null);
     try std.testing.expect(m.park_eh == null and m.park_pool == null);
+}
+
+test "prefill slice engram keep clean resume consumes once and decode owns private hashes" {
+    const Fixture = @import("engram_keep_test.zig").Fixture;
+    const f = try Fixture.create();
+    defer f.destroy();
+    for ([_]usize{ 4096, 8192 }) |n| for ([_]bool{ false, true }) |ae| {
+        const before = f.pool.gen;
+        try f.plan(ae, n);
+        try std.testing.expect(f.m.independentPark()); // rs.live is false
+        const decode = (try f.m.roundEngram()).?;
+        try std.testing.expect(decode != &f.m.eh.?);
+        try std.testing.expect(decode.hashes.ptr != f.m.eh.?.hashes.ptr);
+        const dseq = [_]i32{ 6, 5, 4, 3, 2, 1, 0 };
+        // Real hasher and reader, concurrent with the future prompt's worker.
+        for (0..16) |_| for (f.c.engram_layers.slice()) |li| {
+            _ = try prompt.engramRows(decode, li, &dseq, 0, dseq.len, f.c.engram_layers.slice());
+        };
+        f.m.joinAhead(); // the production outer-yield defer
+        try std.testing.expectEqual(before + @as(u64, if (ae) 1 else 2), f.pool.gen);
+        var expected_hashes: [8192 * 2 * 3]i64 = undefined;
+        const h = &f.m.eh.?;
+        h.hasher.hashes(&f.ids, 4, n, expected_hashes[0 .. n * 6]);
+        try std.testing.expectEqualSlices(i64, expected_hashes[0 .. n * 6], h.hashes[0 .. n * 6]);
+        const generation = f.m.retained.generation;
+        try f.m.fillResume(0, 0); // actual model resume, with an empty fake GPU cache
+        try std.testing.expectEqual(generation, f.m.retained.generation);
+        try std.testing.expect(f.m.claimRetained(&f.ids, 4, n));
+        const reads = f.pool.gen;
+        const kept = try f.rows(1, n);
+        try std.testing.expectEqual(reads, f.pool.gen); // no second gather
+        const snapshot = try std.testing.allocator.dupe(u16, kept[0 .. n * 3 * 32]);
+        defer std.testing.allocator.free(snapshot);
+        const fresh = try f.rows(1, n); // single-use consumption forces a fresh read
+        try std.testing.expectEqual(reads + 1, f.pool.gen);
+        try std.testing.expectEqualSlices(u16, snapshot, fresh[0 .. n * 3 * 32]);
+        const next_reads = f.pool.gen;
+        _ = try f.rows(14, n);
+        try std.testing.expectEqual(next_reads + @as(u64, if (ae) 1 else 0), f.pool.gen);
+        // After the claim no pending future key remains. Current chunks use rs.live.
+        try std.testing.expect(f.m.retained.key == null);
+    };
+}
+
+test "prefill slice engram keep mismatches and unsupported modes force a real reread" {
+    const Fixture = @import("engram_keep_test.zig").Fixture;
+    const f = try Fixture.create();
+    defer f.destroy();
+    for (0..8) |case| {
+        try f.plan(false, 32);
+        f.m.joinAhead();
+        const before = f.pool.gen;
+        var n: usize = 32;
+        switch (case) {
+            0 => f.ids[1] = 6, // left halo, same slot/length/start
+            1 => f.m.fill_slot = 1,
+            2 => try f.m.retained.begin(), // same slot reused by even an identical prompt
+            3 => f.m.prefill.ae = true,
+            4 => n = 31,
+            5 => f.m.ch.spans = &.{.{ .at = 4, .len = 2, .row = 0 }},
+            6 => f.m.kvs = @as(shard_ops.KvShard, undefined),
+            7 => f.m.two = @as(prompt2d.Two, undefined),
+            else => unreachable,
+        }
+        try std.testing.expect(!f.m.claimRetained(&f.ids, 4, n));
+        try std.testing.expect(f.m.eh.?.ahead_err == null and !f.m.eh.?.ahead_ready[0]);
+        _ = try f.rows(1, n);
+        try std.testing.expectEqual(before + 1, f.pool.gen);
+        f.ids[1] = 1;
+        f.m.fill_slot = 0;
+        f.m.ch.spans = &.{};
+        f.m.kvs = null;
+        f.m.two = null;
+    }
+    try f.plan(false, 32);
+    f.m.joinAhead();
+    const reads = f.pool.gen;
+    try f.m.fillBegin(0, 0); // actual new-occupant path resets even same slot
+    try std.testing.expect(!f.m.claimRetained(&f.ids, 4, 32));
+    _ = try f.rows(1, 32);
+    try std.testing.expectEqual(reads + 1, f.pool.gen);
+}
+
+test "prefill slice engram keep cancellation joins an in flight real reader before clearing readiness" {
+    const Fixture = @import("engram_keep_test.zig").Fixture;
+    const f = try Fixture.create();
+    defer f.destroy();
+    const Gate = struct {
+        f: *Fixture,
+        entered: std.atomic.Value(bool) = .init(false),
+        go: std.atomic.Value(bool) = .init(false),
+        cancelling: std.atomic.Value(bool) = .init(false),
+        cancelled: std.atomic.Value(bool) = .init(false),
+        fn read(g: *@This()) void {
+            g.entered.store(true, .release);
+            while (!g.go.load(.acquire)) std.Thread.yield() catch {};
+            prompt.engramReadAheadAll(&g.f.m.eh.?, &g.f.c, &g.f.ids, 4, 8192);
+        }
+        fn cancel(g: *@This()) void {
+            g.cancelling.store(true, .release);
+            g.f.m.dropChunk();
+            g.cancelled.store(true, .release);
+        }
+    };
+    var gate: Gate = .{ .f = f };
+    f.m.eh.?.ahead_start = 4;
+    f.m.eh.?.ahead_n = 8192;
+    f.m.retained.key = engram_keep.Key.make(0, f.m.retained.generation, &f.ids, 4, 8192, 4, 3);
+    f.m.ahead = try std.Thread.spawn(.{}, Gate.read, .{&gate});
+    defer gate.go.store(true, .release);
+    while (!gate.entered.load(.acquire)) std.Thread.yield() catch {};
+    const cancel = try std.Thread.spawn(.{}, Gate.cancel, .{&gate});
+    while (!gate.cancelling.load(.acquire)) std.Thread.yield() catch {};
+    const blocked = !gate.cancelled.load(.acquire);
+    gate.go.store(true, .release);
+    cancel.join();
+    try std.testing.expect(blocked);
+    try std.testing.expect(gate.cancelled.load(.acquire));
+    try std.testing.expect(f.m.ahead == null and f.m.retained.key == null);
+    try std.testing.expectEqual(@as([2]bool, .{ false, false }), f.m.eh.?.ahead_ready);
+    const reads = f.pool.gen;
+    _ = try f.rows(1, 8192);
+    try std.testing.expectEqual(reads + 1, f.pool.gen);
+}
+
+test "prefill slice engram keep off retains baseline join reset and zero private allocation" {
+    const Fixture = @import("engram_keep_test.zig").Fixture;
+    const f = try Fixture.create();
+    defer f.destroy();
+    try f.plan(false, 32);
+    f.m.keep_engram = false;
+    f.m.joinParkAhead();
+    try std.testing.expect(f.m.ahead == null);
+    try std.testing.expectEqual(@as(u64, 2), f.pool.gen);
+    try std.testing.expect((try f.m.roundEngram()).? == &f.m.eh.?);
+    try std.testing.expect(f.m.park_eh == null and f.m.park_pool == null);
+    const generation = f.m.retained.generation;
+    try f.m.fillResume(0, 0);
+    try std.testing.expectEqual(generation, f.m.retained.generation);
+    try std.testing.expectEqual(@as([2]bool, .{ false, false }), f.m.eh.?.ahead_ready);
+    _ = try f.rows(1, 32);
+    try std.testing.expectEqual(@as(u64, 3), f.pool.gen);
+    var uninitialized: Model = undefined;
+    uninitialized.keep_engram = false;
+    try std.testing.expect(!uninitialized.claimRetained(undefined, 0, 0));
+}
+
+test "prefill slice engram keep AIO resume consumes without new submissions" {
+    const Fixture = @import("engram_keep_test.zig").Fixture;
+    const f = try Fixture.create();
+    const aio = try engram_aio.Aio.init(std.testing.allocator, std.testing.io, 4096);
+    defer aio.deinit();
+    defer f.destroy();
+    f.m.eh.?.paio = aio;
+    for ([_]usize{ 4096, 8192 }) |n| for ([_]bool{ false, true }) |ae| {
+        try f.plan(ae, n);
+        f.m.joinAhead();
+        try f.m.fillResume(0, 0);
+        try std.testing.expect(f.m.claimRetained(&f.ids, 4, n));
+        const reads = aio.head;
+        const retained = try f.rows(1, n);
+        try std.testing.expectEqual(reads, aio.head);
+        const bytes = try std.testing.allocator.dupe(u16, retained[0 .. n * 3 * 32]);
+        defer std.testing.allocator.free(bytes);
+        const fresh = try f.rows(1, n);
+        try std.testing.expect(aio.head > reads);
+        try std.testing.expectEqualSlices(u16, bytes, fresh[0 .. n * 3 * 32]);
+    };
+}
+
+test "prefill slice engram keep spawn refusal retains the same rows synchronously" {
+    const Fixture = @import("engram_keep_test.zig").Fixture;
+    const f = try Fixture.create();
+    defer f.destroy();
+    for ([_]bool{ false, true }) |ae| {
+        f.m.resetEngramAhead();
+        f.m.prefill.ae = ae;
+        f.m.eh.?.ahead_start = 4;
+        f.m.eh.?.ahead_n = 32;
+        const before = f.pool.gen;
+        f.m.retainAhead(&f.ids, 4, 32); // null handle is the actual spawn-refusal result
+        try std.testing.expectEqual(before + @as(u64, if (ae) 1 else 2), f.pool.gen);
+        try std.testing.expect(f.m.retained.key != null and f.m.ahead == null);
+        try std.testing.expect(f.m.claimRetained(&f.ids, 4, 32));
+        const reads = f.pool.gen;
+        _ = try f.rows(1, 32);
+        try std.testing.expectEqual(reads, f.pool.gen);
+    }
+    var off: Model = undefined;
+    off.keep_engram = false;
+    off.retainAhead(undefined, 0, 0); // no work or other state reads when off
+}
+
+test "prefill slice engram keep retries a failed future read like the yielded reset did" {
+    const Fixture = @import("engram_keep_test.zig").Fixture;
+    const f = try Fixture.create();
+    defer f.destroy();
+    try f.plan(false, 32);
+    f.m.joinAhead();
+    f.m.eh.?.ahead_err = error.InputOutput; // a transient read fault on this rank only
+    try std.testing.expect(!f.m.claimRetained(&f.ids, 4, 32));
+    try std.testing.expect(f.m.eh.?.ahead_err == null and f.m.retained.key == null);
+    const reads = f.pool.gen;
+    _ = try f.rows(1, 32);
+    try std.testing.expectEqual(reads + 1, f.pool.gen);
+}
+
+test "prefill slice engram keep trace drops no rows at a kept resume and leaves them for reuse" {
+    const Fixture = @import("engram_keep_test.zig").Fixture;
+    const a = std.testing.allocator;
+    const f = try Fixture.create();
+    defer f.destroy();
+    const path = try std.fs.path.joinZ(a, &.{ ".zig-cache", "tmp", &f.tmp.sub_path, "trace.jsonl" });
+    defer a.free(path);
+    const t = try trace.Trace.init(a, std.testing.io, path);
+    defer t.deinit();
+    trace.current = t;
+    defer trace.current = null;
+    for ([_]bool{ false, true }) |on| {
+        f.m.keep_engram = on;
+        try f.plan(false, 32);
+        f.m.joinAhead(); // the outer yield
+        t.start();
+        try f.m.fillResume(0, 0);
+        var dropped: usize = 0;
+        for (t.events[0..t.used]) |e| dropped += @intFromBool(std.mem.eql(u8, e.name, "model.resetEngramAhead.dropped_ready"));
+        try std.testing.expectEqual(@as(usize, @intFromBool(!on)), dropped);
+        // openChunk's reuse marker condition (read_ahead_reused) after the claim
+        try std.testing.expectEqual(on, f.m.claimRetained(&f.ids, 4, 32));
+        const eh = &f.m.eh.?;
+        try std.testing.expectEqual(on, f.m.ahead == null and eh.ahead_start == 4 and eh.ahead_n == 32 and eh.ahead_ready[0]);
+        t.finish();
+    }
 }

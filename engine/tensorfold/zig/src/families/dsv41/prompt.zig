@@ -1712,6 +1712,34 @@ fn engramAhead1(eh: *EngramHost, c: *const Config, seq: []const i32, start: usiz
     eh.ahead_ready[j] = true;
 }
 
+/// Host consumption shared by the prompt path and CPU custody tests.
+pub fn engramRows(eh: *EngramHost, li: usize, seq: []const i32, start: usize, n: usize, layers: []const u16) ![]u16 {
+    const l = std.mem.indexOfScalar(u16, layers, @intCast(li)) orelse return error.NotAnEngramLayer;
+    const t = eh.tables.layers.get(@intCast(li)) orelse return error.MissingEngramTable;
+    return engramHostRows(eh, t, l, seq, start, n);
+}
+
+fn engramHostRows(eh: *EngramHost, t: engram_io.Table, l: usize, seq: []const i32, start: usize, n: usize) ![]u16 {
+    const cols = eh.hasher.cols();
+    const k = eh.hi - eh.lo;
+    const m = n * k;
+    // the rows read ahead (fillChunk's thread) when they are this chunk's, else read here
+    var rows: []u16 = eh.rows;
+    if (l < 2 and eh.ahead_ready[l] and eh.ahead_start == start and eh.ahead_n == n) {
+        rows = eh.ahead_rows[l];
+        eh.ahead_ready[l] = false;
+    } else {
+        _ = blk: { var ts = trace.begin("prompt.engramApply.hashes", .phase); defer ts.end(); break :blk eh.hasher.hashes(seq, start, n, eh.hashes[0 .. n * eh.hasher.layers * cols]); };
+        for (0..n) |r| {
+            for (0..k) |j| eh.flat[r * k + j] = eh.hashes[(r * eh.hasher.layers + l) * cols + eh.lo + j];
+        }
+        const read = if (eh.paio) |aio| blk: { var ts = trace.begin("prompt.engramApply.aioGather", .wait); defer ts.end(); break :blk aioGather(aio, t, eh.flat[0..m], eh.w[0 .. m * t.row_w], eh.s[0 .. m * t.row_s]); } else blk: { var ts = trace.begin("prompt.engramApply.pool_gather", .wait); defer ts.end(); break :blk eh.pool.gather(t, eh.flat[0..m], eh.w[0 .. m * t.row_w], eh.s[0 .. m * t.row_s]); };
+        read catch |err| return rankFault(err);
+        _ = blk: { var ts = trace.begin("prompt.engramApply.decodeRows", .wait); defer ts.end(); break :blk engram.decodeRows(eh.w[0 .. m * t.row_w], eh.s[0 .. m * t.row_s], eh.rows[0 .. m * t.row_w], m, t.row_w, t.row_s, 8); }; // the rows on 8 threads
+    }
+    return rows;
+}
+
 /// Layer li's Engram on the chunk (engram_apply, no image span), as _forward_k runs it before the attention mixes: a
 /// pending MoE post into the streams first (hc_post), then the rows of each position's n-grams (hashed on the host from
 /// `seq`, the whole sequence's ids so far; read from the tables; decoded to bf16 as Engram._decode does), their
@@ -1733,25 +1761,10 @@ pub fn engramApply(e: *const Engine, ch: *Chunk, eh: *EngramHost, li: usize, seq
     const li32: u16 = @intCast(li);
     const l = std.mem.indexOfScalar(u16, c.engram_layers.slice(), li32) orelse return error.NotAnEngramLayer;
     const t = eh.tables.layers.get(@intCast(li)) orelse return error.MissingEngramTable;
-    const cols = eh.hasher.cols();
-    const k = eh.hi - eh.lo;
-    const m = n * k;
+    const m = n * (eh.hi - eh.lo);
     const prof = eh.io != null;
     var tq = if (prof) pstamp(e, eh) else 0;
-    // the rows read ahead (fillChunk's thread) when they are this chunk's, else read here
-    var rows: []u16 = eh.rows;
-    if (l < 2 and eh.ahead_ready[l] and eh.ahead_start == ch.start and eh.ahead_n == n) {
-        rows = eh.ahead_rows[l];
-        eh.ahead_ready[l] = false;
-    } else {
-        _ = blk: { var ts = trace.begin("prompt.engramApply.hashes", .phase); defer ts.end(); break :blk eh.hasher.hashes(seq, ch.start, n, eh.hashes[0 .. n * eh.hasher.layers * cols]); };
-        for (0..n) |r| {
-            for (0..k) |j| eh.flat[r * k + j] = eh.hashes[(r * eh.hasher.layers + l) * cols + eh.lo + j];
-        }
-        const read = if (eh.paio) |aio| blk: { var ts = trace.begin("prompt.engramApply.aioGather", .wait); defer ts.end(); break :blk aioGather(aio, t, eh.flat[0..m], eh.w[0 .. m * t.row_w], eh.s[0 .. m * t.row_s]); } else blk: { var ts = trace.begin("prompt.engramApply.pool_gather", .wait); defer ts.end(); break :blk eh.pool.gather(t, eh.flat[0..m], eh.w[0 .. m * t.row_w], eh.s[0 .. m * t.row_s]); };
-        read catch |err| return rankFault(err);
-        _ = blk: { var ts = trace.begin("prompt.engramApply.decodeRows", .wait); defer ts.end(); break :blk engram.decodeRows(eh.w[0 .. m * t.row_w], eh.s[0 .. m * t.row_s], eh.rows[0 .. m * t.row_w], m, t.row_w, t.row_s, 8); }; // the rows on 8 threads
-    }
+    const rows = try engramHostRows(eh, t, l, seq, ch.start, n);
     if (m * t.row_w != n * ew.k) return error.EngramShape;
     if (prof) eh.p_rows += lap(e, eh, &tq);
     try blk: { var ts = trace.begin("prompt.engramApply.rows_upload", .wait); defer ts.end(); break :blk upload(e, ch.eb, rows.ptr, m * t.row_w * 2); };
