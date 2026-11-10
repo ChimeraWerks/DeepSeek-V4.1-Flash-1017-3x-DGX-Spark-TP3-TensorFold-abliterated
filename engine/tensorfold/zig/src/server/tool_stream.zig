@@ -297,6 +297,7 @@ pub const Streamer = struct {
                         d.current = d.sent.items.len - 1;
                         s.streamed = true;
                         d.p = q + 2;
+                        d.consumed = d.p;
                         d.state = .body;
                     },
                 },
@@ -312,20 +313,32 @@ pub const Streamer = struct {
                     d.state = .block;
                     continue;
                 } else switch (d.state) {
-                    .body => switch (findIn(d.markup, t, tool_parse.param41_open, d.p, d.limit())) {
-                        .wait => return,
-                        .none => {
-                            // the invoke's closer: the call is whole, and its brace waits
-                            d.closing = d.current;
-                            d.current = null;
-                            d.pos = d.end.? + tool_parse.invoke41_close.len;
-                            d.state = .block;
-                        },
-                        .at => |ps| {
-                            d.p = ps + 1; // where the parse looks again when this parameter is not one
-                            d.ns = ps + tool_parse.param41_open.len;
-                            d.state = .key;
-                        },
+                    .body => blk: {
+                        const found = findIn(d.markup, t, tool_parse.param41_open, d.p, d.limit());
+                        const stop = if (found == .at) found.at else d.limit() orelse t.len;
+                        if (tool_parse.selfClosingParameter(t[d.consumed..stop], d.markup)) {
+                            // the parse reads an invoke only once it closes: until its closer comes, nothing more of
+                            // it goes out; a closed one makes the parse refuse the whole block, so the stream stops
+                            if (d.end_pending) return;
+                            d.hold();
+                            d.off = true;
+                            return;
+                        }
+                        break :blk switch (found) {
+                            .wait => return,
+                            .none => {
+                                // the invoke's closer: the call is whole, and its brace waits
+                                d.closing = d.current;
+                                d.current = null;
+                                d.pos = d.end.? + tool_parse.invoke41_close.len;
+                                d.state = .block;
+                            },
+                            .at => |ps| {
+                                d.p = ps + 1; // where the parse looks again when this parameter is not one
+                                d.ns = ps + tool_parse.param41_open.len;
+                                d.state = .key;
+                            },
+                        };
                     },
                     .key => switch (findIn(d.markup, t, "\"", d.ns, d.limit())) {
                         .wait => return,
@@ -370,6 +383,7 @@ pub const Streamer = struct {
                             try d.value(a, t[d.at..pe], out);
                             try d.piece(a, "\"", out);
                             d.p = pe + tool_parse.param41_close.len;
+                            d.consumed = d.p;
                             d.state = .body;
                         },
                         .none => {
@@ -395,6 +409,7 @@ pub const Streamer = struct {
                             const text = try json.stringify(a, parsed, .{ .ascii = false, .compact = true });
                             try d.key(a, t[d.ns..d.nq], try std.mem.concat(a, u8, &.{ ":", text }), out);
                             d.p = pe + tool_parse.param41_close.len;
+                            d.consumed = d.p;
                             d.state = .body;
                         },
                         .none => d.state = .body, // nothing of it went out
@@ -480,6 +495,7 @@ pub const Dsml = struct {
     end_pending: bool = false,
     end_from: usize = 0,
     p: usize = 0, // the parse's next parameter search
+    consumed: usize = 0, // bytes through the last complete parameter
     ns: usize = 0,
     nq: usize = 0,
     v: usize = 0, // the value's start

@@ -196,7 +196,11 @@ fn parseEnvelopes(a: Allocator, text: []const u8, envs: []const Envelope, known:
         try residue.appendSlice(a, text[cursor..env.start]);
         cursor = env.end;
         if (dsmlBlock(env.payload, dsml41_open, dsml41_close)) |inner| {
-            try dsml41Calls(a, inner, known, max_calls, &calls, markup);
+            const start = calls.items.len;
+            if (!try dsml41Calls(a, inner, known, max_calls, &calls, markup)) {
+                calls.shrinkRetainingCapacity(start);
+                if (max_calls == null) try residue.appendSlice(a, text[env.start..env.end]);
+            }
             continue;
         }
         if (max_calls) |m| if (calls.items.len >= m) continue;
@@ -541,7 +545,7 @@ fn gemmaCall(a: Allocator, block: []const u8) Error!?Call {
 }
 
 /// Each invoke of a DeepSeek-V4.1 calls block as a call; with a limit, only offered tools with finite arguments, up to it.
-fn dsml41Calls(a: Allocator, block: []const u8, known: *const std.StringArrayHashMapUnmanaged([]const u8), max_calls: ?usize, calls: *std.ArrayList(Value), markup: reply_text.Markup) Allocator.Error!void {
+fn dsml41Calls(a: Allocator, block: []const u8, known: *const std.StringArrayHashMapUnmanaged([]const u8), max_calls: ?usize, calls: *std.ArrayList(Value), markup: reply_text.Markup) Allocator.Error!bool {
     var pos: usize = 0;
     while (marker(block, invoke41_open, pos, markup)) |s| {
         pos = s + 1;
@@ -554,7 +558,9 @@ fn dsml41Calls(a: Allocator, block: []const u8, known: *const std.StringArrayHas
         const body = block[q + 2 .. e];
         const arguments = try json.newObject(a);
         var p: usize = 0;
+        var consumed: usize = 0;
         while (marker(body, param41_open, p, markup)) |ps| {
+            if (name.len > 0 and selfClosingParameter(body[consumed..ps], markup)) return false;
             p = ps + 1;
             const ns = ps + param41_open.len;
             const nq = std.mem.indexOfScalarPos(u8, body, ns, '"') orelse continue;
@@ -571,6 +577,7 @@ fn dsml41Calls(a: Allocator, block: []const u8, known: *const std.StringArrayHas
             v_start += 1;
             const pe = marker(body, param41_close, v_start, markup) orelse continue;
             p = pe + param41_close.len;
+            consumed = p;
             const value = body[v_start..pe];
             const v: Value = if (json_value) switch (try json.parseText(a, value)) {
                 .ok => |parsed| parsed,
@@ -578,11 +585,36 @@ fn dsml41Calls(a: Allocator, block: []const u8, known: *const std.StringArrayHas
             } else .{ .string = value };
             try arguments.put(a, body[ns..nq], v);
         }
+        if (name.len > 0 and selfClosingParameter(body[consumed..], markup)) return false;
         if (name.len == 0) continue;
         const offered = known.get(try std.ascii.allocLowerString(a, name));
         if (max_calls) |m| if (calls.items.len >= m or offered == null or !tool_params.finite(.{ .object = arguments })) continue;
         try calls.append(a, try openaiCall(a, offered orelse name, .{ .object = arguments }));
     }
+    return true;
+}
+
+// Unsupported attribute-only parameters must not turn into successful empty calls.
+pub fn selfClosingParameter(body: []const u8, markup: reply_text.Markup) bool {
+    const prefix = "<｜DSML｜ parameter ";
+    var at: usize = 0;
+    while (marker(body, prefix, at, markup)) |start| {
+        var quote: u8 = 0;
+        var i = start + prefix.len;
+        while (i < body.len) : (i += 1) {
+            const ch = body[i];
+            if (quote != 0) {
+                if (ch == quote) quote = 0;
+            } else if (ch == '"' or ch == '\'') {
+                quote = ch;
+            } else if (ch == '>') {
+                if (std.mem.endsWith(u8, strip(body[start..i]), "/")) return true;
+                break;
+            }
+        }
+        at = if (i < body.len) i + 1 else body.len;
+    }
+    return false;
 }
 
 /// Every invoke of a DSML block, or Invalid when anything in it is not a well-formed invoke.
@@ -630,4 +662,29 @@ fn dsmlCalls(a: Allocator, block: []const u8, markup: reply_text.Markup) Error![
     }
     if (calls.items.len == 0 or !allSpace(block[at..])) return error.Invalid;
     return calls.items;
+}
+
+test "recipe issue 61 self-closing attribute parameters cannot become successful empty calls" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const tools = (try json.parse(a,
+        \\[{"type":"function","function":{"name":"capture_data","parameters":{"type":"object","properties":{"data":{"type":"array","items":{"type":"integer"}}},"required":["data"]}}}]
+    )).ok.array;
+    const head = dsml41_open ++ "\n" ++ invoke41_open ++ "capture_data\">\n";
+    const tail = "\n" ++ invoke41_close ++ "\n" ++ dsml41_close;
+    const malformed = head ++ "<｜DSML｜ parameter data=\"[1,2,3]\" string=\"false\" />" ++ tail;
+    for ([_]?usize{ null, 1 }) |limit| {
+        const result = try parse(a, malformed, tools, limit);
+        try std.testing.expect(result.calls == null);
+        if (limit == null) try std.testing.expectEqualStrings(malformed, result.content);
+    }
+    const canonical = try parse(a, head ++ param41_open ++ "data\" string=\"false\">[1,2,3]" ++ param41_close ++ tail, tools, null);
+    try std.testing.expectEqualStrings("{\"data\":[1,2,3]}", canonical.calls.?[0].get("function").?.get("arguments").?.string);
+    const literal = "<｜DSML｜ parameter data=\"a > b\" />";
+    const valid = try parse(a, head ++ param41_open ++ "data\" string=\"true\">" ++ literal ++ param41_close ++ tail, tools, null);
+    const args = (try json.parse(a, valid.calls.?[0].get("function").?.get("arguments").?.string)).ok;
+    try std.testing.expectEqualStrings(literal, args.get("data").?.string);
+    const empty = try parse(a, head ++ tail, tools, null);
+    try std.testing.expectEqualStrings("{}", empty.calls.?[0].get("function").?.get("arguments").?.string);
 }
