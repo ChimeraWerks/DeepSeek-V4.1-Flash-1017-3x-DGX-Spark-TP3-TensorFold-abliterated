@@ -2,6 +2,7 @@
 //! reduction is an all-gather of fp32 partials that each rank then adds in rank order (DESIGN.md section 3), so the
 //! ranks hold the same bits without a broadcast.
 const std = @import("std");
+const trace = @import("lanes").slice_trace;
 const cuda = @import("cuda");
 const Link = @import("link.zig").Link;
 
@@ -82,7 +83,7 @@ pub const Comm = struct {
         if (!cuda.context_health.boundHealthy()) { cuda.context_health.cleanupRetained(); return; }
         const admission = c.owner.admit() catch { cuda.context_health.cleanupRetained(); return; };
         defer admission.end();
-        if (c.lib.api.ncclCommDestroy(c.comm) != 0) { cuda.context_health.cleanupRetained(); return; }
+        if (blk: { var ts = trace.begin("comm.deinit.ncclCommDestroy.site_86", .wait); defer ts.end(); break :blk c.lib.api.ncclCommDestroy(c.comm); } != 0) { cuda.context_health.cleanupRetained(); return; }
         c.lib.close();
         c.owner.release();
         c.* = undefined;
@@ -90,6 +91,8 @@ pub const Comm = struct {
 
     /// `count` elements of `dtype` from every rank into `recv`, rank after rank.
     pub fn allGather(c: Comm, send: u64, recv: u64, count: usize, dtype: nccl.DataType, stream: cuda.Stream) !void {
+        var trace_scope = trace.begin("comm.allGather", .wait);
+        defer trace_scope.end();
         try cuda.context_health.ensureBoundHealthy();
         try c.owner.ensure();
         try stream.owner.ensure();
@@ -97,12 +100,12 @@ pub const Comm = struct {
         defer admission.end();
         if (c.direct) {
             const bytes = count * dtypeBytes(dtype);
-            try c.lib.check(c.lib.api.ncclGroupStart(), "ncclGroupStart");
+            try c.lib.check(blk: { var ts = trace.begin("comm.allGather.ncclGroupStart.site_103", .wait); defer ts.end(); break :blk c.lib.api.ncclGroupStart(); }, "ncclGroupStart");
             const first = c.gatherDirect(send, recv, bytes, stream);
-            try c.lib.check(c.lib.api.ncclGroupEnd(), "ncclGroupEnd");
+            try c.lib.check(blk: { var ts = trace.begin("comm.allGather.ncclGroupEnd.site_105", .wait); defer ts.end(); break :blk c.lib.api.ncclGroupEnd(); }, "ncclGroupEnd");
             return c.lib.check(first, "ncclSend/ncclRecv");
         }
-        try c.lib.check(c.lib.api.ncclAllGather(send, recv, count, dtype, c.comm, stream.handle), "ncclAllGather");
+        try c.lib.check(blk: { var ts = trace.begin("comm.allGather.ncclAllGather.site_108", .wait); defer ts.end(); break :blk c.lib.api.ncclAllGather(send, recv, count, dtype, c.comm, stream.handle); }, "ncclAllGather");
     }
 
     /// One all-gather's sends and receives (inside the caller's group): this rank's `bytes` from `send` to every peer and
@@ -112,8 +115,8 @@ pub const Comm = struct {
         if (bytes == 0) return first;
         for (0..c.world) |j| {
             if (j == c.rank and send == recv + j * bytes) continue;
-            const s = c.lib.api.ncclSend(send, bytes, .u8, @intCast(j), c.comm, stream.handle);
-            const r = c.lib.api.ncclRecv(recv + j * bytes, bytes, .u8, @intCast(j), c.comm, stream.handle);
+            const s = blk: { var ts = trace.begin("comm.gatherDirect.ncclSend.site_118", .wait); defer ts.end(); break :blk c.lib.api.ncclSend(send, bytes, .u8, @intCast(j), c.comm, stream.handle); };
+            const r = blk: { var ts = trace.begin("comm.gatherDirect.ncclRecv.site_119", .wait); defer ts.end(); break :blk c.lib.api.ncclRecv(recv + j * bytes, bytes, .u8, @intCast(j), c.comm, stream.handle); };
             if (first == 0) first = s;
             if (first == 0) first = r;
         }
@@ -122,15 +125,17 @@ pub const Comm = struct {
 
     /// `count` elements of `dtype` to rank `peer` and `rcount` from it, in one NCCL group (point to point).
     pub fn exchange(c: Comm, send: u64, count: usize, recv: u64, rcount: usize, dtype: nccl.DataType, peer: u32, stream: cuda.Stream) !void {
+        var trace_scope = trace.begin("comm.exchange", .wait);
+        defer trace_scope.end();
         try cuda.context_health.ensureBoundHealthy();
         try c.owner.ensure();
         try stream.owner.ensure();
         const admission = try c.owner.admit();
         defer admission.end();
-        try c.lib.check(c.lib.api.ncclGroupStart(), "ncclGroupStart");
-        const s = c.lib.api.ncclSend(send, count, dtype, @intCast(peer), c.comm, stream.handle);
-        const r = c.lib.api.ncclRecv(recv, rcount, dtype, @intCast(peer), c.comm, stream.handle);
-        try c.lib.check(c.lib.api.ncclGroupEnd(), "ncclGroupEnd");
+        try c.lib.check(blk: { var ts = trace.begin("comm.exchange.ncclGroupStart.site_135", .wait); defer ts.end(); break :blk c.lib.api.ncclGroupStart(); }, "ncclGroupStart");
+        const s = blk: { var ts = trace.begin("comm.exchange.ncclSend.site_136", .wait); defer ts.end(); break :blk c.lib.api.ncclSend(send, count, dtype, @intCast(peer), c.comm, stream.handle); };
+        const r = blk: { var ts = trace.begin("comm.exchange.ncclRecv.site_137", .wait); defer ts.end(); break :blk c.lib.api.ncclRecv(recv, rcount, dtype, @intCast(peer), c.comm, stream.handle); };
+        try c.lib.check(blk: { var ts = trace.begin("comm.exchange.ncclGroupEnd.site_138", .wait); defer ts.end(); break :blk c.lib.api.ncclGroupEnd(); }, "ncclGroupEnd");
         try c.lib.check(s, "ncclSend");
         try c.lib.check(r, "ncclRecv");
     }
@@ -156,17 +161,17 @@ pub const Comm = struct {
         var any = false;
         for (spans) |sp| any = any or sp.bytes > 0;
         if (!any) return;
-        try c.lib.check(c.lib.api.ncclGroupStart(), "ncclGroupStart");
+        try c.lib.check(blk: { var ts = trace.begin("comm.p2p.ncclGroupStart.site_164", .wait); defer ts.end(); break :blk c.lib.api.ncclGroupStart(); }, "ncclGroupStart");
         var first: nccl.Result = 0;
         for (spans) |sp| {
             if (sp.bytes == 0) continue;
             const r = if (out)
-                c.lib.api.ncclSend(sp.ptr, sp.bytes, .u8, @intCast(peer), c.comm, stream.handle)
+                blk: { var ts = trace.begin("comm.p2p.ncclSend.site_169", .wait); defer ts.end(); break :blk c.lib.api.ncclSend(sp.ptr, sp.bytes, .u8, @intCast(peer), c.comm, stream.handle); }
             else
-                c.lib.api.ncclRecv(sp.ptr, sp.bytes, .u8, @intCast(peer), c.comm, stream.handle);
+                blk: { var ts = trace.begin("comm.p2p.ncclRecv.site_171", .wait); defer ts.end(); break :blk c.lib.api.ncclRecv(sp.ptr, sp.bytes, .u8, @intCast(peer), c.comm, stream.handle); };
             if (first == 0) first = r;
         }
-        try c.lib.check(c.lib.api.ncclGroupEnd(), "ncclGroupEnd");
+        try c.lib.check(blk: { var ts = trace.begin("comm.p2p.ncclGroupEnd.site_174", .wait); defer ts.end(); break :blk c.lib.api.ncclGroupEnd(); }, "ncclGroupEnd");
         try c.lib.check(first, if (out) "ncclSend" else "ncclRecv");
     }
 
@@ -175,6 +180,8 @@ pub const Comm = struct {
     /// (recv + j * bytes[rank]), in one NCCL group, so both links of the triangle carry at once. This rank's own slot
     /// is the caller's to copy.
     pub fn scatterRows(c: Comm, send: u64, offs: []const usize, bytes: []const usize, recv: u64, stream: cuda.Stream) !void {
+        var trace_scope = trace.begin("comm.scatterRows", .wait);
+        defer trace_scope.end();
         try cuda.context_health.ensureBoundHealthy();
         try c.owner.ensure();
         try stream.owner.ensure();
@@ -182,38 +189,42 @@ pub const Comm = struct {
         defer admission.end();
         if (offs.len != c.world or bytes.len != c.world) return error.BadPeer;
         const mine = bytes[c.rank];
-        try c.lib.check(c.lib.api.ncclGroupStart(), "ncclGroupStart");
+        try c.lib.check(blk: { var ts = trace.begin("comm.scatterRows.ncclGroupStart.site_192", .wait); defer ts.end(); break :blk c.lib.api.ncclGroupStart(); }, "ncclGroupStart");
         var first: nccl.Result = 0;
         for (0..c.world) |j| {
             if (j == c.rank) continue;
             if (bytes[j] > 0) {
-                const r = c.lib.api.ncclSend(send + offs[j], bytes[j], .u8, @intCast(j), c.comm, stream.handle);
+                const r = blk: { var ts = trace.begin("comm.scatterRows.ncclSend.site_197", .wait); defer ts.end(); break :blk c.lib.api.ncclSend(send + offs[j], bytes[j], .u8, @intCast(j), c.comm, stream.handle); };
                 if (first == 0) first = r;
             }
             if (mine > 0) {
-                const r = c.lib.api.ncclRecv(recv + j * mine, mine, .u8, @intCast(j), c.comm, stream.handle);
+                const r = blk: { var ts = trace.begin("comm.scatterRows.ncclRecv.site_201", .wait); defer ts.end(); break :blk c.lib.api.ncclRecv(recv + j * mine, mine, .u8, @intCast(j), c.comm, stream.handle); };
                 if (first == 0) first = r;
             }
         }
-        try c.lib.check(c.lib.api.ncclGroupEnd(), "ncclGroupEnd");
+        try c.lib.check(blk: { var ts = trace.begin("comm.scatterRows.ncclGroupEnd.site_205", .wait); defer ts.end(); break :blk c.lib.api.ncclGroupEnd(); }, "ncclGroupEnd");
         try c.lib.check(first, "ncclSend/ncclRecv");
     }
 
     /// `count` bytes from this rank's slot of `buf` (buf + rank * count) to every rank's slot, in place (NCCL's
     /// in-place all-gather: the send buffer is the receive buffer's own slot).
     pub fn allGatherInPlace(c: Comm, buf: u64, count: usize, stream: cuda.Stream) !void {
+        var trace_scope = trace.begin("comm.allGatherInPlace", .wait);
+        defer trace_scope.end();
         try c.allGather(buf + c.rank * count, buf, count, .u8, stream);
     }
     pub fn allGatherInPlace2(c: Comm, a: u64, a_count: usize, b: u64, b_count: usize, stream: cuda.Stream) !void {
+        var trace_scope = trace.begin("comm.allGatherInPlace2", .wait);
+        defer trace_scope.end();
         try cuda.context_health.ensureBoundHealthy();
         try c.owner.ensure();
         try stream.owner.ensure();
         const admission = try c.owner.admit();
         defer admission.end();
-        try c.lib.check(c.lib.api.ncclGroupStart(), "ncclGroupStart");
-        const x = if (c.direct) c.gatherDirect(a + c.rank * a_count, a, a_count, stream) else c.lib.api.ncclAllGather(a + c.rank * a_count, a, a_count, .u8, c.comm, stream.handle);
-        const y = if (c.direct) c.gatherDirect(b + c.rank * b_count, b, b_count, stream) else c.lib.api.ncclAllGather(b + c.rank * b_count, b, b_count, .u8, c.comm, stream.handle);
-        try c.lib.check(c.lib.api.ncclGroupEnd(), "ncclGroupEnd");
+        try c.lib.check(blk: { var ts = trace.begin("comm.allGatherInPlace2.ncclGroupStart.site_224", .wait); defer ts.end(); break :blk c.lib.api.ncclGroupStart(); }, "ncclGroupStart");
+        const x = if (c.direct) c.gatherDirect(a + c.rank * a_count, a, a_count, stream) else blk: { var ts = trace.begin("comm.allGatherInPlace2.ncclAllGather.site_225", .wait); defer ts.end(); break :blk c.lib.api.ncclAllGather(a + c.rank * a_count, a, a_count, .u8, c.comm, stream.handle); };
+        const y = if (c.direct) c.gatherDirect(b + c.rank * b_count, b, b_count, stream) else blk: { var ts = trace.begin("comm.allGatherInPlace2.ncclAllGather.site_226", .wait); defer ts.end(); break :blk c.lib.api.ncclAllGather(b + c.rank * b_count, b, b_count, .u8, c.comm, stream.handle); };
+        try c.lib.check(blk: { var ts = trace.begin("comm.allGatherInPlace2.ncclGroupEnd.site_227", .wait); defer ts.end(); break :blk c.lib.api.ncclGroupEnd(); }, "ncclGroupEnd");
         try c.lib.check(x, "ncclAllGather");
         try c.lib.check(y, "ncclAllGather");
     }

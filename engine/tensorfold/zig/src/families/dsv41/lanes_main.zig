@@ -649,8 +649,10 @@ test "custody stage actual Rank0Custody resumes event cleanup without double des
     for (0..4) |stage| {
         Mock.calls = @splat(0);
         Mock.failure = if (stage < 3) stage else null;
+        var model: dsv41.model.Model = undefined;
+        model.keep_engram = false;
         var custody: Rank0Custody = .{
-            .lanes = .{ .gpa = gpa, .m = undefined, .peer = null },
+            .lanes = .{ .gpa = gpa, .m = &model, .peer = null },
             .events = try gpa.alloc(cuda.Event, 3),
         };
         for (custody.events, 0..) |*event, i| event.* = .{

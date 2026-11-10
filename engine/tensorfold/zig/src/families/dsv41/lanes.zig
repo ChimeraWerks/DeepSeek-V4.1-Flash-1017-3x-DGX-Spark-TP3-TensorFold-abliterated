@@ -14,6 +14,7 @@
 //! same kernels and collectives in the same order. The drafted reply is the serial one: every row is drawn with its
 //! stream's key at its own position, whatever the round's composition.
 const std = @import("std");
+const trace = @import("lanes").slice_trace;
 const lanes = @import("lanes");
 const model = @import("model.zig");
 const round = @import("round.zig");
@@ -38,6 +39,7 @@ const idle_relocation = @import("idle_relocation.zig");
 const idle_protocol = @import("idle_protocol.zig");
 const cache_batch = @import("cache_batch.zig");
 const round_timing = @import("round_timing.zig");
+const frame_transaction = @import("frame_transaction.zig");
 
 const be = lanes.backend;
 const Model = model.Model;
@@ -71,7 +73,7 @@ pub var logits_sha = false;
 /// coordinated RDMA idle boundary (not the old, untracked spill notes); all ranks need this version.
 const penalties = @import("logit_penalties.zig");
 
-pub const Kind = enum(u8) { verify_penalties = penalties.verify_kind, prompt_penalties = penalties.prompt_kind, logprobs = reply_lp.frame_kind, fill_begin = 1, fill_chunk = 2, verify = 3, pass = 4, snap_save = 5, snap_restore = 6, snap_drop = 7, fill_images = 8, done = 9, rank_wire = 10, idle_move = 12, fill_resume = 13, graph_vote_agree = 15, fill_slice = 18, rdma_idle = 11, snap_drop_many = cache_batch.kind, pass_keyed = 17 };
+pub const Kind = enum(u8) { verify_penalties = penalties.verify_kind, prompt_penalties = penalties.prompt_kind, logprobs = reply_lp.frame_kind, fill_begin = 1, fill_chunk = 2, verify = 3, pass = 4, snap_save = 5, snap_restore = 6, snap_drop = 7, fill_images = 8, done = 9, rank_wire = 10, idle_move = 12, fill_resume = 13, graph_vote_agree = 15, fill_slice = 18, rdma_idle = 11, snap_drop_many = cache_batch.kind, pass_keyed = 17, engram_drop = 22 };
 
 // Shared with the real follower loop; reserved/unknown outer kinds fail closed.
 fn decodeOuterKind(raw: u8) !Kind {
@@ -96,8 +98,26 @@ fn decodeOuterKind(raw: u8) !Kind {
             penalties.verify_kind => .verify_penalties,
             penalties.prompt_kind => .prompt_penalties,
             reply_lp.frame_kind => .logprobs,
+            22 => .engram_drop,
             else => return error.BadFrame,
         };
+}
+
+/// Both dispatchers use the same fail-closed future-reader boundary.
+fn engramBoundary(m: *Model, kind: Kind) void {
+    if (!m.keep_engram) return;
+    switch (kind) {
+        // The decode frames a sliced chunk admits (openChunkAllows) never drop kept rows mid-chunk.
+        .fill_chunk, .fill_slice, .fill_resume, .verify, .verify_penalties, .pass, .pass_keyed, .logprobs => {},
+        else => m.resetEngramAhead(),
+    }
+}
+
+fn engramVerify(m: *Model, wins: []const Win) void {
+    if (!m.keep_engram) return;
+    if (m.retained.key) |key| for (wins) |w| {
+        if (w.slot == key.slot) { m.resetEngramAhead(); break; }
+    };
 }
 
 /// What a follower takes while a sliced prompt chunk is open: the next slice, and decode rounds that run
@@ -111,7 +131,7 @@ fn openChunkAllows(kind: Kind) bool {
 
 test "keyed draft pass frame is admitted while a prefill slice chunk is open" {
     for ([_]Kind{ .fill_slice, .verify, .verify_penalties, .pass, .pass_keyed, .logprobs }) |k| try std.testing.expect(openChunkAllows(k));
-    for ([_]Kind{ .fill_begin, .fill_chunk, .snap_save, .snap_restore, .snap_drop, .fill_images, .done, .rank_wire, .rdma_idle, .idle_move, .fill_resume, .graph_vote_agree, .snap_drop_many, .prompt_penalties }) |k| try std.testing.expect(!openChunkAllows(k));
+    for ([_]Kind{ .fill_begin, .fill_chunk, .snap_save, .snap_restore, .snap_drop, .fill_images, .done, .rank_wire, .rdma_idle, .idle_move, .fill_resume, .graph_vote_agree, .snap_drop_many, .prompt_penalties, .engram_drop }) |k| try std.testing.expect(!openChunkAllows(k));
 }
 
 test "outer follower decoder accepts fill_resume 13 and rejects reserved kinds" {
@@ -130,7 +150,7 @@ test "outer follower decoder covers every enum byte and open chunk policy" {
                 .verify, .verify_penalties, .pass, .pass_keyed, .fill_slice, .logprobs => true,
                 .fill_begin, .fill_chunk, .snap_save, .snap_restore, .snap_drop,
                 .fill_images, .done, .rank_wire, .idle_move, .fill_resume,
-                .graph_vote_agree, .rdma_idle, .snap_drop_many, .prompt_penalties => false,
+                .graph_vote_agree, .rdma_idle, .snap_drop_many, .prompt_penalties, .engram_drop => false,
             };
             try std.testing.expectEqual(allowed, openChunkAllows(kind));
             var wire: Wire = .{};
@@ -143,26 +163,38 @@ test "outer follower decoder covers every enum byte and open chunk policy" {
     }
 }
 
-test "outer follower decoder audit reproduces an unsent frame step gap" {
+test "outer follower decoder unsent frame allocation preserves the next step" {
     var backing: [512]u8 = undefined;
     var allocator: std.heap.FixedBufferAllocator = .init(&backing);
     var m: Model = undefined;
+    m.keep_engram = false;
     var ln: Lanes = .{ .gpa = allocator.allocator(), .m = &m, .peer = .{ .fd = -1 } };
     defer ln.wire.deinit(ln.gpa);
     try std.testing.expect(try ln.begin(.verify));
-    const unsent = ln.step - 1;
+    const unsent = ln.step;
     // No flush or device access occurs. The remainder of this request's frame cannot allocate.
-    try std.testing.expectError(error.OutOfMemory, ln.wire.buf.appendNTimes(ln.gpa, 0, 1024));
+    const too_big: [1024]u8 = @splat(0);
+    try std.testing.expectError(error.OutOfMemory, ln.wire.bytes(ln.gpa, &too_big));
+    try std.testing.expectEqual(unsent, ln.step);
+    try std.testing.expectError(error.BadFrame, ln.wire.preflight(ln.step));
     try std.testing.expect(try ln.begin(.done));
     var reader: Reader = .{ .b = ln.wire.buf.items };
     _ = try reader.int(u8);
-    try std.testing.expectEqual(unsent + 1, try reader.int(u64));
-    // The real follower still expects `unsent` and returns OutOfStep.
+    try std.testing.expectEqual(unsent, try reader.int(u64));
+    try ln.wire.preflight(ln.step);
 }
 
 
 comptime {
     std.debug.assert(@backingInt(Kind.rank_wire) == @import("rank_wire.zig").lanes_kind);
+}
+
+fn dropFrame(step: u64, id: u64) [17]u8 {
+    var frame: [17]u8 = undefined;
+    frame[0] = @intFromEnum(Kind.snap_drop);
+    std.mem.writeInt(u64, frame[1..9], step, .little);
+    std.mem.writeInt(u64, frame[9..17], id, .little);
+    return frame;
 }
 
 const SliceFrame = struct {
@@ -173,6 +205,7 @@ const SliceFrame = struct {
     next_rows: u32 = 0,
 };
 fn putSlice(w: *Wire, gpa: std.mem.Allocator, f: SliceFrame) !void {
+    errdefer w.valid = false;
     try w.int(gpa, u8, @intFromBool(f.abort));
     if (f.abort) return;
     if (f.hi <= f.lo or f.args.n == 0) return error.BadSlice;
@@ -201,6 +234,7 @@ fn getSlice(r: *Reader) !SliceFrame {
 }
 
 fn putLogprobs(w: *Wire, gpa: std.mem.Allocator, f: reply_lp.Frame) !void {
+    errdefer w.valid = false;
     try f.validate();
     inline for (.{ "op", "slot", "row", "token", "k" }) |field| try w.int(gpa, u32, @field(f, field));
 }
@@ -215,22 +249,43 @@ fn getLogprobs(r: *Reader) !reply_lp.Frame {
 /// A frame being written.
 pub const Wire = struct {
     buf: std.ArrayList(u8) = .empty,
+    valid: bool = false,
+    // Test-only exact growth makes each append an allocation fault point.
+    test_exact_capacity: bool = false,
+    transaction: frame_transaction.Transaction = .{},
 
     pub fn begin(w: *Wire, gpa: std.mem.Allocator, kind: Kind, step: u64) !void {
+        try w.transaction.reset();
+        w.valid = false;
         w.buf.clearRetainingCapacity();
         try w.int(gpa, u8, @backingInt(kind));
         try w.int(gpa, u64, step);
+        w.valid = true;
     }
 
     pub fn int(w: *Wire, gpa: std.mem.Allocator, comptime T: type, v: T) !void {
         var b: [@sizeOf(T)]u8 = undefined;
         std.mem.writeInt(T, &b, v, .little);
-        try w.buf.appendSlice(gpa, &b);
+        try w.bytes(gpa, &b);
+    }
+
+    pub fn bytes(w: *Wire, gpa: std.mem.Allocator, b: []const u8) !void {
+        errdefer w.valid = false;
+        if (@import("builtin").is_test and w.test_exact_capacity) {
+            try w.buf.ensureTotalCapacityPrecise(gpa, w.buf.items.len + b.len);
+            w.buf.appendSliceAssumeCapacity(b);
+        } else try w.buf.appendSlice(gpa, b);
+    }
+
+    pub fn preflight(w: *Wire, step: u64) !void {
+        if (!w.valid) return error.BadFrame;
+        try w.transaction.preflight(w.buf.items, step);
     }
 
     pub fn ids(w: *Wire, gpa: std.mem.Allocator, v: []const i32) !void {
+        errdefer w.valid = false;
         try w.int(gpa, u32, @intCast(v.len));
-        try w.buf.ensureUnusedCapacity(gpa, v.len * 4);
+        if (!@import("builtin").is_test or !w.test_exact_capacity) try w.buf.ensureUnusedCapacity(gpa, v.len * 4);
         for (v) |x| try w.int(gpa, i32, x);
     }
 
@@ -241,6 +296,7 @@ pub const Wire = struct {
 
 /// Present only when startup word[6] bit24 agreed. Off is byte-for-byte legacy.
 fn writeGreedyHeadMode(w: *Wire, gpa: std.mem.Allocator, enabled: bool, use_head: bool) !void {
+    errdefer w.valid = false;
     if (!enabled) {
         if (use_head) return error.BadGreedyHeadMode;
         return;
@@ -257,6 +313,7 @@ fn readGreedyHeadMode(r: *Reader, enabled: bool, unsupported: bool) !bool {
 
 /// Present only when startup word[6] bit25 agreed. Zero keeps full logits.
 fn writeSampleHeadCount(w: *Wire, gpa: std.mem.Allocator, enabled: bool, count: usize) !void {
+    errdefer w.valid = false;
     if (count > 64 or (!enabled and count != 0)) return error.BadGreedyHeadMode;
     if (enabled) try w.int(gpa, u8, @intCast(count));
 }
@@ -271,6 +328,7 @@ fn readSampleHeadCount(r: *Reader, enabled: bool, unsupported: bool) !usize {
 /// A verify frame's window: slot, extent, first position, absorb, ids; TF_DS_KV_SHARD (`sharded`) adds its extent's
 /// part (u8) and generation (u64), so a follower refuses a round for a reused extent. Off, the bytes are as ever.
 pub fn writeWin(w: *Wire, gpa: std.mem.Allocator, win: Win, sharded: bool) !void {
+    errdefer w.valid = false;
     try w.int(gpa, u32, @intCast(win.slot));
     try w.int(gpa, u64, win.base);
     try w.int(gpa, u64, win.end);
@@ -648,6 +706,7 @@ pub const Lanes = struct {
     logit_dump_serial: u64 = 0,
     short_continuation: bool = false, // experimental full-decoder resume; disabled unless explicitly qualified
     wire: Wire = .{},
+    closing: bool = false, // teardown: a lost follower is reported, not a new fault (done and aborts stay best effort)
     move_deadline: ?u64 = null,
     fills: std.AutoHashMapUnmanaged(*lanes.Stream, Fill) = .empty,
     streams: std.AutoHashMapUnmanaged(*const lanes.Stream, Lane) = .empty,
@@ -725,6 +784,8 @@ pub const Lanes = struct {
 
     /// Tells rank 1 to stop, then frees the host state (the model is the caller's).
     pub fn deinit(self: *Lanes) void {
+        self.closing = true;
+        if (self.m.keep_engram) self.m.resetEngramAhead();
         self.wakeRdma();
         const cleanup = cuda.context_health.cleanupMark();
         self.stopKv();
@@ -865,17 +926,40 @@ pub const Lanes = struct {
     /// The frame being built goes to rank 1 (after `begin` and the fields), or to ranks 1-3 on the four-node split.
     fn flush(self: *Lanes) !void {
         if (self.peer == null) return;
-        for (self.m.followers()) |l| {
-            const peer = l orelse return error.TransferFailed;
-            if (self.move_deadline) |deadline| try peer.sendWithin(self.wire.buf.items, deadline) else try peer.send(self.wire.buf.items);
+        if (!self.wire.valid) return error.BadFrame;
+        try self.broadcast(self.wire.buf.items, &self.wire.transaction);
+    }
+
+    fn broadcast(self: *Lanes, frame: []const u8, transaction: *frame_transaction.Transaction) !void {
+        try transaction.preflight(frame, self.step);
+        const peers = self.m.followers();
+        if (peers.len == 0) return error.TransferFailed;
+        for (peers) |peer| if (peer == null) return error.TransferFailed;
+        for (peers, 0..) |l, i| {
+            try transaction.enterPeer(&self.step, i, peers.len);
+            const peer = l.?;
+            const sent = if (self.move_deadline) |deadline| peer.sendWithin(frame, deadline) else peer.send(frame);
+            // Teardown reports instead; the partial transaction still refuses every later frame.
+            sent catch |err| {
+                if (self.closing) return err;
+                self.m.pairFault(err);
+            };
+            transaction.sentPeer(i, peers.len);
         }
     }
 
+    fn preflightFrame(self: *Lanes) !void {
+        try self.wire.preflight(self.step);
+        const peers = self.m.followers();
+        if (peers.len == 0) return error.TransferFailed;
+        for (peers) |peer| if (peer == null) return error.TransferFailed;
+    }
+
     fn begin(self: *Lanes, kind: Kind) !bool {
+        engramBoundary(self.m, kind);
         self.wakeRdma(); // every command can precede CUDA, a graph vote, a restore or a relocation
         if (self.peer == null) return false;
         try self.wire.begin(self.gpa, kind, self.step);
-        self.step += 1;
         return true;
     }
 
@@ -892,7 +976,7 @@ pub const Lanes = struct {
         if (self.spill) |tier| if (tier.idleBusy()) return;
         const now = link.Link.monotonicNs();
         if (now < self.idle_retry_at) return;
-        self.m.joinAhead();
+        (blk: { var ts = trace.begin("lanes.idle.joinAhead", .wait); defer ts.end(); break :blk self.m.joinAhead(); });
         const dev: Model.SpillDev = .{ .m = self.m };
         self.m.ctx.synchronize() catch |err| dev.failed(err);
         quiesceRdma(self.m, link.Link.monotonicNs() +| idle_protocol.budget_ns) catch |err| dev.failed(err);
@@ -922,7 +1006,12 @@ pub const Lanes = struct {
     pub fn agreeGraphVote(self: *Lanes) !void {
         if (!try self.begin(.graph_vote_agree)) return error.NoLink;
         try self.wire.int(self.gpa, u8, 1);
-        try graph_vote.agreeSpill(self.m.followers(), self.wire.buf.items, self.m.gvote.?.timeout_ns);
+        const deadline = link.Link.monotonicNs() +| self.m.gvote.?.timeout_ns;
+        const previous = self.move_deadline;
+        self.move_deadline = deadline;
+        defer self.move_deadline = previous;
+        try self.flush();
+        try graph_vote.receiveSpill(self.m.followers(), deadline);
     }
 
     /// Union of occupied intervals, without allocation or double-counting overlapping snapshots.
@@ -1056,7 +1145,7 @@ pub const Lanes = struct {
     fn kvSendRw(ctx: *anyopaque, sub: []const u8) anyerror!void {
         const self = of(ctx);
         if (try self.begin(.rank_wire)) {
-            try self.wire.buf.appendSlice(self.gpa, sub);
+            try self.wire.bytes(self.gpa, sub);
             try self.flush();
         }
     }
@@ -1222,7 +1311,7 @@ pub const Lanes = struct {
             if (s.images.len == 0) if (s.between) |hook| if (hook.wanted(hook.ptr)) {
                 // A decode round or tier restore may change the selected slot. Join read-ahead before it touches the
                 // sequence and rebind on the next chunk; without an interleave the next chunk keeps its read-ahead.
-                self.m.joinAhead();
+                (blk: { var ts = trace.begin("lanes.prefillFn.between_joinAhead", .wait); defer ts.end(); break :blk self.m.joinAhead(); });
                 self.m.fill_seq = &.{};
                 self.fills.getPtr(s).?.needs_resume = true;
                 try hook.run(hook.ptr);
@@ -1243,7 +1332,7 @@ pub const Lanes = struct {
                     try self.wire.int(gpa, u64, sp.len);
                 }
                 try self.wire.int(gpa, u64, off);
-                try self.wire.buf.appendSlice(gpa, rows[off..][0..n]);
+                try self.wire.bytes(gpa, rows[off..][0..n]);
                 try self.flush();
             }
             off += n;
@@ -1271,6 +1360,7 @@ pub const Lanes = struct {
         // eviction, borrowed twins, carries, live moves) and the lane carries its part into every round (Win.part)
         const kv = self.kv;
         if (kv == null and m.kvs != null) return error.KvShardNotStarted; // (startKv at open)
+        if (m.keep_engram) try self.send(.engram_drop); // before resizing any borrowed sequence
         if (self.streams.fetchRemove(s)) |old| {
             self.used[old.value.slot] = false;
             if (kv) |k| try k.release(old.value.id);
@@ -1411,6 +1501,8 @@ pub const Lanes = struct {
     /// Reselect a yielded slot on all ranks without clearing its KV rows or drafter rings. Images retain only the
     /// uncached prepared rows, which must be installed again because fillBegin clears the model's image spans.
     fn resumeFill(self: *Lanes, s: *lanes.Stream, f: *Fill) !void {
+        var trace_scope = trace.begin("lanes.resumeFill", .phase);
+        defer trace_scope.end();
         const m = self.m;
         if (f.needs_resume) {
             const l = self.streams.getPtr(s) orelse return error.UnknownStream;
@@ -1420,7 +1512,7 @@ pub const Lanes = struct {
                 try self.wire.int(self.gpa, u64, f.base);
                 try self.flush();
             }
-            try m.fillBegin(f.slot, f.base);
+            try m.fillResume(f.slot, f.base);
             if (self.kv) |k| try k.fillBegin(l.id, f.base);
             try self.sendFillImages(f.spans.items, f.rows.items);
             f.needs_resume = false;
@@ -1429,10 +1521,14 @@ pub const Lanes = struct {
     }
 
     fn prefillEndFn(ptr: *anyopaque, s: *lanes.Stream) void {
+        defer if (trace.current) |t| { if (t.owned_by_step) t.finish(); };
+        var trace_scope = trace.begin("lanes.prefillEndFn", .phase);
+        defer trace_scope.end();
         const self = of(ptr);
         if (self.fills.fetchRemove(s)) |entry| {
             var f = entry.value;
-            self.m.joinAhead();
+            if (self.m.keep_engram) self.send(.engram_drop) catch |err| self.m.pairFault(err);
+            (blk: { var ts = trace.begin("lanes.prefillEndFn.joinAhead", .wait); defer ts.end(); break :blk self.m.joinAhead(); });
             self.m.fill_seq = &.{};
             f.progress.deinit(self.gpa);
             f.spans.deinit(self.gpa);
@@ -1449,22 +1545,28 @@ pub const Lanes = struct {
         var lo: usize = 0;
         while (true) {
             const hi = model.sliceHi(m.eng.c.layers, m.prefill.slice_layers, lo);
-            if (try self.begin(.fill_slice)) {
-                try putSlice(&self.wire, self.gpa, .{ .lo = @intCast(lo), .hi = @intCast(hi), .args = args, .next_rows = @intCast(m.next_engram_rows) });
-                try self.flush();
+            {
+                var frame_trace = trace.begin("lanes.fillSliced.frame_send", .phase);
+                defer frame_trace.end();
+                if (try self.begin(.fill_slice)) {
+                    try putSlice(&self.wire, self.gpa, .{ .lo = @intCast(lo), .hi = @intCast(hi), .args = args, .next_rows = @intCast(m.next_engram_rows) });
+                    try self.flush();
+                }
             }
             const end = try m.fillSlice(seq[0 .. args.start + args.n], args, lo, hi);
             const b = s.between.?;
             // runSlice only enqueues: unsynchronized, the park's round (verifyRun) would wait out this slice's kernels
             // and the host would bill them to decode, cancelling the share's debt. Share off keeps the old overlap.
             if (end != .more) {
-                if (b.timed and b.wanted(b.ptr)) try m.stream.synchronize();
+                if (b.timed and b.wanted(b.ptr)) { var ts = trace.begin("lanes.fillSliced.chunk_end_synchronize", .wait); defer ts.end(); try m.stream.synchronize(); }
                 return end == .head;
             }
             lo = hi;
             if (b.wanted(b.ptr)) {
-                m.joinParkAhead(); // opt-in parks leave prompt hash/reader custody alone
-                if (b.timed) try m.stream.synchronize();
+                var park_trace = trace.begin("lanes.fillSliced.park", .park);
+                defer park_trace.end();
+                { var ts = trace.begin("lanes.fillSliced.pre_park_join", .wait); defer ts.end(); m.joinParkAhead(); } // opt-in parks leave prompt hash/reader custody alone
+                if (b.timed) { var ts = trace.begin("lanes.fillSliced.pre_park_synchronize", .wait); defer ts.end(); try m.stream.synchronize(); }
                 try b.run(b.ptr);
             }
             if (s.isCancelled()) {
@@ -1478,7 +1580,30 @@ pub const Lanes = struct {
         }
     }
 
+    fn traceLaunchEnter() usize {
+        const scope = trace.begin("cuda.launch.launch", .enqueue);
+        return if (scope.trace != null) scope.index else std.math.maxInt(usize);
+    }
+
+    fn traceLaunchLeave(index: usize) void {
+        if (index == std.math.maxInt(usize)) return;
+        const t = trace.current orelse return;
+        var scope: trace.Scope = .{ .trace = t, .index = index, .generation = t.generation };
+        scope.end();
+    }
+
     fn prefillStepFn(ptr: *anyopaque, s: *lanes.Stream) anyerror!bool {
+        const owned_trace = if (trace.current) |t| t.enabled and !t.chunk else false;
+        var trace_completed = false;
+        if (owned_trace) { trace.current.?.start(); trace.current.?.owned_by_step = true; }
+        defer if (owned_trace and !trace_completed) trace.current.?.finish();
+        var trace_scope = trace.begin("lanes.prefillStepFn", .phase);
+        defer trace_scope.end();
+        const previous_observer = cuda.launch.observer;
+        if (trace.current) |t| if (t.enabled and t.chunk) {
+            cuda.launch.observer = .{ .enter = traceLaunchEnter, .leave = traceLaunchLeave };
+        };
+        defer cuda.launch.observer = previous_observer;
         const self = of(ptr);
         const m = self.m;
         const gpa = self.gpa;
@@ -1487,7 +1612,7 @@ pub const Lanes = struct {
         try self.resumeFill(s, f);
         // The whole-pass path keeps Engram's next-chunk read-ahead alive. A yielded pass joins before returning
         // control to the scheduler, where another stream or a spill restore may reuse the model's sequence.
-        defer if (self.prefill_yield) { m.joinAhead(); m.fill_seq = &.{}; };
+        defer if (self.prefill_yield) { (blk: { var ts = trace.begin("lanes.prefillStepFn.yield_joinAhead", .wait); defer ts.end(); break :blk m.joinAhead(); }); m.fill_seq = &.{}; };
         const seq = &self.seqs[f.slot];
         const len = f.len;
         const slot = f.slot;
@@ -1496,14 +1621,21 @@ pub const Lanes = struct {
         if (start < len) {
             const n = model.prefill128.nextRows(len, start, replay, m.compute_rows, s.reuse.marks);
             if (m.prefill.ae) m.next_engram_rows = model.prefill128.nextRows(len, start + n, replay, m.compute_rows, s.reuse.marks);
-            const sliced = useLayerSlices(self.prefill_yield, m.prefill.slice_layers, self.kv != null, s.between != null);
-            if (!sliced) if (try self.begin(.fill_chunk)) {
-                try self.wire.int(gpa, u64, start);
-                try self.wire.int(gpa, u32, @intCast(n));
-                try self.wire.int(gpa, u64, replay);
-                if (m.prefill.ae) try self.wire.int(gpa, u32, @intCast(m.next_engram_rows));
-                try self.flush();
+            if (trace.current) |t| if (t.enabled and t.chunk) {
+                t.id = .{ .slot = slot, .start = start, .rows = n, .replay = replay };
             };
+            const sliced = useLayerSlices(self.prefill_yield, m.prefill.slice_layers, self.kv != null, s.between != null);
+            {
+                var frame_trace = trace.begin("lanes.prefillStepFn.fill_chunk_frame", .phase);
+                defer frame_trace.end();
+                if (!sliced) if (try self.begin(.fill_chunk)) {
+                    try self.wire.int(gpa, u64, start);
+                    try self.wire.int(gpa, u32, @intCast(n));
+                    try self.wire.int(gpa, u64, replay);
+                    if (m.prefill.ae) try self.wire.int(gpa, u32, @intCast(m.next_engram_rows));
+                    try self.flush();
+                };
+            }
             if (self.spill) |t| t.bump(f.base + start, f.base + start + n);
             const l = self.streams.getPtr(s).?;
             if (self.kv) |k| k.planner.setPartial(l.id, true);
@@ -1516,8 +1648,8 @@ pub const Lanes = struct {
             };
             start += n;
             f.start = start;
-            f.progress.record(self, s, start);
-            if (s.reuse.hook) |k| if (start < len and start <= replay and (start == f.last_end or markEnds(s.reuse.marks, start))) k.at(k.ptr, s, @intCast(start));
+            { var ts = trace.begin("lanes.prefillStepFn.progress.record", .phase); defer ts.end(); f.progress.record(self, s, start); }
+            if (s.reuse.hook) |k| if (start < len and start <= replay and (start == f.last_end or markEnds(s.reuse.marks, start))) (blk: { var ts = trace.begin("lanes.prefillStepFn.cache_mark_hook", .phase); defer ts.end(); break :blk k.at(k.ptr, s, @intCast(start)); });
             if (start < len) {
                 f.needs_resume = self.prefill_yield;
                 return false;
@@ -1526,9 +1658,9 @@ pub const Lanes = struct {
         if (!f.head) return error.NoPromptLogits;
         // Full identical prompts reuse the complete state and logits. A later longer
         // prompt can use its encoder state only when bounded replay starts after it.
-        if (s.images.len == 0) if (s.reuse.hook) |k| k.at(k.ptr, s, @intCast(len));
+        if (s.images.len == 0) if (s.reuse.hook) |k| (blk: { var ts = trace.begin("lanes.prefillStepFn.cache_save_hook", .phase); defer ts.end(); break :blk k.at(k.ptr, s, @intCast(len)); });
         // a state read back from disk: the drafter's rings were rebuilt by the replay before the first draft
-        try f.source_facts.finish(m, self.spill != null and m.drafting(), slot, len);
+        try (blk: { var ts = trace.begin("lanes.prefillStepFn.source_facts.finish", .phase); defer ts.end(); break :blk f.source_facts.finish(m, self.spill != null and m.drafting(), slot, len); });
         m.penalty_prompt = 0;
         const ps = penalties.get(s.sampling);
         if (!s.prefill_only and ps.active()) {
@@ -1553,7 +1685,7 @@ pub const Lanes = struct {
         }
         const candidates = if (cand_count > 0) try m.promptCandidates(cand_count) else null;
         const use_candidates = if (candidates) |c| c.flags[0] == 0 else false;
-        const logits: []const f32 = if (use_candidates) &.{} else try m.promptLogitsHost();
+        const logits: []const f32 = if (use_candidates) &.{} else try (blk: { var ts = trace.begin("lanes.prefillStepFn.promptLogitsHost", .wait); defer ts.end(); break :blk m.promptLogitsHost(); });
         f.progress.poll(self, s);
         self.streams.getPtr(s).?.filled = len;
         if (logits_sha) {
@@ -1577,7 +1709,7 @@ pub const Lanes = struct {
             }
             std.debug.print("{{\"cache_logit_dump\":{d},\"prompt_tokens\":{d},\"cached_tokens\":{d}}}\n", .{ self.logit_dump_serial, len, s.cached });
         }
-        if (s.prefill_only) return true;
+        if (s.prefill_only) { trace_completed = true; return true; }
         const token: u32 = if (use_candidates) blk: {
             const c = candidates.?;
             const sm = s.sampling.?;
@@ -1596,6 +1728,7 @@ pub const Lanes = struct {
             lane.first_row = try gpa.realloc(lane.first_row, logits.len);
             @memcpy(lane.first_row, logits);
         }
+        trace_completed = true;
         return true;
     }
 
@@ -1691,6 +1824,7 @@ pub const Lanes = struct {
         }
         const t1 = m.now();
         if (self.spill) |t| for (wins[0..windows.len]) |w| t.bump(w.base + w.start, w.base + w.start + w.ids.len);
+        engramVerify(m, wins[0..windows.len]);
         const rows = try self.built.build(gpa, &self.seqs, wins[0..windows.len]);
         m.rd.penalty = null;
         defer m.rd.penalty = null;
@@ -2265,6 +2399,7 @@ pub const Lanes = struct {
         sn.* = .{ .complete = complete, .decoded = complete or continuation, .id = self.next_snap, .at = at, .base = l.base, .end = l.end, .part = l.part, .buf = try cuda.DeviceBuffer.alloc(self.m.ctx.d, self.m.snapBytes()), .slot = @intCast(l.slot) };
         errdefer sn.buf.free();
         try self.snaps.append(self.gpa, sn);
+        errdefer _ = self.snaps.orderedRemove(std.mem.indexOfScalar(*Snap, self.snaps.items, sn).?);
         self.next_snap += 1;
         self.kv_clock +|= 1;
         sn.last_use = self.kv_clock;
@@ -2320,7 +2455,9 @@ pub const Lanes = struct {
         }
         pub fn send(b: *DropBatch, rank: usize) !void {
             const peer = b.lanes_.m.followers()[rank] orelse return error.TransferFailed;
+            try b.lanes_.wire.transaction.enterPeer(&b.lanes_.step, rank, b.followerCount());
             try peer.sendWithin(b.lanes_.wire.buf.items, b.deadline);
+            b.lanes_.wire.transaction.sentPeer(rank, b.followerCount());
         }
         pub fn freeLocal(b: *DropBatch) !void {
             b.sent = link.Link.monotonicNs();
@@ -2371,6 +2508,7 @@ pub const Lanes = struct {
         if (try self.begin(.snap_drop_many)) {
             try self.wire.int(self.gpa, u32, @intCast(saved.len));
             for (ids[0..saved.len]) |id| try self.wire.int(self.gpa, u64, id);
+            try self.preflightFrame();
         }
         var transaction: DropBatch = .{ .lanes_ = self, .saved = saved, .step = step, .deadline = deadline };
         try cache_batch.release(&transaction);
@@ -2391,10 +2529,18 @@ pub const Lanes = struct {
         const sn: *Snap = @ptrCast(@alignCast(saved));
         const i = std.mem.indexOfScalar(*Snap, self.snaps.items, sn) orelse return;
         _ = self.snaps.orderedRemove(i);
-        if (self.spill) |t| t.dropSnap(sn.id); // (rule b: a pending small-state capture of its buffer done first)
-        if (self.begin(.snap_drop) catch false) {
-            self.wire.int(self.gpa, u64, sn.id) catch {};
-            self.flush() catch |err| std.log.err("dsv41: rank 1 kept a dropped prompt state: {s}", .{@errorName(err)});
+        if (self.spill) |t| t.dropSnap(sn.id); // pending captures finish before release
+        engramBoundary(self.m, .snap_drop); // TF_DS_ENGRAM_KEEP: begin() did this before the fixed drop frame
+        self.wakeRdma();
+        if (self.peer != null) {
+            // A void release cannot refuse an allocation. Its complete fixed
+            // frame needs no heap storage, even under memory pressure.
+            const frame = dropFrame(self.step, sn.id);
+            var transaction: frame_transaction.Transaction = .{};
+            self.broadcast(&frame, &transaction) catch |err| {
+                if (!self.closing) self.m.pairFault(err);
+                std.log.err("dsv41: rank 1 kept a dropped prompt state: {s}", .{@errorName(err)});
+            };
         }
         // TF_DS_KV_SHARD: the planner's record goes too (deferred while a copy or carry still reads its rows)
         if (self.kv) |k| k.drop(sn.id) catch |err| std.log.err("dsv41: the parts' planner kept a dropped prompt state: {s}", .{@errorName(err)});
@@ -2517,14 +2663,16 @@ pub const Lanes = struct {
             else => return error.BadFrame,
         };
         if (try self.begin(k)) {
-            try self.wire.buf.appendSlice(self.gpa, sub);
+            try self.wire.bytes(self.gpa, sub);
             try self.flush();
         }
     }
 
     fn releaseFn(ptr: *anyopaque, s: *lanes.Stream) void {
         const self = of(ptr);
+        const was_filling = self.m.keep_engram and self.fills.contains(s);
         prefillEndFn(ptr, s);
+        if (self.m.keep_engram and !was_filling and self.streams.contains(s)) self.send(.engram_drop) catch |err| self.m.pairFault(err);
         if (!self.streams.contains(s)) {
             if (self.kv) |k| k.forgetKey(@intFromPtr(s));
             self.idleRdma();
@@ -3082,6 +3230,7 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
         watch.stop.store(true, .release);
         t.join();
     };
+    defer if (m.keep_engram) m.resetEngramAhead();
     var vote_agreement_seen = false;
     // Fatal spill-vote errors cannot run the normal defers: a store scan or CUDA event can stall quiesce past the
     // vote deadline. Exit without freeing buffers still owned by DMA, even if the peer watcher could not start.
@@ -3100,6 +3249,7 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
         const incoming = if (move_state.pending != null) peer.recvBy(buf, move_deadline) else peer.recvCommand(buf, &admission_deadline, 5 * std.time.ns_per_s);
         var r: Reader = .{ .b = incoming catch |err| (Model.SpillDev{ .m = m }).failed(err) };
         const kind = try decodeOuterKind(try r.int(u8));
+        if (kind == .engram_drop and !m.keep_engram) return error.BadFrame;
         if (rdma_idle) {
             setRdmaIdle(m, false); // before any local spill, capture, restore, relocation or RDMA command
             rdma_idle = false;
@@ -3113,6 +3263,7 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
         watch.busy.store(link.Link.monotonicNs(), .release); // inside this frame until the loop comes round
         if (kind == .idle_move) relocation_custody = true;
         if (move_state.pending != null and kind != .idle_move and kind != .rank_wire) return error.TransferFailed;
+        engramBoundary(m, kind); // TF_DS_ENGRAM_KEEP: before the relocation guard below reads m.ahead
         if (kind == .idle_move) {
             if (m.ahead != null) return error.TransferFailed;
             if (move_state.pending == null) move_deadline = admission_deadline;
@@ -3129,6 +3280,9 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
             .logprobs => {
                 const f = getLogprobs(&r) catch |err| m.pairFault(err);
                 _ = m.reply_scores.run(m, f) catch |err| m.pairFault(err);
+            },
+            .engram_drop => {
+                if (!m.keep_engram or r.at != r.b.len) return error.BadFrame;
             },
             .rdma_idle => {
                 const dev: Model.SpillDev = .{ .m = m };
@@ -3199,7 +3353,7 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
                 slot = try r.int(u32);
                 fill_base = @intCast(try r.int(u64));
                 if (slot >= max_streams or seqs[slot].items.len == 0) return error.BadSlot;
-                try m.fillBegin(slot, fill_base);
+                try m.fillResume(slot, fill_base);
                 if (kvf) |k| try k.fillBegin(slot, fill_base);
                 m.fill_seq = seqs[slot].items;
             },
@@ -3267,6 +3421,7 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
                     if (penalized != any_penalties) return error.BadFrame;
                 }
                 if ((penalized or m.decode_greedy_head or m.decode_sample_head) and r.at != r.b.len) return error.BadFrame;
+                engramVerify(m, wins[0..nw]);
                 const rows = try built.build(gpa, &seqs, wins[0..nw]);
                 m.rd.penalty = null;
                 defer m.rd.penalty = null;
@@ -3439,6 +3594,7 @@ test "prefix growth relocates instead of overwriting a retained neighbour" {
     var a: Snap = .{ .id = 1, .at = 6144, .base = 0, .buf = undefined };
     var b: Snap = .{ .id = 2, .at = 6144, .base = 6144, .buf = undefined };
     var m: Model = undefined;
+    m.keep_engram = false;
     m.rs = .{};
     m.pool_cap = 3300000;
     var l: Lanes = undefined;
@@ -3511,6 +3667,7 @@ test "placement keeps restore source until genuine pool pressure requires cold f
     var a: Snap = .{ .id = 1, .at = 6144, .base = 0, .buf = undefined };
     var b: Snap = .{ .id = 2, .at = 6144, .base = 6144, .buf = undefined };
     var m: Model = undefined;
+    m.keep_engram = false;
     m.rs = .{};
     m.pool_cap = 16384;
     var l: Lanes = undefined;
@@ -3534,6 +3691,7 @@ test "a state a waiting request matched survives other placements until only it 
     var a: Snap = .{ .id = 1, .at = 6144, .base = 0, .buf = undefined, .held = 1 };
     var b: Snap = .{ .id = 2, .at = 6144, .base = 6144, .buf = undefined };
     var m: Model = undefined;
+    m.keep_engram = false;
     m.rs = .{};
     m.pool_cap = 16384;
     var l: Lanes = undefined;
@@ -3555,6 +3713,7 @@ test "a state a waiting request matched survives other placements until only it 
 
 test "full prompt snapshots are exact-length only inside bounded replay by default" {
     var m: Model = undefined;
+    m.keep_engram = false;
     m.rs = .{};
     m.cfg.window = 128;
     var sn: Snap = .{ .id = 1, .at = 8191, .base = 0, .buf = undefined, .complete = true };
@@ -3581,6 +3740,7 @@ test "full prompt snapshots are exact-length only inside bounded replay by defau
 
 test "opt-in short continuation requires a live aligned fully decoded prefix" {
     var m: Model = undefined;
+    m.keep_engram = false;
     m.rs = .{};
     m.cfg.window = 128;
     var sn: Snap = .{ .id = 1, .at = 9126, .base = 0, .buf = undefined, .decoded = true };
@@ -3638,6 +3798,7 @@ test "a short shared sibling cannot overwrite the main conversation's longer pre
     var common: Snap = .{ .id = 1, .at = 8192, .base = 0, .buf = undefined };
     var main: Snap = .{ .id = 2, .at = 98304, .base = 0, .end = 131072, .buf = undefined };
     var m: Model = undefined;
+    m.keep_engram = false;
     m.rs = .{};
     m.pool_cap = 524288;
     var l: Lanes = undefined;
@@ -3673,6 +3834,7 @@ test "soft reservations yield to packing before any kept prefix is evicted" {
 test "pool pressure cannot evict a retained prefix whose rows remain owned by a live stream" {
     var snap: Snap = .{ .id = 1, .at = 8192, .base = 0, .end = 16384, .buf = undefined };
     var m: Model = undefined;
+    m.keep_engram = false;
     m.rs = .{};
     m.pool_cap = 16384;
     var l: Lanes = undefined;
@@ -3741,6 +3903,7 @@ test "K2a retained union agrees with independent bitmap oracle in 10000 interval
 test "a restore's destination is held back from placement, never a victim and never usable until installed" {
     const c = model.chunk_rows;
     var m: Model = undefined;
+    m.keep_engram = false;
     m.rs = .{};
     m.pool_cap = 16 * c;
     m.cfg.window = 128;
@@ -3777,6 +3940,7 @@ test "a restore's destination is held back from placement, never a victim and ne
 test "pool pressure uses X3 learned placement without bypassing snapshot custody" {
     const c = model.chunk_rows;
     var m: Model = undefined;
+    m.keep_engram = false;
     m.rs = .{};
     m.io = std.testing.io;
     m.pool_cap = 82 * c;
@@ -3797,6 +3961,7 @@ test "pool pressure uses X3 learned placement without bypassing snapshot custody
 test "a restore's destination holds the waiting prompt's room past its rows while that fits clear of the others" {
     const c = model.chunk_rows;
     var m: Model = undefined;
+    m.keep_engram = false;
     m.rs = .{};
     m.pool_cap = 64 * c;
     m.cfg.window = 128;
@@ -3906,6 +4071,7 @@ test "TF_DS_KV_SHARD lanes: part-local placement, a kept state resumed in place,
     const c = model.chunk_rows;
     const gpa = std.testing.allocator;
     var m: Model = undefined;
+    m.keep_engram = false;
     m.rs = .{};
     var ln = testLanes(&m);
     defer ln.snaps.deinit(gpa);
@@ -3959,6 +4125,7 @@ test "TF_DS_KV_SHARD lanes: a live move rewrites the moved Lane and the Snaps in
     const c = model.chunk_rows;
     const gpa = std.testing.allocator;
     var m: Model = undefined;
+    m.keep_engram = false;
     m.rs = .{};
     var ln = testLanes(&m);
     defer ln.snaps.deinit(gpa);
@@ -4006,6 +4173,7 @@ test "TF_DS_KV_SHARD lanes: a round's windows reach the follower with part and g
     const c = model.chunk_rows;
     const gpa = std.testing.allocator;
     var m: Model = undefined;
+    m.keep_engram = false;
     m.rs = .{};
     m.dr = null;
     var ln = testLanes(&m);
@@ -4072,6 +4240,7 @@ test "TF_DS_KV_SHARD lanes: a prompt pass failing after its placement (prefillFn
     const c = model.chunk_rows;
     const gpa = std.testing.allocator;
     var m: Model = undefined;
+    m.keep_engram = false;
     m.rs = .{};
     var ln = testLanes(&m);
     defer ln.snaps.deinit(gpa);
@@ -4602,6 +4771,7 @@ test "keyed draft frame round trip through both TP3 follower links and off bytes
     if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
     const a = std.testing.allocator;
     var m: Model = undefined;
+    m.keep_engram = false;
     m.world = 3;
     m.rank = 0;
     // flush uses Model.followers (the TP3 fan), not a single TP2 peer.
@@ -4624,7 +4794,8 @@ test "keyed draft frame round trip through both TP3 follower links and off bytes
     const temps = [_]f64{ 0.7, 0 };
     const top_ks = [_]u32{ 20, 1023 };
     for ([_]bool{ false, true }) |keyed| {
-        try ln.wire.begin(a, if (keyed) .pass_keyed else .pass, 31);
+        ln.step = 31;
+        try ln.wire.begin(a, if (keyed) .pass_keyed else .pass, ln.step);
         try writePass(&ln.wire, a, &tokens, &q0, &slots, 5, if (keyed) .{ .seeds = &seeds, .temps = &temps, .top_ks = &top_ks } else null);
         if (!keyed) {
             var legacy: Wire = .{};
@@ -4668,7 +4839,8 @@ test "keyed draft frame round trip through both TP3 follower links and off bytes
     }
     // both follower links reject a top_k the kernel cannot mirror.
     const too_large = [_]u32{ 20, 1024 };
-    try ln.wire.begin(a, .pass_keyed, 32);
+    ln.step = 32;
+    try ln.wire.begin(a, .pass_keyed, ln.step);
     try writePass(&ln.wire, a, &tokens, &q0, &slots, 5, .{ .seeds = &seeds, .temps = &temps, .top_ks = &too_large });
     try ln.flush();
     for (&peers) |*peer| {
@@ -4869,6 +5041,7 @@ test "round timing actual backend hook fences only when opted in" {
     var owner = health.Owner.capture();
     defer owner.release();
     var m: Model = undefined;
+    m.keep_engram = false;
     m.graphs = null;
     m.pgraphs = null;
     var ln: Lanes = .{ .gpa = std.testing.allocator, .m = &m, .peer = null };
@@ -4938,4 +5111,541 @@ test "reply logprobs compact frame and step replay identically on both TP3 follo
         try std.testing.expectError(error.BadFrame, getLogprobs(&long));
     }
     try std.testing.expect(openChunkAllows(.logprobs));
+}
+
+test "prefill slice engram keep recorded frames agree on all ranks and every drop rereads" {
+    const Fixture = @import("engram_keep_test.zig").Fixture;
+    const a = std.testing.allocator;
+    try std.testing.expectEqual(@as(u8, 22), @intFromEnum(Kind.engram_drop)); // 19-21 belong to other ports
+    try std.testing.expectEqual(Kind.engram_drop, try decodeOuterKind(22));
+    var ranks: [3]*Fixture = undefined;
+    for (&ranks) |*f| f.* = try Fixture.create();
+    defer for (ranks) |f| f.destroy();
+    const recording = [_]Kind{ .fill_resume, .verify, .pass, .pass_keyed, .fill_resume, .fill_chunk };
+    for (ranks) |f| try f.plan(false, 32);
+    ranks[0].m.joinAhead(); // only rank zero has the outer-yield defer
+    for (recording, 0..) |kind, step| {
+        var w: Wire = .{};
+        defer w.deinit(a);
+        try w.begin(a, kind, step);
+        switch (kind) {
+            .fill_resume => { try w.int(a, u32, 0); try w.int(a, u64, 0); },
+            .verify => {
+                try w.int(a, u32, 1);
+                try writeWin(&w, a, .{ .slot = 1, .base = 0, .end = 2048, .start = 0, .absorb = false, .ids = &.{1} }, false);
+            },
+            .pass, .pass_keyed => try writePass(&w, a, &.{1}, &.{1}, &.{1}, 1,
+                if (kind == .pass_keyed) .{ .seeds = &.{7}, .temps = &.{0.8}, .top_ks = &.{20} } else null),
+            .fill_chunk => { try w.int(a, u64, 4); try w.int(a, u32, 32); try w.int(a, u64, 8196); },
+            else => unreachable,
+        }
+        for (ranks) |f| {
+            var r: Reader = .{ .b = w.buf.items };
+            const decoded = try decodeOuterKind(try r.int(u8));
+            try std.testing.expectEqual(@as(u64, step), try r.int(u64));
+            engramBoundary(&f.m, decoded);
+            switch (decoded) {
+                .fill_resume => {
+                    const slot = try r.int(u32);
+                    const base = try r.int(u64);
+                    try f.m.fillResume(slot, @intCast(base));
+                },
+                .verify => {
+                    try std.testing.expectEqual(@as(u32, 1), try r.int(u32));
+                    var ids: std.ArrayList(i32) = .empty;
+                    defer ids.deinit(a);
+                    const win = try readWin(&r, a, &ids, false);
+                    engramVerify(&f.m, &.{win});
+                    f.m.joinParkAhead();
+                },
+                .pass, .pass_keyed => { _ = try readPass(&r, decoded == .pass_keyed, true); },
+                .fill_chunk => {
+                    const start: usize = @intCast(try r.int(u64));
+                    const n = try r.int(u32);
+                    _ = try r.int(u64);
+                    try std.testing.expect(f.m.claimRetained(&f.ids, start, n));
+                    const reads = f.pool.gen;
+                    _ = try f.rows(1, n);
+                    try std.testing.expectEqual(reads, f.pool.gen);
+                },
+                else => unreachable,
+            }
+            try std.testing.expectEqual(r.b.len, r.at);
+            try std.testing.expectEqual(decoded != .fill_chunk, f.m.retained.key != null);
+        }
+    }
+    const drops = [_]Kind{ .fill_begin, .snap_save, .snap_restore, .snap_drop, .snap_drop_many, .fill_images, .rank_wire, .idle_move, .rdma_idle, .graph_vote_agree, .done, .engram_drop, .prompt_penalties };
+    for (drops) |kind| for (ranks) |f| {
+        try f.plan(false, 32);
+        engramBoundary(&f.m, kind); // joins an unjoined follower too
+        try std.testing.expect(f.m.retained.key == null and f.m.ahead == null);
+        const reads = f.pool.gen;
+        try std.testing.expect(!f.m.claimRetained(&f.ids, 4, 32));
+        _ = try f.rows(1, 32);
+        try std.testing.expectEqual(reads + 1, f.pool.gen);
+    };
+    // Penalized verifies and score frames run between slices like verify, so they keep rows on every rank.
+    for ([_]Kind{ .verify_penalties, .logprobs }) |kind| for (ranks) |f| {
+        try f.plan(false, 32);
+        engramBoundary(&f.m, kind);
+        try std.testing.expect(f.m.retained.key != null);
+    };
+    for (ranks) |f| {
+        try f.plan(false, 32);
+        engramVerify(&f.m, &.{.{ .slot = 0, .base = 0, .end = 2048, .start = 0, .absorb = false, .ids = &.{1} }});
+        try std.testing.expect(f.m.retained.key == null and f.m.ahead == null);
+    }
+    var off: Model = undefined;
+    off.keep_engram = false;
+    for (std.enums.values(Kind)) |kind| engramBoundary(&off, kind); // no other off-state read
+}
+
+test "prefill slice engram keep real end and release notify followers only when opted in" {
+    const Fixture = @import("engram_keep_test.zig").Fixture;
+    const a = std.testing.allocator;
+    for ([_]bool{ false, true }) |on| {
+        const f = try Fixture.create();
+        defer f.destroy();
+        f.m.keep_engram = on;
+        var ln: Lanes = .{ .gpa = a, .m = &f.m, .peer = null, .rdma_park = false };
+        defer ln.fills.deinit(a);
+        defer ln.streams.deinit(a);
+        var stream = try lanes.Stream.init(a, .{ .id = "cancelled", .prompt = &.{ 1, 2, 3 }, .max_new = 2 });
+        defer stream.deinit(a);
+        try f.plan(false, 32);
+        try ln.fills.put(a, &stream, .{ .start = 4, .len = f.ids.len, .replay = 4, .last_end = 4, .head = false, .slot = 0, .base = 0, .source_facts = .{ .restored = false }, .began = 0 });
+        Lanes.prefillEndFn(&ln, &stream);
+        try std.testing.expect(f.m.ahead == null);
+        try std.testing.expectEqual(!on, f.m.eh.?.ahead_ready[0]);
+        // An unrelated decoder release also conservatively invalidates on every rank.
+        try f.plan(false, 32);
+        try ln.streams.put(a, &stream, .{ .slot = 1, .base = 0, .end = 2048 });
+        Lanes.releaseFn(&ln, &stream);
+        if (on) {
+            try std.testing.expect(f.m.ahead == null and f.m.retained.key == null);
+            try std.testing.expect(!f.m.eh.?.ahead_ready[0]);
+        } else {
+            try std.testing.expect(f.m.ahead != null); // baseline release of other stream does not join
+        }
+        try std.testing.expectEqual(@as(usize, 0), ln.wire.buf.items.len); // no follower allocation in single rank
+    }
+}
+
+test "prefill slice engram keep fake stepped backend resumes alone and after a short cut in" {
+    const Fixture = @import("engram_keep_test.zig").Fixture;
+    const a = std.testing.allocator;
+    for ([_]bool{ false, true }) |cutin| for ([_]?lanes.Sampling{ null, .{ .seed = 21, .temperature = 0.8 } }) |sample| {
+        const f = try Fixture.create();
+        defer f.destroy();
+        var target: lanes.fake.Fake = .{ .gpa = a, .prefill_chunks = 2 };
+        defer target.deinit();
+        const backend = target.stepped();
+        const ids = [_]u32{ 1, 2, 3, 4, 5, 6, 1, 2 };
+        var long = try lanes.Stream.init(a, .{ .id = "long", .prompt = &ids, .max_new = 2, .sampling = sample });
+        defer long.deinit(a);
+        var short = try lanes.Stream.init(a, .{ .id = "short", .prompt = &.{ 2, 1 }, .max_new = 1 });
+        defer short.deinit(a);
+        try backend.vtable.prefill_begin.?(backend.ptr, &long);
+        try std.testing.expect(!try backend.vtable.prefill_step.?(backend.ptr, &long));
+        try f.plan(false, 32);
+        f.m.joinAhead();
+        if (cutin) {
+            engramBoundary(&f.m, .engram_drop); // admission before sequence replacement
+            try f.m.fillBegin(1, 0);
+            try backend.vtable.prefill_begin.?(backend.ptr, &short);
+            _ = try backend.vtable.prefill_step.?(backend.ptr, &short);
+            _ = try backend.vtable.prefill_step.?(backend.ptr, &short);
+            backend.vtable.prefill_end.?(backend.ptr, &short);
+        }
+        engramBoundary(&f.m, .fill_resume);
+        try f.m.fillResume(0, 0); // alone still reselects, without creating an occupant
+        try std.testing.expectEqual(!cutin, f.m.claimRetained(&f.ids, 4, 32));
+        try std.testing.expect(try backend.vtable.prefill_step.?(backend.ptr, &long));
+        backend.vtable.prefill_end.?(backend.ptr, &long);
+        const handle = try backend.vtable.first(backend.ptr, &long, ids.len);
+        try std.testing.expectEqual(lanes.fake.next(&ids, sample, ids.len), try backend.vtable.read(backend.ptr, handle));
+        backend.vtable.release(backend.ptr, &long);
+        if (cutin) backend.vtable.release(backend.ptr, &short);
+    };
+}
+
+test "prefill slice engram keep cancellation drop reaches both real follower links and off sends nothing" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const Fixture = @import("engram_keep_test.zig").Fixture;
+    const a = std.testing.allocator;
+    for ([_]bool{ false, true }) |on| {
+        const f = try Fixture.create();
+        defer f.destroy();
+        f.m.keep_engram = on;
+        f.m.world = 3;
+        f.m.rank = 0;
+        f.m.fan = .{};
+        defer f.m.fan.close();
+        var peers: [2]link.Link = undefined;
+        for (&peers, 0..) |*peer, i| {
+            var pair: [2]std.c.fd_t = undefined;
+            try std.testing.expect(std.c.socketpair(std.c.AF.UNIX, std.c.SOCK.STREAM, 0, &pair) == 0);
+            f.m.fan.links[i] = .{ .fd = pair[0] };
+            peer.* = .{ .fd = pair[1] };
+        }
+        defer for (&peers) |*peer| peer.close();
+        var ln: Lanes = .{ .gpa = a, .m = &f.m, .peer = f.m.fan.links[0], .rdma_park = false };
+        defer ln.fills.deinit(a);
+        defer ln.wire.deinit(a);
+        var stream = try lanes.Stream.init(a, .{ .id = "cancel", .prompt = &.{ 1, 2, 3 }, .max_new = 2 });
+        defer stream.deinit(a);
+        try f.plan(false, 32);
+        try ln.fills.put(a, &stream, .{ .start = 4, .len = f.ids.len, .replay = 4, .last_end = 4, .head = false, .slot = 0, .base = 0, .source_facts = .{ .restored = false }, .began = 0 });
+        Lanes.prefillEndFn(&ln, &stream);
+        try std.testing.expectEqual(@as(u64, @intFromBool(on)), ln.step);
+        for (&peers) |*peer| {
+            try std.testing.expectEqual(on, try peer.readable(0));
+            if (!on) continue;
+            var buf: [32]u8 = undefined;
+            var r: Reader = .{ .b = try peer.recv(&buf) };
+            try std.testing.expectEqual(Kind.engram_drop, try decodeOuterKind(try r.int(u8)));
+            try std.testing.expectEqual(@as(u64, 0), try r.int(u64));
+            try std.testing.expectEqual(r.b.len, r.at);
+        }
+    }
+}
+
+
+test "prefill slice park graphs frame driven TP3 decisions and off bytes" {
+    const pg = @import("park_graphs.zig");
+    const Cache = @import("graph_cache.zig").Lru(round.Graphs.Key, bool);
+    const a = std.testing.allocator;
+    const Fake = struct {
+        cache: Cache = .init(2),
+        live: bool = false,
+        eager: usize = 0,
+        replay: usize = 0,
+        capture: usize = 0,
+        fn run(f: *@This(), mode: pg.Mode, key: round.Graphs.Key) pg.Action {
+            const entry = if (mode == .eager) null else f.cache.get(key);
+            const act = if (mode == .eager) pg.Action.eager else pg.action(mode == .replay, false, entry != null, if (entry) |x| x.* else false);
+            switch (act) { .eager => f.eager += 1, .replay => f.replay += 1, .capture => f.capture += 1 }
+            return act;
+        }
+    };
+    var ranks: [3]Fake = .{ .{}, .{}, .{} };
+    defer for (&ranks) |*f| f.cache.deinit(a);
+    // A committed graph and a committed tombstone precede this chunk on all ranks.
+    const warm: round.Graphs.Key = .{ .rows = 1, .bucket = round.bucketFor(11, 65536), .stretch = 0 };
+    var tombstone = warm; tombstone.rows = 2;
+    for (&ranks) |*f| {
+        _ = try f.cache.put(a, warm, true);
+        _ = try f.cache.put(a, tombstone, false);
+    }
+    for ([_]bool{ false, true }) |on| {
+        var slice_wire: Wire = .{}; defer slice_wire.deinit(a);
+        try slice_wire.begin(a, .fill_slice, 6);
+        try putSlice(&slice_wire, a, .{ .lo = 0, .hi = 1, .args = .{ .start = 0, .n = 8192, .replay = 0 } });
+        for (&ranks) |*f| {
+            var reader: Reader = .{ .b = slice_wire.buf.items };
+            try std.testing.expectEqual(Kind.fill_slice, try decodeOuterKind(try reader.int(u8)));
+            _ = try reader.int(u64);
+            const sf = try getSlice(&reader);
+            f.live = !sf.abort and sf.hi < 40;
+            try std.testing.expect(f.live);
+        }
+        var original: Wire = .{}; defer original.deinit(a);
+        var wire: Wire = .{}; defer wire.deinit(a);
+        try original.begin(a, .verify, 7);
+        try original.int(a, u32, 1);
+        try writeWin(&original, a, .{ .slot = 1, .base = 0, .end = 65536, .start = 10, .absorb = false, .ids = &.{3} }, false);
+        try wire.begin(a, .verify, 7);
+        try wire.int(a, u32, 1);
+        try writeWin(&wire, a, .{ .slot = 1, .base = 0, .end = 65536, .start = 10, .absorb = false, .ids = &.{3} }, false);
+        try std.testing.expectEqualSlices(u8, original.buf.items, wire.buf.items);
+        const base: u64 = 0x8f000123456789ab;
+        if (!on) try std.testing.expectEqual(base, base | pg.agreement(on));
+        var first: ?pg.Action = null;
+        for (&ranks) |*f| {
+            var reader: Reader = .{ .b = wire.buf.items };
+            try std.testing.expectEqual(Kind.verify, try decodeOuterKind(try reader.int(u8)));
+            _ = try reader.int(u64); _ = try reader.int(u32);
+            var ids: std.ArrayList(i32) = .empty; defer ids.deinit(a);
+            const win = try readWin(&reader, a, &ids, false);
+            const key: round.Graphs.Key = .{ .rows = @intCast(win.ids.len), .bucket = round.bucketFor(win.start + win.ids.len, 65536), .stretch = 0 };
+            // No chunk state enters the actual key type or wire key.
+            try std.testing.expectEqualDeep(warm, key);
+            try std.testing.expectEqualDeep(warm.wire(), key.wire());
+            const act = f.run(pg.mode(on, f.live, true), key);
+            if (first) |want| try std.testing.expectEqual(want, act) else first = act;
+            try std.testing.expectEqual(if (on) pg.Action.replay else pg.Action.eager, act);
+            var missing = key; missing.rows = 3;
+            try std.testing.expectEqual(pg.Action.eager, f.run(pg.mode(on, f.live, true), missing));
+            try std.testing.expectEqual(pg.Action.eager, f.run(pg.mode(on, f.live, true), tombstone));
+            try std.testing.expectEqual(@as(usize, 2), f.cache.count());
+            try std.testing.expectEqual(@as(usize, 0), f.capture);
+            // Unvoted multi-rank history stays eager even on a warm key.
+            try std.testing.expectEqual(pg.Action.eager, f.run(pg.mode(on, f.live, false), key));
+        }
+        for ([_]Kind{ .pass, .pass_keyed }) |kind| {
+            var pass: Wire = .{}; defer pass.deinit(a);
+            try pass.begin(a, kind, 8);
+            try writePass(&pass, a, &.{3}, &.{11}, &.{1}, 5, if (kind == .pass_keyed) .{ .seeds = &.{7}, .temps = &.{0.8}, .top_ks = &.{20} } else null);
+            var wanted: ?draft.PassGraphs.Key = null;
+            for (0..3) |_| {
+                var reader: Reader = .{ .b = pass.buf.items };
+                const got_kind = try decodeOuterKind(try reader.int(u8));
+                _ = try reader.int(u64);
+                const got = try readPass(&reader, got_kind == .pass_keyed, true);
+                const key: draft.PassGraphs.Key = .{ .streams = @intCast(got.n), .steps = @intCast(got.steps), .keyed = got_kind == .pass_keyed };
+                if (wanted) |want| try std.testing.expectEqualDeep(want, key) else wanted = key;
+                try std.testing.expectEqual(reader.b.len, reader.at);
+            }
+        }
+    }
+    for (&ranks) |*f| {
+        try std.testing.expectEqual(@as(usize, 0), f.capture);
+        try std.testing.expectEqual(ranks[0].cache.tick, f.cache.tick);
+    }
+    // Every existing frame remains admitted/refused exactly as before.
+    for (std.enums.values(Kind)) |kind| try std.testing.expectEqual(
+        kind == .verify or kind == .verify_penalties or kind == .pass or kind == .pass_keyed or kind == .fill_slice or kind == .logprobs, openChunkAllows(kind));
+}
+
+// Both variants exercise the optional wire fields, not a second protocol.
+fn transactionFixture(w: *Wire, a: std.mem.Allocator, kind: Kind, variant: bool, step: u64) !void {
+    try w.begin(a, kind, step);
+    switch (kind) {
+        .fill_begin => {
+            try w.int(a, u32, 2); try w.int(a, u64, 64);
+            try w.ids(a, &.{ 7, 11, 13 });
+        },
+        .fill_chunk => {
+            try w.int(a, u64, 64); try w.int(a, u32, 32); try w.int(a, u64, 16);
+            if (variant) try w.int(a, u32, 32);
+        },
+        .verify, .verify_penalties => {
+            // A penalized verify never carries head fields (the follower refuses them); its variant is the shard tail.
+            const head = variant and kind == .verify;
+            try w.int(a, u32, 1);
+            try writeGreedyHeadMode(w, a, head, head);
+            try writeSampleHeadCount(w, a, head, if (head) 3 else 0);
+            try writeWin(w, a, .{ .slot = 2, .base = 64, .end = 256, .start = 16, .absorb = true, .ids = &.{ 7, 11, 13 }, .part = 1, .gen = 9 }, variant);
+        },
+        .pass, .pass_keyed => try writePass(w, a, &.{ 7, 11 }, &.{ 64, 128 }, &.{ 2, 3 }, 5, if (kind == .pass_keyed) .{ .seeds = &.{ 17, 19 }, .temps = &.{ 0.5, 1 }, .top_ks = &.{ 20, 30 } } else null),
+        .snap_save => { try w.int(a, u64, 17); try w.int(a, u32, 2); },
+        .snap_restore => {
+            try w.int(a, u64, 17); try w.int(a, u32, 2);
+            try w.int(a, u64, 64); try w.int(a, u64, 128); try w.int(a, u64, 32);
+        },
+        .snap_drop => try w.int(a, u64, 17),
+        .fill_images => {
+            try w.int(a, u32, 2);
+            for ([_]u64{ 16, 32, 64, 32 }) |v| try w.int(a, u64, v);
+            try w.int(a, u64, 0);
+            try w.bytes(a, &.{ 1, 2, 3, 4, 5, 6, 7, 8 });
+        },
+        .done, .rdma_idle, .engram_drop => {},
+        .prompt_penalties => {
+            try w.int(a, u32, 2);
+            try penalties.write(w, a, .{ .prompt_len = 128, .settings = if (variant)
+                .{ .presence = 0.5, .frequency = -0.25, .repetition = 1.1, .window = 64, .include_prompt = true }
+            else
+                .{ .presence = 0.5 } });
+        },
+        .logprobs => try putLogprobs(w, a, if (variant) .{ .op = 2, .slot = 3, .row = 5, .token = 77, .k = 20 } else .{ .op = 0, .slot = 2 }),
+        .rank_wire => {
+            var sub: [rank_wire.max_frame]u8 = undefined;
+            const bytes = try rank_wire.encode(&sub, .{ .op = .forget, .from = 0, .epoch = 3, .txn = 0, .seq = 7 }, .{ .forget = .{ .point = @splat(5) } });
+            try w.bytes(a, bytes);
+        },
+        .idle_move => {
+            const payload = idle_relocation.request(@intFromBool(variant), .{ .generation = 17, .from = 64, .to = 128, .len = 32, .bytes = 4096 }, 12345);
+            try w.bytes(a, &payload);
+        },
+        .fill_resume => { try w.int(a, u32, 2); try w.int(a, u64, 64); },
+        .graph_vote_agree => try w.int(a, u8, 1),
+        .snap_drop_many => {
+            const n: usize = if (variant) 16 else 2;
+            try w.int(a, u32, @intCast(n));
+            for (0..n) |i| try w.int(a, u64, i + 1);
+        },
+        .fill_slice => try putSlice(w, a, if (variant) .{ .abort = true } else .{ .lo = 0, .hi = 4, .args = .{ .start = 64, .n = 32, .replay = 16 }, .next_rows = 32 }),
+    }
+}
+
+const TransactionPeers = struct {
+    m: Model = undefined,
+    peers: [2]link.Link = undefined,
+    fn init(t: *@This()) !void {
+        t.m.world = 3; t.m.rank = 0; t.m.fan = .{}; t.m.ring = null;
+        for (&t.peers, 0..) |*peer, i| {
+            var pair: [2]std.c.fd_t = undefined;
+            if (std.c.socketpair(std.c.AF.UNIX, std.c.SOCK.STREAM, 0, &pair) != 0) return error.SocketFailed;
+            t.m.fan.links[i] = .{ .fd = pair[0] };
+            peer.* = .{ .fd = pair[1] };
+        }
+    }
+    fn deinit(t: *@This()) void {
+        t.m.fan.close();
+        for (&t.peers) |*peer| peer.close();
+    }
+    fn accept(t: *@This(), expected_step: u64, kind: Kind, expected: []const u8) !void {
+        for (t.peers) |peer| {
+            var buf: [4096]u8 = undefined;
+            const bytes = try peer.recvBy(&buf, link.Link.monotonicNs() + std.time.ns_per_s);
+            var r: Reader = .{ .b = bytes };
+            try std.testing.expectEqual(kind, try decodeOuterKind(try r.int(u8)));
+            const step = try r.int(u64);
+            if (step != expected_step) return error.OutOfStep;
+            try std.testing.expectEqualSlices(u8, expected, bytes);
+        }
+    }
+};
+
+test "frame transaction sweeps Nth allocation at every append of every outer kind" {
+    var peers: TransactionPeers = .{};
+    try peers.init(); defer peers.deinit();
+    var failures: usize = 0;
+    var successes: usize = 0;
+    inline for (@typeInfo(Kind).@"enum".field_values) |field| {
+        const kind: Kind = @enumFromInt(field);
+        for ([_]bool{ false, true }) |variant| for ([_]bool{ false, true }) |exact| {
+            var fail_index: usize = 0;
+            while (true) : (fail_index += 1) {
+                if (fail_index > 100) return error.MissingAllocationTermination;
+                var fail = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index, .resize_fail_index = 0 });
+                const a = fail.allocator();
+                var ln: Lanes = .{ .gpa = a, .m = &peers.m, .peer = peers.m.fan.links[0], .step = 41 };
+                ln.wire.test_exact_capacity = exact;
+                defer ln.wire.deinit(a);
+                if (transactionFixture(&ln.wire, a, kind, variant, ln.step)) |_| {
+                    try std.testing.expect(!fail.has_induced_failure);
+                    try ln.flush();
+                    try std.testing.expectEqual(@as(u64, 42), ln.step);
+                    try std.testing.expectEqual(frame_transaction.State.committed, ln.wire.transaction.state);
+                    try peers.accept(41, kind, ln.wire.buf.items);
+                    try std.testing.expect(try ln.begin(.done));
+                    try ln.flush();
+                    try peers.accept(42, .done, ln.wire.buf.items);
+                    successes += 1;
+                    break;
+                } else |err| {
+                    failures += 1;
+                    try std.testing.expectEqual(error.OutOfMemory, err);
+                    try std.testing.expect(fail.has_induced_failure);
+                    try std.testing.expectEqual(@as(u64, 41), ln.step);
+                    try std.testing.expectEqual(frame_transaction.State.never_sent, ln.wire.transaction.state);
+                    try std.testing.expectError(error.BadFrame, ln.flush());
+                    for (peers.peers) |peer| try std.testing.expect(!try peer.readable(0));
+                    fail.fail_index = std.math.maxInt(usize);
+                    try std.testing.expect(try ln.begin(.done));
+                    try ln.flush();
+                    try peers.accept(41, .done, ln.wire.buf.items);
+                }
+            }
+        };
+    }
+    std.debug.print("frame allocation sweep: {d} failing allocations, {d} successful variants\n", .{ failures, successes });
+}
+
+test "frame transaction real TP3 broadcast faults before either peer exit 75 for every kind" {
+    inline for (@typeInfo(Kind).@"enum".field_values) |field| for (0..2) |bad_peer| {
+        const child = std.c.fork();
+        if (child == 0) {
+            var peers: TransactionPeers = .{};
+            peers.init() catch std.process.exit(2);
+            _ = std.c.close(peers.peers[bad_peer].fd);
+            var ln: Lanes = .{ .gpa = std.heap.page_allocator, .m = &peers.m, .peer = peers.m.fan.links[0], .step = 41 };
+            transactionFixture(&ln.wire, ln.gpa, @enumFromInt(field), false, ln.step) catch std.process.exit(3);
+            ln.flush() catch std.process.exit(4);
+            std.process.exit(5);
+        }
+        if (child < 0) return error.ForkFailed;
+        var status: c_int = 0;
+        try std.testing.expectEqual(child, std.c.waitpid(child, &status, 0));
+        try std.testing.expectEqual(@as(c_int, 75 << 8), status);
+    };
+}
+
+test "frame transaction golden bytes every kind and optional payload" {
+    inline for (@typeInfo(Kind).@"enum".field_values) |field| for ([_]bool{ false, true }) |variant| {
+        var wire: Wire = .{};
+        defer wire.deinit(std.testing.allocator);
+        try transactionFixture(&wire, std.testing.allocator, @enumFromInt(field), variant, 41);
+        var expected: [256]u8 = undefined;
+        const bytes = try std.fmt.hexToBytes(&expected, transaction_goldens[field][@intFromBool(variant)]);
+        try std.testing.expectEqualSlices(u8, bytes, wire.buf.items);
+        if (field == @intFromEnum(Kind.snap_drop)) try std.testing.expectEqualSlices(u8, bytes, &dropFrame(41, 17));
+    };
+}
+
+const transaction_goldens = [_][2][]const u8{
+    .{ "", "" },
+    .{ "01290000000000000002000000400000000000000003000000070000000b0000000d000000", "01290000000000000002000000400000000000000003000000070000000b0000000d000000" },
+    .{ "0229000000000000004000000000000000200000001000000000000000", "022900000000000000400000000000000020000000100000000000000020000000" },
+    .{ "03290000000000000001000000020000004000000000000000000100000000000010000000000000000103000000070000000b0000000d000000", "032900000000000000010000000103020000004000000000000000000100000000000010000000000000000103000000070000000b0000000d000000010900000000000000" },
+    .{ "04290000000000000002000000050000000700000000000000400000000000000002000000000000000b0000000000000080000000000000000300000000000000", "04290000000000000002000000050000000700000000000000400000000000000002000000000000000b0000000000000080000000000000000300000000000000" },
+    .{ "052900000000000000110000000000000002000000", "052900000000000000110000000000000002000000" },
+    .{ "062900000000000000110000000000000002000000400000000000000080000000000000002000000000000000", "062900000000000000110000000000000002000000400000000000000080000000000000002000000000000000" },
+    .{ "0729000000000000001100000000000000", "0729000000000000001100000000000000" },
+    .{ "08290000000000000002000000100000000000000020000000000000004000000000000000200000000000000000000000000000000102030405060708", "08290000000000000002000000100000000000000020000000000000004000000000000000200000000000000000000000000000000102030405060708" },
+    .{ "092900000000000000", "092900000000000000" },
+    .{ "0a290000000000000052570200250000000300000000000000000000000000000007000000000000000505050505050505050505050505050505050505050505050505050505050505", "0a290000000000000052570200250000000300000000000000000000000000000007000000000000000505050505050505050505050505050505050505050505050505050505050505" },
+    .{ "0b2900000000000000", "0b2900000000000000" },
+    .{ "0c290000000000000000110000000000000040000000000000008000000000000000200000000000000000100000000000003930000000000000", "0c290000000000000001110000000000000040000000000000008000000000000000200000000000000000100000000000003930000000000000" },
+    .{ "0d2900000000000000020000004000000000000000", "0d2900000000000000020000004000000000000000" },
+    .{ "", "" },
+    .{ "0f290000000000000001", "0f290000000000000001" },
+    .{ "1029000000000000000200000001000000000000000200000000000000", "102900000000000000100000000100000000000000020000000000000003000000000000000400000000000000050000000000000006000000000000000700000000000000080000000000000009000000000000000a000000000000000b000000000000000c000000000000000d000000000000000e000000000000000f000000000000001000000000000000" },
+    .{ "11290000000000000002000000050000000700000000000000400000000000000002000000000000001100000000000000000000000000e03f140000000b00000000000000800000000000000003000000000000001300000000000000000000000000f03f1e000000", "11290000000000000002000000050000000700000000000000400000000000000002000000000000001100000000000000000000000000e03f140000000b00000000000000800000000000000003000000000000001300000000000000000000000000f03f1e000000" },
+    .{ "122900000000000000000000000004000000400000000000000020000000100000000000000020000000", "12290000000000000001" },
+    .{ "13290000000000000001000000020000004000000000000000000100000000000010000000000000000103000000070000000b0000000d000000", "13290000000000000001000000020000004000000000000000000100000000000010000000000000000103000000070000000b0000000d000000010900000000000000" },
+    .{ "14290000000000000002000000000000000000e03f0000000000000000000000000000f03f00000000008000000000000000", "14290000000000000002000000000000000000e03f000000000000d0bf9a9999999999f13f40000000018000000000000000" },
+    .{ "1529000000000000000000000002000000000000000000000000000000", "1529000000000000000200000003000000050000004d00000014000000" },
+    .{ "162900000000000000", "162900000000000000" },
+};
+
+test "frame transaction actual single and batch cleanup keep transport faults fatal" {
+    for ([_]bool{ false, true }) |batch| for (0..2) |bad_peer| {
+        const child = std.c.fork();
+        if (child == 0) {
+            var peers: TransactionPeers = .{};
+            peers.init() catch std.process.exit(2);
+            _ = std.c.close(peers.peers[bad_peer].fd);
+            var ln: Lanes = .{ .gpa = std.heap.page_allocator, .m = &peers.m, .peer = peers.m.fan.links[0] };
+            // Transport must terminate before either undefined device buffer is used.
+            var a: Snap = .{ .id = 17, .at = 32, .base = 64, .buf = undefined, .stale = true };
+            var b: Snap = .{ .id = 18, .at = 32, .base = 128, .buf = undefined, .stale = true };
+            ln.snaps.appendSlice(ln.gpa, &.{ &a, &b }) catch std.process.exit(3);
+            if (batch) Lanes.snapDropManyFn(&ln, &.{ &a, &b }) else Lanes.snapDropFn(&ln, &a);
+            std.process.exit(5);
+        }
+        if (child < 0) return error.ForkFailed;
+        var status: c_int = 0;
+        try std.testing.expectEqual(child, std.c.waitpid(child, &status, 0));
+        try std.testing.expectEqual(@as(c_int, 75 << 8), status);
+    };
+}
+
+
+test "frame transaction serializer validation refusal cannot flush partial fields" {
+    var wire: Wire = .{};
+    defer wire.deinit(std.testing.allocator);
+    try wire.begin(std.testing.allocator, .fill_slice, 41);
+    try std.testing.expectError(error.BadSlice, putSlice(&wire, std.testing.allocator, .{}));
+    try std.testing.expectError(error.BadFrame, wire.preflight(41));
+    try wire.begin(std.testing.allocator, .done, 41);
+    try wire.preflight(41);
+}
+
+test "frame transaction teardown done stays best effort and never replays" {
+    var peers: TransactionPeers = .{};
+    try peers.init();
+    defer peers.deinit();
+    // Follower 1 already left: teardown reports it instead of exiting 75 (the done was `catch {}` before).
+    _ = std.c.shutdown(peers.peers[0].fd, std.c.SHUT.RDWR);
+    var ln: Lanes = .{ .gpa = std.testing.allocator, .m = &peers.m, .peer = peers.m.fan.links[0], .step = 41, .closing = true };
+    defer ln.wire.deinit(ln.gpa);
+    try std.testing.expectError(error.PeerDown, ln.send(.done));
+    try std.testing.expectEqual(@as(u64, 42), ln.step);
+    try std.testing.expectEqual(frame_transaction.State.partly_sent, ln.wire.transaction.state);
+    try std.testing.expect(!try peers.peers[1].readable(0));
+    // The partial step is never reused for another frame.
+    try std.testing.expectError(error.TransferFailed, ln.begin(.done));
 }

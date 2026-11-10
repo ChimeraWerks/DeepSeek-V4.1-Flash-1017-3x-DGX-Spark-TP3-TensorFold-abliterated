@@ -328,6 +328,7 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, ctx: *const cuda.Context, dir: [
 
 fn deinitFn(ptr: *anyopaque) bool {
     const st: *State = @ptrCast(@alignCast(ptr));
+    st.lanes.closing = true; // the spill tier's best-effort aborts and done may meet a departed follower
     st.lanes.wakeRdma(); // spill teardown and follower stop can do GPU work
     const cleanup = cuda.context_health.cleanupMark();
     if (st.lanes.spill) |t| t.destroy();

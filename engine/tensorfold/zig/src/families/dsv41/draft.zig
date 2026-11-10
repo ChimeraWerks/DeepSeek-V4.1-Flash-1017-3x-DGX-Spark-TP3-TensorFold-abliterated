@@ -10,6 +10,7 @@
 //! confidence head (one fp32 GEMV as torch issues it). The served L2 prefetch forks move no bytes and are left out; the
 //! RDMA gathers are NCCL all-gathers (the same bytes).
 const std = @import("std");
+const trace = @import("lanes").slice_trace;
 const cuda = @import("cuda");
 const prompt = @import("prompt.zig");
 const weights = @import("weights.zig");
@@ -28,6 +29,7 @@ const ops_mod = @import("ops.zig");
 const keyed_draft = @import("keyed_draft.zig");
 const draft_head = @import("draft_head.zig");
 const graph_vote = @import("graph_vote.zig");
+const park_graphs = @import("park_graphs.zig");
 
 const Engine = prompt.Engine;
 const Chunk = prompt.Chunk;
@@ -164,6 +166,7 @@ pub const PassGraphs = struct {
     lru: graph_cache.Lru(Key, ?Entry),
     voter: ?*graph_vote.Control = null,
     disabled: bool = false,
+    replay_only: bool = false,
     telemetry: graph_telemetry.Stats = .{},
     guard: bool = false,
 
@@ -218,6 +221,7 @@ pub const PassGraphs = struct {
         errdefer g.telemetry.fail();
         if (g.disabled) {
             g.telemetry.eagerRun();
+            if (g.replay_only) trace.mark("park_graph.draft.eager", 0, 0);
             return dr.body(e, ch, pool, N, steps, null, key.keyed);
         }
         var signature: storage_guard.Signature = .{};
@@ -241,9 +245,16 @@ pub const PassGraphs = struct {
                     return err;
                 };
                 g.telemetry.hit();
+                if (g.replay_only) trace.mark("park_graph.draft.replay", 0, 0);
                 return;
             }
             g.telemetry.eagerRun();
+            if (g.replay_only) trace.mark("park_graph.draft.eager", 0, 0);
+            return dr.body(e, ch, pool, N, steps, null, key.keyed);
+        }
+        if (park_graphs.action(g.replay_only, false, false, false) == .eager) {
+            g.telemetry.eagerRun();
+            trace.mark("park_graph.draft.eager", 0, 0);
             return dr.body(e, ch, pool, N, steps, null, key.keyed);
         }
         g.telemetry.miss();
@@ -516,7 +527,7 @@ pub const Drafter = struct {
             @memset(host, -1);
             for (markov_tokens.cached, 0..) |t, j| host[@intCast(t)] = @intCast(j);
             try prompt.upload(e, slot, host.ptr, c.vocab * 4);
-            try e.s.synchronize(); // (the host table is freed next)
+            try (blk: { var trace_wait = trace.begin("draft.init.stream_synchronize.site_520", .wait); defer trace_wait.end(); break :blk e.s.synchronize(); }); // (the host table is freed next)
         }
         try dr.mk.fill(e.t, tok, k, cache, slot);
         dr.msc = .{
@@ -674,7 +685,7 @@ pub const Drafter = struct {
         }
         if (dr.graphs != null and probe == null) try dr.graphs.?.run(dr, e, ch, pool, N, steps, noisy) else try dr.body(e, ch, pool, N, steps, probe, noisy);
         // one host read: the drafts and the confidences
-        try e.s.synchronize();
+        try (blk: { var trace_wait = trace.begin("draft.pass.stream_synchronize.site_678", .wait); defer trace_wait.end(); break :blk e.s.synchronize(); });
         var hc: [max_streams * max_block]f32 = undefined;
         try e.d.check(e.d.api.cuMemcpyDtoH_v2(&ho, dr.out, N * ts * 8), "cuMemcpyDtoH");
         try e.d.check(e.d.api.cuMemcpyDtoH_v2(&hc, dr.conf, N * steps * 4), "cuMemcpyDtoH");
