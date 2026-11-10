@@ -14,7 +14,16 @@ pub const Set = struct {
     custom_patch: bool = false,
 
     pub fn init(cx: *Cx, raw: ?Value) errors.Refused!Set {
+        return initHistory(cx, raw, &.{});
+    }
+
+    pub fn initHistory(cx: *Cx, raw: ?Value, messages: []const Value) errors.Refused!Set {
         var set: Set = .{};
+        // Reserve history before declarations choose their aliases.
+        for (messages) |m| if (m.get("tool_calls")) |calls| if (calls == .array) for (calls.array) |call| {
+            const f = call.get("function") orelse continue;
+            if (f.strField("namespace") == null) if (f.strField("name")) |n| try set.reserved.append(cx.a, n);
+        };
         const value = raw orelse return set;
         if (value == .null) return set;
         if (value != .array) return cx.refuse("tools must be a list");

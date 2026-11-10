@@ -347,7 +347,7 @@ pub fn translateWith(cx: *Cx, original: Value, history: anytype, supported: bool
     const added = try messages(cx, given.array);
     const parent = body.field("previous_response_id");
     const earlier: []Value = if (parent) |p| try history.conversation(cx, p) else &.{};
-    var set = try response_tools.Set.init(cx, body.get("tools"));
+    var set = try response_tools.Set.initHistory(cx, body.get("tools"), try std.mem.concat(a, Value, &.{ earlier, added }));
     const choice = try toolChoice(cx, body.get("tool_choice"), set.offered, &set);
     const chat = try json.newObject(a);
     for (passed) |k| if (body.get(k)) |v| try chat.put(a, k, v);
@@ -541,5 +541,35 @@ test "input_file parts become file parts from inline data; a remote file_url or 
         var bad: Cx = .{ .a = cx.a };
         try std.testing.expectError(error.Refused, messages(&bad, (try json.parse(cx.a, raw)).ok.array));
         try std.testing.expect(std.mem.indexOf(u8, bad.message, want) != null);
+    }
+}
+
+test "recipe 41 current namespace avoids historical bare names in both orders" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var cx: Cx = .{ .a = a };
+    const NoHistory = struct {
+        pub fn conversation(_: @This(), _: *Cx, _: Value) errors.Refused![]Value {
+            return &.{};
+        }
+    };
+    for ([_]bool{ false, true }) |declared| {
+        for ([_]bool{ false, true }) |reversed| {
+            const namespaced = "{\"type\":\"function_call\",\"call_id\":\"namespaced\",\"namespace\":\"ns\",\"name\":\"run\",\"arguments\":\"{}\"}";
+            const bare = "{\"type\":\"function_call\",\"call_id\":\"bare\",\"name\":\"ns::run\",\"arguments\":\"{}\"}";
+            const raw = try std.fmt.allocPrint(a, "{{\"model\":\"test\",\"tools\":{s},\"input\":[{s},{s},{{\"type\":\"function_call_output\",\"call_id\":\"namespaced\",\"output\":\"one\"}},{{\"type\":\"function_call_output\",\"call_id\":\"bare\",\"output\":\"two\"}}]}}", .{
+                if (declared) "[{\"type\":\"namespace\",\"name\":\"ns\",\"tools\":[{\"type\":\"function\",\"name\":\"run\"}]}]" else "[]",
+                if (reversed) bare else namespaced,
+                if (reversed) namespaced else bare,
+            });
+            const request = try translate(&cx, (try json.parse(a, raw)).ok, NoHistory{});
+            const calls = request.chat.get("messages").?.array[0].get("tool_calls").?.array;
+            const ns_name = calls[@intFromBool(reversed)].get("function").?.get("name").?.string;
+            const bare_name = calls[@intFromBool(!reversed)].get("function").?.get("name").?.string;
+            try std.testing.expectEqualStrings("ns::run", bare_name);
+            try std.testing.expect(!std.mem.eql(u8, ns_name, bare_name));
+            if (declared) try std.testing.expectEqualStrings(ns_name, request.chat.get("tools").?.array[0].get("function").?.get("name").?.string);
+        }
     }
 }
