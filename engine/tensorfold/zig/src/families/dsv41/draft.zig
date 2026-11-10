@@ -29,6 +29,7 @@ const ops_mod = @import("ops.zig");
 const keyed_draft = @import("keyed_draft.zig");
 const draft_head = @import("draft_head.zig");
 const graph_vote = @import("graph_vote.zig");
+const park_graphs = @import("park_graphs.zig");
 
 const Engine = prompt.Engine;
 const Chunk = prompt.Chunk;
@@ -165,6 +166,7 @@ pub const PassGraphs = struct {
     lru: graph_cache.Lru(Key, ?Entry),
     voter: ?*graph_vote.Control = null,
     disabled: bool = false,
+    replay_only: bool = false,
     telemetry: graph_telemetry.Stats = .{},
     guard: bool = false,
 
@@ -219,6 +221,7 @@ pub const PassGraphs = struct {
         errdefer g.telemetry.fail();
         if (g.disabled) {
             g.telemetry.eagerRun();
+            if (g.replay_only) trace.mark("park_graph.draft.eager", 0, 0);
             return dr.body(e, ch, pool, N, steps, null, key.keyed);
         }
         var signature: storage_guard.Signature = .{};
@@ -242,9 +245,16 @@ pub const PassGraphs = struct {
                     return err;
                 };
                 g.telemetry.hit();
+                if (g.replay_only) trace.mark("park_graph.draft.replay", 0, 0);
                 return;
             }
             g.telemetry.eagerRun();
+            if (g.replay_only) trace.mark("park_graph.draft.eager", 0, 0);
+            return dr.body(e, ch, pool, N, steps, null, key.keyed);
+        }
+        if (park_graphs.action(g.replay_only, false, false, false) == .eager) {
+            g.telemetry.eagerRun();
+            trace.mark("park_graph.draft.eager", 0, 0);
             return dr.body(e, ch, pool, N, steps, null, key.keyed);
         }
         g.telemetry.miss();

@@ -30,6 +30,8 @@ const ops_mod = @import("ops.zig");
 const shard = @import("shard.zig");
 const shard_ops = @import("shard_ops.zig");
 const shard_ring = @import("shard_ring.zig");
+const trace = @import("lanes").slice_trace;
+const park_graphs = @import("park_graphs.zig");
 const graph_vote = @import("graph_vote.zig");
 const greedy_head = @import("decode_greedy_head.zig");
 const graph_cache = @import("graph_cache.zig");
@@ -1443,6 +1445,7 @@ pub const Graphs = struct {
     lru: graph_cache.Lru(Key, Entry),
     voter: ?*graph_vote.Control = null,
     disabled: bool = false,
+    replay_only: bool = false,
     telemetry: graph_telemetry.Stats = .{},
     guard: bool = false,
     greedy_captures: usize = 0,
@@ -1511,6 +1514,7 @@ pub const Graphs = struct {
         errdefer g.telemetry.fail();
         if (g.disabled) {
             g.telemetry.eagerRun();
+            if (g.replay_only) trace.mark("park_graph.verify.eager", 0, 0);
             return stretch(e, rd, ch, cs, rings, cy, li, end, null);
         }
         var signature: storage_guard.Signature = .{};
@@ -1522,6 +1526,7 @@ pub const Graphs = struct {
         if (g.lru.get(key)) |en| switch (en.*) {
             .tombstone => {
                 g.telemetry.eagerRun();
+                if (g.replay_only) trace.mark("park_graph.verify.eager", 0, 0);
                 if (!signature_ok) return error.GraphVoteFatal;
                 return stretch(e, rd, ch, cs, rings, cy, li, end, null);
             },
@@ -1540,6 +1545,7 @@ pub const Graphs = struct {
                     return err;
                 };
                 g.telemetry.hit();
+                if (g.replay_only) trace.mark("park_graph.verify.replay", 0, 0);
                 if (key.greedy) {
                     g.greedy_replays += 1;
                     if (std.math.isPowerOfTwo(g.greedy_replays)) std.log.info("greedy_head_graph replay rank={d} count={d} rows={d}", .{ e.comm.rank, g.greedy_replays, key.rows });
@@ -1555,6 +1561,11 @@ pub const Graphs = struct {
                 return;
             },
         };
+        if (park_graphs.action(g.replay_only, false, false, false) == .eager) {
+            g.telemetry.eagerRun();
+            trace.mark("park_graph.verify.eager", 0, 0);
+            return stretch(e, rd, ch, cs, rings, cy, li, end, null);
+        }
         g.telemetry.miss();
         if (g.voter) |v| return g.runVoted(v, key, signature.slice(), signature_ok, e, rd, ch, cs, rings, cy, li, end);
         if (!signature_ok) return error.GraphStorageChanged;
@@ -1732,7 +1743,10 @@ pub fn forward(e: *const Engine, rd: *Round, ch: *const Chunk, cs: *const Caches
         // graph voting or capture until the full-head oracle passes on this rank.
         if (if (rd.greedy_oracle or rd.sample_oracle) null else graphs) |g| {
             try g.run(.{ .rows = @intCast(R), .bucket = rd.bucket, .stretch = sn, .mode = @backingInt(rd.smode), .greedy = rd.greedy_out != 0, .sample_count = @intCast(rd.sample_count) }, e, rd, ch, cs, rings, &cy, li, end);
-        } else try stretch(e, rd, ch, cs, rings, &cy, li, end, probe);
+        } else {
+            if (graphs) |g| if (g.replay_only) trace.mark("park_graph.verify.oracle", sn, 0);
+            try stretch(e, rd, ch, cs, rings, &cy, li, end, probe);
+        }
         try rd.clock(e, Round.clock_tail);
         if (!ahead) try engramAhead(e, eh orelse return error.NoEngramTables, seq, rows, &ah);
         ahead = true;

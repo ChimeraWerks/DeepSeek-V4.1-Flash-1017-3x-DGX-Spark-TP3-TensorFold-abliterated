@@ -4966,3 +4966,100 @@ test "prefill slice engram keep cancellation drop reaches both real follower lin
         }
     }
 }
+
+
+test "prefill slice park graphs frame driven TP3 decisions and off bytes" {
+    const pg = @import("park_graphs.zig");
+    const Cache = @import("graph_cache.zig").Lru(round.Graphs.Key, bool);
+    const a = std.testing.allocator;
+    const Fake = struct {
+        cache: Cache = .init(2),
+        live: bool = false,
+        eager: usize = 0,
+        replay: usize = 0,
+        capture: usize = 0,
+        fn run(f: *@This(), mode: pg.Mode, key: round.Graphs.Key) pg.Action {
+            const entry = if (mode == .eager) null else f.cache.get(key);
+            const act = if (mode == .eager) pg.Action.eager else pg.action(mode == .replay, false, entry != null, if (entry) |x| x.* else false);
+            switch (act) { .eager => f.eager += 1, .replay => f.replay += 1, .capture => f.capture += 1 }
+            return act;
+        }
+    };
+    var ranks: [3]Fake = .{ .{}, .{}, .{} };
+    defer for (&ranks) |*f| f.cache.deinit(a);
+    // A committed graph and a committed tombstone precede this chunk on all ranks.
+    const warm: round.Graphs.Key = .{ .rows = 1, .bucket = round.bucketFor(11, 65536), .stretch = 0 };
+    var tombstone = warm; tombstone.rows = 2;
+    for (&ranks) |*f| {
+        _ = try f.cache.put(a, warm, true);
+        _ = try f.cache.put(a, tombstone, false);
+    }
+    for ([_]bool{ false, true }) |on| {
+        var slice_wire: Wire = .{}; defer slice_wire.deinit(a);
+        try slice_wire.begin(a, .fill_slice, 6);
+        try putSlice(&slice_wire, a, .{ .lo = 0, .hi = 1, .args = .{ .start = 0, .n = 8192, .replay = 0 } });
+        for (&ranks) |*f| {
+            var reader: Reader = .{ .b = slice_wire.buf.items };
+            try std.testing.expectEqual(Kind.fill_slice, try decodeOuterKind(try reader.int(u8)));
+            _ = try reader.int(u64);
+            const sf = try getSlice(&reader);
+            f.live = !sf.abort and sf.hi < 40;
+            try std.testing.expect(f.live);
+        }
+        var original: Wire = .{}; defer original.deinit(a);
+        var wire: Wire = .{}; defer wire.deinit(a);
+        try original.begin(a, .verify, 7);
+        try original.int(a, u32, 1);
+        try writeWin(&original, a, .{ .slot = 1, .base = 0, .end = 65536, .start = 10, .absorb = false, .ids = &.{3} }, false);
+        try wire.begin(a, .verify, 7);
+        try wire.int(a, u32, 1);
+        try writeWin(&wire, a, .{ .slot = 1, .base = 0, .end = 65536, .start = 10, .absorb = false, .ids = &.{3} }, false);
+        try std.testing.expectEqualSlices(u8, original.buf.items, wire.buf.items);
+        const base: u64 = 0x8f000123456789ab;
+        if (!on) try std.testing.expectEqual(base, base | pg.agreement(on));
+        var first: ?pg.Action = null;
+        for (&ranks) |*f| {
+            var reader: Reader = .{ .b = wire.buf.items };
+            try std.testing.expectEqual(Kind.verify, try decodeOuterKind(try reader.int(u8)));
+            _ = try reader.int(u64); _ = try reader.int(u32);
+            var ids: std.ArrayList(i32) = .empty; defer ids.deinit(a);
+            const win = try readWin(&reader, a, &ids, false);
+            const key: round.Graphs.Key = .{ .rows = @intCast(win.ids.len), .bucket = round.bucketFor(win.start + win.ids.len, 65536), .stretch = 0 };
+            // No chunk state enters the actual key type or wire key.
+            try std.testing.expectEqualDeep(warm, key);
+            try std.testing.expectEqualDeep(warm.wire(), key.wire());
+            const act = f.run(pg.mode(on, f.live, true), key);
+            if (first) |want| try std.testing.expectEqual(want, act) else first = act;
+            try std.testing.expectEqual(if (on) pg.Action.replay else pg.Action.eager, act);
+            var missing = key; missing.rows = 3;
+            try std.testing.expectEqual(pg.Action.eager, f.run(pg.mode(on, f.live, true), missing));
+            try std.testing.expectEqual(pg.Action.eager, f.run(pg.mode(on, f.live, true), tombstone));
+            try std.testing.expectEqual(@as(usize, 2), f.cache.count());
+            try std.testing.expectEqual(@as(usize, 0), f.capture);
+            // Unvoted multi-rank history stays eager even on a warm key.
+            try std.testing.expectEqual(pg.Action.eager, f.run(pg.mode(on, f.live, false), key));
+        }
+        for ([_]Kind{ .pass, .pass_keyed }) |kind| {
+            var pass: Wire = .{}; defer pass.deinit(a);
+            try pass.begin(a, kind, 8);
+            try writePass(&pass, a, &.{3}, &.{11}, &.{1}, 5, if (kind == .pass_keyed) .{ .seeds = &.{7}, .temps = &.{0.8}, .top_ks = &.{20} } else null);
+            var wanted: ?draft.PassGraphs.Key = null;
+            for (0..3) |_| {
+                var reader: Reader = .{ .b = pass.buf.items };
+                const got_kind = try decodeOuterKind(try reader.int(u8));
+                _ = try reader.int(u64);
+                const got = try readPass(&reader, got_kind == .pass_keyed, true);
+                const key: draft.PassGraphs.Key = .{ .streams = @intCast(got.n), .steps = @intCast(got.steps), .keyed = got_kind == .pass_keyed };
+                if (wanted) |want| try std.testing.expectEqualDeep(want, key) else wanted = key;
+                try std.testing.expectEqual(reader.b.len, reader.at);
+            }
+        }
+    }
+    for (&ranks) |*f| {
+        try std.testing.expectEqual(@as(usize, 0), f.capture);
+        try std.testing.expectEqual(ranks[0].cache.tick, f.cache.tick);
+    }
+    // Every existing frame remains admitted/refused exactly as before.
+    for (std.enums.values(Kind)) |kind| try std.testing.expectEqual(
+        kind == .verify or kind == .pass or kind == .pass_keyed or kind == .fill_slice, openChunkAllows(kind));
+}

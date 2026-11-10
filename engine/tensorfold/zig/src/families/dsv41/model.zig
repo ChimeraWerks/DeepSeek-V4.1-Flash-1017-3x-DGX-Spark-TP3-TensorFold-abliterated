@@ -17,6 +17,7 @@ const prompt2d = @import("prompt2d.zig");
 const tri_attn = @import("tri_attn.zig");
 const round = @import("round.zig");
 const sampling = @import("sampling.zig");
+const park_graphs = @import("park_graphs.zig");
 const graph_vote = @import("graph_vote.zig");
 const greedy_head = @import("decode_greedy_head.zig");
 const draft = @import("draft.zig");
@@ -232,6 +233,7 @@ pub const Model = struct {
     eh: ?prompt.EngramHost = null,
     keep_engram: bool = false, // TF_DS_ENGRAM_KEEP, private decode hashes also at outer yields
     retained: engram_keep.State = .{},
+    park_graphs: bool = false, // TF_DS_PARK_GRAPHS, coherent warm hits only
     park_nojoin: bool = false, // TF_DS_PARK_NOJOIN, agreed without changing checkpoint identity
     park_eh: ?prompt.EngramHost = null,
     park_pool: ?*engram_io.Pool = null,
@@ -348,6 +350,7 @@ pub const Model = struct {
         m.eh = null;
         m.keep_engram = prefill128.enabled("TF_DS_ENGRAM_KEEP");
         m.retained = .{};
+        m.park_graphs = prefill128.enabled("TF_DS_PARK_GRAPHS");
         m.park_nojoin = prefill128.enabled("TF_DS_PARK_NOJOIN");
         m.park_eh = null;
         m.park_pool = null;
@@ -685,7 +688,7 @@ pub const Model = struct {
             // the prompt's collectives pair up only when every rank runs the same kind
             @import("cache_batch.zig").Flags.fromEnv().agreement(@as(u64, @intFromBool(prompt.owned_on)) | @as(u64, @intFromBool(directGather())) << 1 | (m.prefill.bits() << 2) |
                 (if (@import("graph_telemetry.zig").enabled()) @import("graph_telemetry.zig").agreement_bit else 0) | keyed_draft.settingBit(keyed_draft.enabled()) | greedy_head.agreement(m.decode_greedy_head) | (if (m.decode_sample_head) greedy_head.sample_agreement_bit else @as(u64, 0)) |
-                engram_keep.agreement(m.keep_engram) | parkAgreement(m.park_nojoin) | @import("draft_head.zig").settingBit(@import("draft_head.zig").enabled()) | (@as(u64, @intFromBool(prompt.bf16_wire_on)) << 52) | (@as(u64, @intFromBool(prompt.owned_router_on)) << 53) | @import("round_timing.zig").agreement(@import("round_timing.zig").enabled())),
+                engram_keep.agreement(m.keep_engram) | park_graphs.agreement(m.park_graphs) | parkAgreement(m.park_nojoin) | @import("draft_head.zig").settingBit(@import("draft_head.zig").enabled()) | (@as(u64, @intFromBool(prompt.bf16_wire_on)) << 52) | (@as(u64, @intFromBool(prompt.owned_router_on)) << 53) | @import("round_timing.zig").agreement(@import("round_timing.zig").enabled())),
             draft_words[0], draft_words[1],
             @import("engine_api").Spill.roomWaitMs(if (std.c.getenv("TF_SPILL_ROOM_WAIT_MS")) |v| std.mem.span(v) else null),
         };
@@ -711,6 +714,7 @@ pub const Model = struct {
             try @import("round_timing.zig").check(all[0][6], r[6]);
             try greedy_head.agree(r[6], all[0][6]);
             try keyed_draft.checkAgreement(r[6], all[0][6]);
+            try park_graphs.check(all[0][6], r[6]);
             try engram_keep.check(all[0][6], r[6]);
             try prefillAgreement(all[0][6], r[6]);
             try draft_config.check(all[0][7..9].*, r[7..9].*);
@@ -1791,6 +1795,13 @@ pub const Model = struct {
         if (!m.rd.sample_fallback) m.greedy_output.complete(rows.ids.len);
     }
 
+    pub fn parkGraphMode(m: *const Model) park_graphs.Mode {
+        // Spill may disable voting. Such caches have no cross-rank hit guarantee.
+        if (!m.rs.live) return .normal;
+        if (!m.park_graphs) return .eager;
+        return park_graphs.mode(true, true, m.world == 1 or m.gvote != null);
+    }
+
     fn verifyRun(m: *Model, rows: round.Rows, absorb: []const bool) !void {
         m.joinParkAhead();
         const eh = try m.roundEngram();
@@ -1798,7 +1809,12 @@ pub const Model = struct {
         const e = &m.eng;
         if (m.prof) try (blk: { var ts = trace.begin("model.verifyRun.synchronize.site_1747", .wait); defer ts.end(); break :blk m.stream.synchronize(); }); // (the GPU idle, so the issue time shows whether the host keeps it fed)
         const t0 = m.now();
-        try round.forward(e, &m.rd, &m.ch, &m.caches, m.rings, eh, &.{}, rows, m.request_cap, null, if (m.rs.live) null else if (m.graphs) |*g| g else null);
+        const mode = if (m.rs.live) m.parkGraphMode() else park_graphs.Mode.normal;
+        const graphs = if (mode == .eager) null else if (m.graphs) |*g| g else null;
+        if (graphs) |g| g.replay_only = mode == .replay;
+        defer if (graphs) |g| { g.replay_only = false; };
+        if (m.rs.live and m.park_graphs and graphs == null) trace.mark("park_graph.verify.eager", 0, 0);
+        try round.forward(e, &m.rd, &m.ch, &m.caches, m.rings, eh, &.{}, rows, m.request_cap, null, graphs);
         if (m.prof) {
             m.t_enqueue = m.now() - t0;
             try (blk: { var ts = trace.begin("model.verifyRun.synchronize.site_1752", .wait); defer ts.end(); break :blk m.stream.synchronize(); });
@@ -1957,8 +1973,14 @@ pub const Model = struct {
         const dr = &m.dr.?;
         const pool = &m.dpool.?;
         const graphs = dr.graphs;
-        if (m.rs.live) dr.graphs = null;
-        defer dr.graphs = graphs;
+        const mode = if (m.rs.live) m.parkGraphMode() else park_graphs.Mode.normal;
+        if (mode == .eager) dr.graphs = null;
+        if (dr.graphs) |g| g.replay_only = mode == .replay;
+        defer {
+            if (dr.graphs) |g| g.replay_only = false;
+            dr.graphs = graphs;
+        }
+        if (m.rs.live and m.park_graphs and dr.graphs == null) trace.mark("park_graph.draft.eager", 0, 0);
         for (q0, slots) |q, s| pool.absorbed[@intCast(s)] = @intCast(q);
         try dr.pass(&m.eng, &m.ch, pool, tokens, q0, slots, steps, null, keyed);
     }
@@ -2432,4 +2454,23 @@ test "prefill slice engram keep trace drops no rows at a kept resume and leaves 
         try std.testing.expectEqual(on, f.m.ahead == null and eh.ahead_start == 4 and eh.ahead_n == 32 and eh.ahead_ready[0]);
         t.finish();
     }
+}
+
+
+test "prefill slice park graphs model mode preserves off and unvoted fences" {
+    var m: Model = undefined;
+    m.rs.live = false;
+    try std.testing.expectEqual(park_graphs.Mode.normal, m.parkGraphMode());
+    m.rs.live = true;
+    m.park_graphs = false;
+    try std.testing.expectEqual(park_graphs.Mode.eager, m.parkGraphMode());
+    m.park_graphs = true;
+    m.world = 3;
+    m.gvote = null;
+    try std.testing.expectEqual(park_graphs.Mode.eager, m.parkGraphMode());
+    m.gvote = @as(graph_vote.Control, undefined); // Presence only, mode must never use CUDA or vote.
+    try std.testing.expectEqual(park_graphs.Mode.replay, m.parkGraphMode());
+    m.gvote = null;
+    m.world = 1;
+    try std.testing.expectEqual(park_graphs.Mode.replay, m.parkGraphMode());
 }
