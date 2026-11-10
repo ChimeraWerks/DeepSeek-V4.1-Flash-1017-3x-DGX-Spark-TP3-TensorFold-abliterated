@@ -11,7 +11,7 @@ const Cx = errors.Cx;
 const Allocator = std.mem.Allocator;
 
 /// Fields a chat completion reads as they are: OpenAI's and this server's own.
-const passed = [_][]const u8{ "model", "temperature", "top_p", "top_k", "min_p", "seed", "stream", "parallel_tool_calls", "stop", "draft", "thinking_budget", "ignore_eos", "priority", "return_token_ids", "chat_template_kwargs" };
+const passed = [_][]const u8{ "model", "temperature", "top_p", "top_k", "min_p", "presence_penalty", "frequency_penalty", "repetition_penalty", "repetition_penalty_window", "penalty_include_prompt", "seed", "stream", "parallel_tool_calls", "stop", "draft", "thinking_budget", "ignore_eos", "priority", "return_token_ids", "chat_template_kwargs" };
 const refused = [_][2][]const u8{
     .{ "background", "background responses are not supported: send the request and wait for it" },
     .{ "conversation", "conversations are not supported: send previous_response_id or the items" },

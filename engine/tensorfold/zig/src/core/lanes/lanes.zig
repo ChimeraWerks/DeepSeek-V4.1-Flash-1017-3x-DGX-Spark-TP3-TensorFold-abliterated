@@ -28,6 +28,7 @@ pub const Config = config.Config;
 pub const Model = config.Model;
 pub const Stream = stream.Stream;
 pub const Sampling = sampling.Sampling;
+pub const penalties = @import("penalties.zig");
 pub const SuffixLookup = proposer.SuffixLookup;
 
 test {

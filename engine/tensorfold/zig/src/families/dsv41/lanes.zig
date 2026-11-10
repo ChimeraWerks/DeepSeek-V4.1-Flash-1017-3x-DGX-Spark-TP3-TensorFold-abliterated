@@ -68,7 +68,9 @@ pub var logits_sha = false;
 /// shard_xfer/shard_finish, the digest checks). Both on together share one rank_wire Leader (Lanes.rw, rank 0) and
 /// one Follower a follower (PairFollower): one Tracker sees every frame of the pair. Kind 11 is the
 /// coordinated RDMA idle boundary (not the old, untracked spill notes); all ranks need this version.
-pub const Kind = enum(u8) { fill_begin = 1, fill_chunk = 2, verify = 3, pass = 4, snap_save = 5, snap_restore = 6, snap_drop = 7, fill_images = 8, done = 9, rank_wire = 10, idle_move = 12, fill_resume = 13, graph_vote_agree = 15, fill_slice = 18, rdma_idle = 11, snap_drop_many = cache_batch.kind, pass_keyed = 17 };
+const penalties = @import("logit_penalties.zig");
+
+pub const Kind = enum(u8) { verify_penalties = penalties.verify_kind, prompt_penalties = penalties.prompt_kind, fill_begin = 1, fill_chunk = 2, verify = 3, pass = 4, snap_save = 5, snap_restore = 6, snap_drop = 7, fill_images = 8, done = 9, rank_wire = 10, idle_move = 12, fill_resume = 13, graph_vote_agree = 15, fill_slice = 18, rdma_idle = 11, snap_drop_many = cache_batch.kind, pass_keyed = 17 };
 
 // Shared with the real follower loop; reserved/unknown outer kinds fail closed.
 fn decodeOuterKind(raw: u8) !Kind {
@@ -90,6 +92,8 @@ fn decodeOuterKind(raw: u8) !Kind {
             cache_batch.kind => .snap_drop_many,
             17 => .pass_keyed,
             18 => .fill_slice,
+            penalties.verify_kind => .verify_penalties,
+            penalties.prompt_kind => .prompt_penalties,
             else => return error.BadFrame,
         };
 }
@@ -98,14 +102,14 @@ fn decodeOuterKind(raw: u8) !Kind {
 /// between slices (each round's verify and draft pass, plain or keyed). Any other outer operation would run inside the chunk.
 fn openChunkAllows(kind: Kind) bool {
     return switch (kind) {
-        .fill_slice, .verify, .pass, .pass_keyed => true,
+        .fill_slice, .verify, .verify_penalties, .pass, .pass_keyed => true,
         else => false,
     };
 }
 
 test "keyed draft pass frame is admitted while a prefill slice chunk is open" {
-    for ([_]Kind{ .fill_slice, .verify, .pass, .pass_keyed }) |k| try std.testing.expect(openChunkAllows(k));
-    for ([_]Kind{ .fill_begin, .fill_chunk, .snap_save, .snap_restore, .snap_drop, .fill_images, .done, .rank_wire, .rdma_idle, .idle_move, .fill_resume, .graph_vote_agree, .snap_drop_many }) |k| try std.testing.expect(!openChunkAllows(k));
+    for ([_]Kind{ .fill_slice, .verify, .verify_penalties, .pass, .pass_keyed }) |k| try std.testing.expect(openChunkAllows(k));
+    for ([_]Kind{ .fill_begin, .fill_chunk, .snap_save, .snap_restore, .snap_drop, .fill_images, .done, .rank_wire, .rdma_idle, .idle_move, .fill_resume, .graph_vote_agree, .snap_drop_many, .prompt_penalties }) |k| try std.testing.expect(!openChunkAllows(k));
 }
 
 test "outer follower decoder accepts fill_resume 13 and rejects reserved kinds" {
@@ -121,10 +125,10 @@ test "outer follower decoder covers every enum byte and open chunk policy" {
         if (std.enums.fromInt(Kind, byte)) |kind| {
             try std.testing.expectEqual(kind, try decodeOuterKind(byte));
             const allowed = switch (kind) {
-                .verify, .pass, .pass_keyed, .fill_slice => true,
+                .verify, .verify_penalties, .pass, .pass_keyed, .fill_slice => true,
                 .fill_begin, .fill_chunk, .snap_save, .snap_restore, .snap_drop,
                 .fill_images, .done, .rank_wire, .idle_move, .fill_resume,
-                .graph_vote_agree, .rdma_idle, .snap_drop_many => false,
+                .graph_vote_agree, .rdma_idle, .snap_drop_many, .prompt_penalties => false,
             };
             try std.testing.expectEqual(allowed, openChunkAllows(kind));
             var wire: Wire = .{};
@@ -1237,6 +1241,8 @@ pub const Lanes = struct {
         if (self.fills.contains(s)) return error.PrefillAlreadyStarted;
         try self.fills.ensureUnusedCapacity(gpa, 1);
         const t0 = m.now();
+        const ps = penalties.get(s.sampling);
+        try penalties.admit(ps,m.penalty_on,m.world,m.two != null,m.decode_greedy_head or m.decode_sample_head,s.images.len != 0);
         const ids = s.prompt();
         const len = ids.len;
         if (len == 0) return error.EmptyPrompt;
@@ -1505,6 +1511,21 @@ pub const Lanes = struct {
         if (s.images.len == 0) if (s.reuse.hook) |k| k.at(k.ptr, s, @intCast(len));
         // a state read back from disk: the drafter's rings were rebuilt by the replay before the first draft
         try f.source_facts.finish(m, self.spill != null and m.drafting(), slot, len);
+        m.penalty_prompt = 0;
+        const ps = penalties.get(s.sampling);
+        if (!s.prefill_only and ps.active()) {
+            const request: penalties.Request = .{ .settings = ps, .prompt_len = s.prompt_len };
+            var custody: greedy_head.Custody = .{};
+            errdefer custody.failed(m) catch unreachable;
+            if (try self.begin(.prompt_penalties)) {
+                try self.wire.int(gpa,u32,@intCast(slot));
+                try penalties.write(&self.wire,gpa,request);
+                custody.active = true;
+                try self.flush();
+            }
+            try m.penalizePrompt(self.seqs[slot].items,request);
+            custody.active = false;
+        }
         var cand_count: usize = 0;
         if (m.cand != 0 and s.grammar == null and !s.prefill_only and !logits_sha and self.logit_dump_dir == null) {
             if (s.sampling) |sm| {
@@ -1600,22 +1621,32 @@ pub const Lanes = struct {
         try self.roundWins(windows, &ids, &wins);
         const words = maskWords(m.cfg.tokenVocab()); // TP3 pads the physical head to 129408, grammar sees 129280
         const masked = for (windows) |w| { if (w.masks.len > 0) break true; } else false;
+        const penalized = for (windows) |w| { if (penalties.get(w.stream.sampling).active()) break true; } else false;
+        var penalty_requests: [max_streams]penalties.Request = undefined;
+        if (penalized) {
+            if (!m.penalty_on or m.world != 3 or m.two != null) return error.PenaltiesUnavailable;
+            if (m.decode_greedy_head or m.decode_sample_head) return error.PenaltiesReducedHead;
+            for (windows,0..) |w,k| penalty_requests[k] = .{ .settings = penalties.get(w.stream.sampling), .prompt_len = w.stream.prompt_len };
+        }
         const use_head = greedy_head.eligible(m.decode_greedy_head, m.two != null, windows);
         const sample_head_count = greedy_head.sampleCount(m.decode_sample_head and m.cand != 0, m.two != null, m.vocab, windows);
         var head_custody: greedy_head.Custody = .{};
         errdefer head_custody.failed(m) catch unreachable;
         const t0 = m.now();
-        if (try self.begin(.verify)) {
+        if (try self.begin(if (penalized) .verify_penalties else .verify)) {
             try self.wire.int(gpa, u32, @intCast(windows.len));
             try writeGreedyHeadMode(&self.wire, gpa, m.decode_greedy_head, use_head);
             try writeSampleHeadCount(&self.wire, gpa, m.decode_sample_head, sample_head_count);
             for (wins[0..windows.len]) |w| try writeWin(&self.wire, gpa, w, self.kv != null);
-            head_custody.active = use_head or sample_head_count != 0; // BEFORE even a partial peer send
+            head_custody.active = penalized or use_head or sample_head_count != 0; // BEFORE even a partial peer send
             try self.flush();
         }
         const t1 = m.now();
         if (self.spill) |t| for (wins[0..windows.len]) |w| t.bump(w.base + w.start, w.base + w.start + w.ids.len);
         const rows = try self.built.build(gpa, &self.seqs, wins[0..windows.len]);
+        m.rd.penalty = null;
+        defer m.rd.penalty = null;
+        if (penalized) try m.preparePenalties(rows,penalty_requests[0..windows.len]);
         // Bounded two-row lookahead: all stream anchors before second rows.
         // Full-vocabulary unconstrained draws only; other modes use baseline.
         var requests: [penalty_pool.max_jobs]penalty_pool.Request = undefined;
@@ -1648,7 +1679,7 @@ pub const Lanes = struct {
             if (active_pool) |p| p.finish(); // also on GPU/transport/sampling failure
         }
         // Registered after worker cleanup: pair-end before any unwind/drain.
-        head_custody.active = use_head or sample_head_count != 0;
+        head_custody.active = penalized or use_head or sample_head_count != 0;
         errdefer head_custody.failed(m) catch unreachable;
         if (sample_head_count != 0)
             try greedy_head.verifySample(m, rows, self.built.absorb[0..windows.len], sample_head_count)
@@ -2969,6 +3000,7 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
     errdefer if (relocation_custody) (Model.SpillDev{ .m = m }).failed(error.TransferFailed);
 
     var fill_base: usize = 0;
+    var slot_penalties: [max_streams]penalties.Request = @splat(.{});
     // TF_DS_KV_SHARD: this rank's copy of the parts' planner, fed rank 0's ops; with the spill tier its stage, stale
     // and move ops guard this rank's own writes and its transfers bump their destinations (kv_lanes.SpillHooks)
     const kvf: ?*kv_lanes.Follower = if (m.kvs != null) try kv_lanes.Follower.init(gpa, m.rank, kvConfig(m), try kv_lanes.Settings.fromEnv(getenv), modelDev(m)) else null;
@@ -3033,7 +3065,7 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
         if (m.rs.live and !openChunkAllows(kind)) return error.OpenPrefillChunk;
         if (!m.rs.live and move_state.pending == null and kind != .idle_move and kind != .fill_slice) if (spill) |sd| sd.service(std.time.ns_per_ms); // relocation does not service unrelated work
         // a chunk's read-ahead of the next is done before anything but that chunk (a prompt's ids may change)
-        if (kind != .fill_chunk and kind != .fill_slice and kind != .snap_save and kind != .snap_restore and kind != .fill_images and kind != .rank_wire) {
+        if (kind != .fill_chunk and kind != .fill_slice and kind != .snap_save and kind != .snap_restore and kind != .fill_images and kind != .prompt_penalties and kind != .rank_wire) {
             if (kind != .idle_move) m.joinParkAhead();
             if (!m.rs.live) m.fill_seq = &.{};
         }
@@ -3093,6 +3125,7 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
                 slot = try r.int(u32);
                 const base = try r.int(u64);
                 if (slot >= max_streams) return error.BadSlot;
+                slot_penalties[slot] = .{};
                 img_rows.clearRetainingCapacity();
                 try r.ids(gpa, &seqs[slot]);
                 fill_base = @intCast(base);
@@ -3135,11 +3168,24 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
                 // an error that parts the ranks (an Engram read this rank could not make) ends the follower; rank 0 ends the pair
                 if (m.fillChunk(seqs[slot].items[0 .. start + n], start, n, replay)) |_| {} else |err| try roundRefused(err);
             },
-            .verify => {
+            .prompt_penalties => {
+                var custody: greedy_head.Custody = .{ .active = true };
+                errdefer custody.failed(m) catch unreachable;
+                if (!m.penalty_on) return error.PenaltiesUnavailable;
+                const ps_slot = try r.int(u32);
+                const request = try penalties.read(&r);
+                if (ps_slot >= max_streams or r.at != r.b.len) return error.BadFrame;
+                try m.penalizePrompt(seqs[ps_slot].items,request);
+                slot_penalties[ps_slot] = request;
+                custody.active = false;
+            },
+            .verify, .verify_penalties => {
+                const penalized = kind == .verify_penalties;
                 // New-format parse failures can strand a leader already in a
                 // collective. This inner errdefer precedes every outer teardown.
-                var head_custody: greedy_head.Custody = .{ .active = m.decode_greedy_head or m.decode_sample_head };
+                var head_custody: greedy_head.Custody = .{ .active = penalized or m.decode_greedy_head or m.decode_sample_head };
                 errdefer head_custody.failed(m) catch unreachable;
+                if (penalized and (!m.penalty_on or m.decode_greedy_head or m.decode_sample_head)) return error.PenaltiesUnavailable;
                 const nw = try r.int(u32);
                 if (nw == 0 or nw > max_streams) return error.BadFrame;
                 const use_head = try readGreedyHeadMode(&r, m.decode_greedy_head, m.two != null);
@@ -3150,16 +3196,29 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
                     // TF_DS_KV_SHARD: a round naming a reused extent (its part or generation not the planner's) fails closed
                     if (kvf) |kf| try kf.checkWin(wins[k].slot, wins[k].base, wins[k].end, @intCast(wins[k].part), wins[k].gen);
                 }
-                if ((m.decode_greedy_head or m.decode_sample_head) and r.at != r.b.len) return error.BadFrame;
+                var penalty_requests: [max_streams]penalties.Request = undefined;
+                var any_penalties = false;
+                if (m.penalty_on) {
+                    for (wins[0..nw],penalty_requests[0..nw]) |win,*p| {
+                        if (win.slot >= max_streams) return error.BadSlot;
+                        p.* = slot_penalties[win.slot];
+                        any_penalties = any_penalties or p.settings.active();
+                    }
+                    if (penalized != any_penalties) return error.BadFrame;
+                }
+                if ((penalized or m.decode_greedy_head or m.decode_sample_head) and r.at != r.b.len) return error.BadFrame;
                 const rows = try built.build(gpa, &seqs, wins[0..nw]);
+                m.rd.penalty = null;
+                defer m.rd.penalty = null;
+                if (penalized) try m.preparePenalties(rows,penalty_requests[0..nw]);
                 if (spill) |sd| for (wins[0..nw]) |w| sd.bump(w.base + w.start, w.base + w.start + w.ids.len);
-                head_custody.active = use_head or sample_head_count != 0; // baseline execution keeps its old error policy
+                head_custody.active = penalized or use_head or sample_head_count != 0; // baseline execution keeps its old error policy
                 const verified = if (sample_head_count != 0)
                     greedy_head.verifySample(m, rows, built.absorb[0..nw], sample_head_count)
                 else
                     greedy_head.verify(m, rows, built.absorb[0..nw], use_head);
                 verified catch |err| {
-                    if (use_head or sample_head_count != 0) return err; // inner custody pair-ends before outer defers
+                    if (penalized or use_head or sample_head_count != 0) return err; // inner custody pair-ends before outer defers
                     try roundRefused(err);
                 };
                 head_custody.active = false;
@@ -4769,4 +4828,29 @@ test "prefill slice cancellation checkpoint refuses before allocation or frame" 
     var ln: Lanes = .{ .gpa = std.testing.allocator, .m = &m, .peer = null, .cancel_checkpoints = true };
     try std.testing.expectError(error.OpenPrefillChunk, Lanes.snapSaveFn(&ln, null, 65536));
     try std.testing.expectEqual(@as(usize, 0), ln.snaps.items.len);
+}
+
+
+test "penalties new frames roundtrip and neutral verify bytes unchanged" {
+    const a = std.testing.allocator;
+    var w: Wire = .{};
+    defer w.deinit(a);
+    try w.begin(a,.verify,7);
+    try std.testing.expectEqualSlices(u8,&.{3,7,0,0,0,0,0,0,0},w.buf.items);
+    const p: penalties.Request = .{ .prompt_len = 43, .settings = .{ .presence = 1, .frequency = -1, .repetition = 2, .window = 19, .include_prompt = true } };
+    for ([_]Kind{.prompt_penalties}) |kind| {
+        try w.begin(a,kind,8);
+        try penalties.write(&w,a,p);
+        try std.testing.expectEqual(@as(usize,46),w.buf.items.len);
+        var r: Reader = .{ .b = w.buf.items };
+        try std.testing.expectEqual(kind,try decodeOuterKind(try r.int(u8)));
+        try std.testing.expectEqual(@as(u64,8),try r.int(u64));
+        const got = try penalties.read(&r);
+        try std.testing.expectEqual(p,got);
+        try std.testing.expectEqual(w.buf.items.len,r.at);
+    }
+    try w.begin(a,.verify_penalties,7);
+    try std.testing.expectEqualSlices(u8,&.{19,7,0,0,0,0,0,0,0},w.buf.items);
+    try std.testing.expect(openChunkAllows(.verify_penalties));
+    try std.testing.expect(!openChunkAllows(.prompt_penalties));
 }

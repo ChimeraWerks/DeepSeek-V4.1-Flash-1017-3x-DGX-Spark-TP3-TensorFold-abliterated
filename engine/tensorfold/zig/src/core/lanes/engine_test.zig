@@ -517,3 +517,28 @@ test "an armed gate still forces the opener" {
     defer gpa.free(gated);
     try std.testing.expectEqualSlices(u32, &.{30}, gated);
 }
+
+
+test "penalties fake backend greedy sampled draft rollback and stream isolation" {
+    const penalty = @import("penalties.zig");
+    const settings = [_]penalty.Settings{ .{}, .{ .presence = 1.5, .frequency = 0.7 },
+        .{ .presence = -0.5, .frequency = -0.3, .repetition = 1.3, .window = 5 },
+        .{ .presence = 1, .include_prompt = true, .repetition = 2, .window = 100 } };
+    for ([_]f64{0,0.8}) |temperature| for (settings) |p| {
+        const sample: Sampling = .{ .seed = 123, .temperature = temperature, .top_k = 20, .top_p = 0.9, .min_p = 0.05, .penalties = p };
+        const prompts = [_][]const u32{ &.{1,5,1,5,1,5}, &.{2,3,2,3,2,3}, &.{8,8,8,9} };
+        var together: [3]Case = undefined;
+        for (&together,prompts) |*c,prompt| c.* = .{ .prompt = prompt, .sampling = sample, .drafts = true, .max_new = 100 };
+        const drafted = try run(&together);
+        defer free(drafted);
+        for (&together) |*c| c.drafts = false;
+        const serial = try run(&together);
+        defer free(serial);
+        for (drafted,serial,together) |d,s,c| {
+            try std.testing.expectEqualSlices(u32,s,d);
+            const alone = try run(&.{c});
+            defer free(alone);
+            try std.testing.expectEqualSlices(u32,s,alone[0]);
+        }
+    };
+}

@@ -184,11 +184,16 @@ pub const Server = struct {
         if (srv.config.default_sampling) |d| try merge(options, cx, try fields.parseNumbers(cx, d));
         try merge(options, cx, try fields.parseNumbers(cx, f));
         const temp = number(options.get("temperature")) orelse 0;
-        if (temp <= 0) return null;
+        // Info.penalties is the engine's TF_DS_PENALTIES: off, the legacy fields are ignored exactly as before
+        const fp = try fields.penalties(cx, .{ .object = options }, srv.info.penalties);
+        const ps: @FieldType(api.Sampling,"penalties") = .{ .presence = fp.presence, .frequency = fp.frequency, .repetition = fp.repetition, .window = fp.window, .include_prompt = fp.include_prompt };
+        ps.validate() catch return cx.refuse("non-neutral repetition_penalty requires a positive repetition_penalty_window");
+        if (temp <= 0 and !ps.active()) return null;
         const seed: u64 = if (options.get("seed")) |s| seedBits(s) else api.seedFor(prompt_ids, srv.config.seed_salt);
         return .{
             .seed = seed,
             .temperature = @floatCast(temp),
+            .penalties = ps,
             .top_k = @intCast(@min(@max(0, (if (options.get("top_k")) |k| k.int64() else null) orelse 0), std.math.maxInt(u32))),
             .top_p = @floatCast(number(options.get("top_p")) orelse 1.0),
             .min_p = @floatCast(number(options.get("min_p")) orelse 0.0),
@@ -470,4 +475,52 @@ fn lateSystem(a: Allocator, text: model_text.Text) ![]const u8 {
 /// ``needs_user_after_tool``: the template raises "No user query found" when the conversation has no user query, which a conversation whose user turn became tool results no longer has; such templates gain a user turn after a trailing tool message.
 fn needsUserAfterTool(source: []const u8) bool {
     return std.mem.indexOf(u8, source, "No user query found") != null;
+}
+
+test "penalties resolution keeps greedy settings and neutral null" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    var srv: Server = undefined;
+    srv.config = .{ .served_name = "test", .model_ids = &.{} };
+    srv.info = .{ .penalties = true };
+    const neutral = (try json.parse(cx.a,"{\"temperature\":0,\"presence_penalty\":0,\"frequency_penalty\":0,\"repetition_penalty\":1}")).ok;
+    try std.testing.expectEqual(@as(?api.Sampling,null),try srv.resolveSampling(&cx,neutral,0,&.{1,2,3}));
+    const request = (try json.parse(cx.a,"{\"temperature\":0,\"presence_penalty\":1,\"frequency_penalty\":0.5,\"repetition_penalty\":2,\"repetition_penalty_window\":3,\"penalty_include_prompt\":true}")).ok;
+    const result = (try srv.resolveSampling(&cx,request,0,&.{1,2,3})).?;
+    try std.testing.expectEqual(@as(f64,0),result.temperature);
+    try std.testing.expect(result.penalties.active());
+    try std.testing.expect(result.penalties.include_prompt);
+    try std.testing.expectEqual(@as(u32,3),result.penalties.window);
+    const missing_window = (try json.parse(cx.a,"{\"repetition_penalty\":2}")).ok;
+    try std.testing.expectError(error.Refused,srv.resolveSampling(&cx,missing_window,0,&.{1}));
+    // on: out-of-range and malformed values refuse, as the patch did
+    for ([_][]const u8{ "{\"presence_penalty\":3}", "{\"frequency_penalty\":\"abc\"}", "{\"repetition_penalty\":0,\"repetition_penalty_window\":4}" }) |body|
+        try std.testing.expectError(error.Refused,srv.resolveSampling(&cx,(try json.parse(cx.a,body)).ok,0,&.{1}));
+}
+
+test "penalties off accepts and ignores legacy fields and refuses window and prompt inclusion" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    var srv: Server = undefined;
+    srv.config = .{ .served_name = "test", .model_ids = &.{}, .default_sampling = (try json.parse(cx.a,"{\"presence_penalty\":1.5}")).ok };
+    srv.info = .{ .penalties = false };
+    // greedy: the old null, whatever the legacy fields say (even out of range or not numbers)
+    const greedy = (try json.parse(cx.a,"{\"temperature\":0,\"presence_penalty\":1.2,\"frequency_penalty\":9,\"repetition_penalty\":1.05}")).ok;
+    try std.testing.expectEqual(@as(?api.Sampling,null),try srv.resolveSampling(&cx,greedy,0,&.{1,2,3}));
+    // sampled: identical to the same request without the fields
+    const with = (try json.parse(cx.a,"{\"temperature\":0.7,\"seed\":5,\"top_k\":20,\"presence_penalty\":\"abc\",\"frequency_penalty\":-1.5,\"repetition_penalty\":0}")).ok;
+    const without = (try json.parse(cx.a,"{\"temperature\":0.7,\"seed\":5,\"top_k\":20}")).ok;
+    const a = (try srv.resolveSampling(&cx,with,0,&.{1,2,3})).?;
+    const b = (try srv.resolveSampling(&cx,without,0,&.{1,2,3})).?;
+    try std.testing.expectEqual(b,a);
+    try std.testing.expect(!a.penalties.active());
+    // neutral new fields pass; a non-neutral one names the missing switch
+    const neutral_new = (try json.parse(cx.a,"{\"temperature\":0,\"repetition_penalty\":3,\"repetition_penalty_window\":0,\"penalty_include_prompt\":false}")).ok;
+    try std.testing.expectEqual(@as(?api.Sampling,null),try srv.resolveSampling(&cx,neutral_new,0,&.{1}));
+    for ([_][]const u8{ "{\"repetition_penalty\":1.1,\"repetition_penalty_window\":64}", "{\"penalty_include_prompt\":true}", "{\"repetition_penalty_window\":8}" }) |body| {
+        try std.testing.expectError(error.Refused,srv.resolveSampling(&cx,(try json.parse(cx.a,body)).ok,0,&.{1}));
+        try std.testing.expect(std.mem.indexOf(u8,cx.message,"this engine was started without penalties") != null);
+    }
 }

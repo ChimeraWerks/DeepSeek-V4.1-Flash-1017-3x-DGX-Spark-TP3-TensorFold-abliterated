@@ -49,6 +49,8 @@ pub const Ops = struct {
     sample_head_local: ?cuda.Function = null,
     sample_head_merge: ?cuda.Function = null,
     gpu_clock: cuda.Function,
+    penalties: ?cuda.Module = null,
+    penalty_apply: ?cuda.Function = null,
     keyed: ?cuda.Module = null,
     keyed_noise: ?cuda.Function = null,
     keyed_select: ?cuda.Function = null,
@@ -169,8 +171,26 @@ pub const Ops = struct {
         o.top_cand_rows = f;
     }
 
+    pub fn enablePenalties(o: *Ops, d: *const cuda.Driver, image: []const u8) !void {
+        if (image.len == 0) return error.NoPenaltyKernel;
+        var module = try cuda.Module.load(d, image);
+        errdefer module.unload();
+        const f = try module.function("tf_ds_penalties_kernel");
+        o.penalties = module;
+        o.penalty_apply = f;
+    }
+    pub fn applyPenalties(o: *const Ops, s: cuda.Stream, src: u64, dst: u64, counts: u64, params: u64, width: usize, rows: usize) !void {
+        var a: cuda.Args = .{};
+        a.add(src); a.add(dst); a.add(counts); a.add(params);
+        a.add(@as(u32,@intCast(width))); a.add(@as(u32,@intCast(rows)));
+        try go(o.penalty_apply orelse return error.NoPenaltyKernel, s, blocks(width*rows,256),256,&a);
+    }
     pub fn unload(o: *Ops) void {
         const cleanup = cuda.context_health.cleanupMark();
+        if (o.penalties) |*module| {
+            module.unload();
+            if (!cuda.context_health.cleanupReleased(cleanup)) return;
+        }
         if (o.keyed) |*module| {
             module.unload();
             if (!cuda.context_health.cleanupReleased(cleanup)) return;

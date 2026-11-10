@@ -201,6 +201,7 @@ pub const Round = struct {
     sample_ids: u64 = 0,
     sample_flags: u64 = 0,
     sample_count: usize = 0,
+    penalty: ?struct { counts: u64, params: u64 } = null,
     sample_reference: u64 = 0,
     sample_oracle: bool = false,
     sample_qualified: [max_rows + 1][65]bool = @splat(@splat(false)),
@@ -294,6 +295,7 @@ pub const Round = struct {
         rd.sample_ids = 0;
         rd.sample_flags = 0;
         rd.sample_count = 0;
+        rd.penalty = null;
         rd.sample_reference = 0;
         rd.sample_oracle = false;
         rd.sample_qualified = @splat(@splat(false));
@@ -1883,6 +1885,7 @@ fn stretch(e: *const Engine, rd: *Round, ch: *const Chunk, cs: *const Caches, ri
     try tri_basic.collapseNorm(t, h, pre, w.norm, rd.xc, c.eps, R, d);
     const hn: usize = w.head.n;
     try prompt.grouped(e, ch, R, &.{w.head}, &.{rd.xc}, &.{d}, &.{rd.hl}, &.{hn}, &.{.f32});
+    if (rd.penalty) |p| try e.ops.applyPenalties(e.s,rd.hl,rd.hl,p.counts,p.params,hn,R);
     try Probe.check(probe, .head_cols, w.layers.len, rd.hl);
     if (rd.greedy_out != 0) {
         const Head = struct {

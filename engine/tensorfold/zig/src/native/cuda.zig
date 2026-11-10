@@ -576,7 +576,7 @@ fn openWith(comptime F: type, a: Allocator, gpa: Allocator, io: std.Io, o: api.O
     // the family cuts its own prompt grid from position 0, as `tensorfold run` does: prefill_step 0
     if (o.spill.gib > 0 and h.cache == null) return error.SpillNeedsPromptCache;
     const vision: ?api.Vision = if (@hasField(@TypeOf(loaded), "vision")) loaded.vision else null;
-    try h.serve(io, loaded.facts, loaded.rows, .{ .lanes = streams, .context_window = @intCast(served), .startup = h.startup, .efforts = familyEfforts(F), .vision = vision, .call_gates = true, .structures = loaded.backend.vtable.first_masked != null }, .{ .ctx = loaded.ctx, .text = F.explain });
+    try h.serve(io, loaded.facts, loaded.rows, .{ .lanes = streams, .context_window = @intCast(served), .startup = h.startup, .efforts = familyEfforts(F), .vision = vision, .call_gates = true, .penalties = if (@hasField(@TypeOf(loaded), "penalties")) loaded.penalties else false, .structures = loaded.backend.vtable.first_masked != null }, .{ .ctx = loaded.ctx, .text = F.explain });
     if (h.spill != null) h.host.info_.cache_salt = false; // this durable format has no salted namespaces
     opened = true;
     return .{ .engine = h.host.engine(), .close = Host.close, .ctx = h };

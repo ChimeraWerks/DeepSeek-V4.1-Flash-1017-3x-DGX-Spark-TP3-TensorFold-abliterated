@@ -139,6 +139,8 @@ pub const Loaded = struct {
     replay: u32 = 0,
     /// TF_DS_KV_SHARD: the parts' counters and rows for /health and /metrics (null: the switch off).
     kv_parts: ?lanes.kv_parts.Source = null,
+    /// TF_DS_PENALTIES on (its kernel module loaded, its scratch allocated): the server takes penalty fields.
+    penalties: bool = false,
 };
 
 pub const Snaps = struct {
@@ -321,7 +323,7 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, ctx: *const cuda.Context, dir: [
         .facts = st.lanes.facts(), .rows = @intCast(st.m.eng.round_rows), .stream_bytes = 0,
         .ctx = st, .deinit = deinitFn, .snaps = snaps, .vision = if (st.vision) |v| v.hook() else null,
         .window = window, .tier = tier, .grid = model.chunk_rows,
-        .replay = @intCast(st.m.cfg.window), .kv_parts = kv_parts };
+        .replay = @intCast(st.m.cfg.window), .kv_parts = kv_parts, .penalties = st.m.penalty_on };
 }
 
 fn deinitFn(ptr: *anyopaque) bool {
@@ -639,6 +641,13 @@ pub fn explain(_: ?*anyopaque, err: anyerror) ?[]const u8 {
     if (rank_wire.explain(err)) |t| return t; // the ranks' agreement (TF_DS_KV_SHARD's frames, the spill tier's)
     return switch (err) {
         error.NotPortedYet => "the native DeepSeek-V4.1 engine supports world2/4 and this fork's experimental world3",
+        error.BadPenalties => "penalties must be finite, presence and frequency within [-2,2], repetition positive",
+        error.PenaltyWindowRequired => "non-neutral repetition_penalty requires a positive repetition_penalty_window",
+        error.PenaltiesUnavailable => "penalties require TP3, TF_DS_PENALTIES=1 on all ranks, and -Dpenalties=true",
+        error.PenaltiesReducedHead => "penalties are refused with reduced greedy or sampled heads; disable those heads",
+        error.PenaltiesImages => "penalties with image token spans are not supported",
+        error.NoPenaltyKernel => "build -Dpenalties=true before enabling TF_DS_PENALTIES",
+        error.PenaltySettingMismatch => "TF_DS_PENALTIES must agree on every rank",
         error.ExperimentalTP3Required => "TP3 requires TF_DS_EXPERIMENTAL_TP3=1 on every rank and the padded TP3 checkpoint; GPU/numerical qualification is still required",
         error.NoMaster, error.BadMaster => "set TF_TP_MASTER to rank 0's fabric address (rank 1: tf-dsv41-lanes MODEL CACHE 1 2 MASTER PORT KIT; ranks 1-3 of four: ... G 4 ...)",
         error.NoRdmaKernels => "TF_RDMA_DEVICES at world 4 needs TF_DS_RDMA_KERNELS (rdma_gather.cu's fatbin) in a build without the kernel images",
