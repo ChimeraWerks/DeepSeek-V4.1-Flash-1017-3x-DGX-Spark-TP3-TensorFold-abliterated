@@ -279,6 +279,12 @@ const Host = struct {
     fn backend(h: *Host) lanes.backend.Backend {
         const v = h.inner.vtable;
         h.vtable = .{
+            .logprobs = if (v.logprobs != null) struct {
+                fn f(p: *anyopaque) bool {
+                    const x: *Host = @ptrCast(@alignCast(p));
+                    return x.inner.vtable.logprobs.?(x.inner.ptr);
+                }
+            }.f else null,
             .prefill = struct {
                 fn f(p: *anyopaque, s: *lanes.Stream) anyerror!void {
                     const x = try bind(p);
@@ -379,6 +385,19 @@ const Host = struct {
                 fn f(p: *anyopaque) lanes.backend.TokenPool {
                     const x: *Host = @ptrCast(@alignCast(p));
                     return x.inner.vtable.token_pool.?(x.inner.ptr);
+                }
+            }.f else null,
+            // the family's clean round fence may synchronize its stream: bind as release does
+            .begin_timing = if (v.begin_timing != null) struct {
+                fn f(p: *anyopaque) void {
+                    const x = bind(p) catch return;
+                    x.inner.vtable.begin_timing.?(x.inner.ptr);
+                }
+            }.f else null,
+            .timing_clean = if (v.timing_clean != null) struct {
+                fn f(p: *anyopaque) bool {
+                    const x: *Host = @ptrCast(@alignCast(p));
+                    return x.inner.vtable.timing_clean.?(x.inner.ptr);
                 }
             }.f else null,
             .release = struct {
@@ -720,6 +739,33 @@ test "a cancel during a long prompt stops it, and the next request's reply is un
         try history.append(gpa, t);
     }
     try std.testing.expectEqual(@as(usize, 40), restored.tokens.items.len);
+}
+
+test "reply logprobs and round timing hooks reach the server through the CUDA host's backend" {
+    const gpa = std.testing.allocator;
+    var target: lanes.fake.Fake = .{ .gpa = gpa };
+    defer target.deinit();
+    const Nothing = struct {
+        fn release(_: *anyopaque) bool { return true; }
+    };
+    const h = try gpa.create(Host);
+    defer gpa.destroy(h);
+    h.* = .{ .gpa = gpa, .gpu = null, .family = &target, .release = Nothing.release, .inner = target.backend(), .vtable = undefined, .cfg = undefined, .clock = undefined, .core = undefined, .host = undefined };
+    try h.serve(std.testing.io, .{ .exact_width = 8, .hidden_rows = true }, 8, .{ .lanes = 1 }, null);
+    defer {
+        h.host.stop();
+        h.core.deinit();
+        h.cfg.deinit(gpa);
+    }
+    // what the HTTP server reads once at startup (srv.info) to accept or refuse a logprobs request
+    try std.testing.expect(h.host.engine().info().logprobs);
+    const b = h.core.backend;
+    target.timing_dirty = true;
+    b.beginTiming();
+    try std.testing.expectEqual(@as(usize, 1), target.timing_begins);
+    try std.testing.expect(b.timingClean());
+    target.timing_dirty = true;
+    try std.testing.expect(!b.timingClean());
 }
 
 test "native bind never publishes failed binding and rechecks cached poison" {

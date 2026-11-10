@@ -388,7 +388,7 @@ pub fn hostTests(b: *std.Build, draft_ids: *std.Build.Module, step: *std.Build.S
         room_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m, .filters = &.{ "restore room", "parked", "restore", "aggregate tier", "spill flags", "spill CLI", "cache metrics" } })).step);
     }
     const logprob_tests = b.step("test-reply-logprobs", "Raw shard summaries, committed token custody and API logprob checks");
-    for ([_]*std.Build.Module{ mods.lanes, eng.api, eng.dsv41, server_tests }) |m|
+    for ([_]*std.Build.Module{ mods.lanes, eng.api, eng.engines, eng.dsv41, server_tests }) |m|
         logprob_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m, .filters = &.{ "reply logprobs", "raw logprob" } })).step);
     const penalty_tests = b.step("test-penalties", "Request penalties, speculative history, wire and refusal tests, CPU only");
     for ([_]*std.Build.Module{ mods.lanes, eng.dsv41, server_tests }) |m|
