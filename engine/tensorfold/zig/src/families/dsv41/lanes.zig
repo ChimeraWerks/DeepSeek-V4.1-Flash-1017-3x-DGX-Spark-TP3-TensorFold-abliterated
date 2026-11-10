@@ -14,6 +14,7 @@
 //! same kernels and collectives in the same order. The drafted reply is the serial one: every row is drawn with its
 //! stream's key at its own position, whatever the round's composition.
 const std = @import("std");
+const trace = @import("lanes").slice_trace;
 const lanes = @import("lanes");
 const model = @import("model.zig");
 const round = @import("round.zig");
@@ -866,7 +867,7 @@ pub const Lanes = struct {
         if (self.spill) |tier| if (tier.idleBusy()) return;
         const now = link.Link.monotonicNs();
         if (now < self.idle_retry_at) return;
-        self.m.joinAhead();
+        (blk: { var ts = trace.begin("lanes.idle.joinAhead", .wait); defer ts.end(); break :blk self.m.joinAhead(); });
         const dev: Model.SpillDev = .{ .m = self.m };
         self.m.ctx.synchronize() catch |err| dev.failed(err);
         quiesceRdma(self.m, link.Link.monotonicNs() +| idle_protocol.budget_ns) catch |err| dev.failed(err);
@@ -1196,7 +1197,7 @@ pub const Lanes = struct {
             if (s.images.len == 0) if (s.between) |hook| if (hook.wanted(hook.ptr)) {
                 // A decode round or tier restore may change the selected slot. Join read-ahead before it touches the
                 // sequence and rebind on the next chunk; without an interleave the next chunk keeps its read-ahead.
-                self.m.joinAhead();
+                (blk: { var ts = trace.begin("lanes.prefillFn.between_joinAhead", .wait); defer ts.end(); break :blk self.m.joinAhead(); });
                 self.m.fill_seq = &.{};
                 self.fills.getPtr(s).?.needs_resume = true;
                 try hook.run(hook.ptr);
@@ -1382,6 +1383,8 @@ pub const Lanes = struct {
     /// Reselect a yielded slot on all ranks without clearing its KV rows or drafter rings. Images retain only the
     /// uncached prepared rows, which must be installed again because fillBegin clears the model's image spans.
     fn resumeFill(self: *Lanes, s: *lanes.Stream, f: *Fill) !void {
+        var trace_scope = trace.begin("lanes.resumeFill", .phase);
+        defer trace_scope.end();
         const m = self.m;
         if (f.needs_resume) {
             const l = self.streams.getPtr(s) orelse return error.UnknownStream;
@@ -1400,10 +1403,13 @@ pub const Lanes = struct {
     }
 
     fn prefillEndFn(ptr: *anyopaque, s: *lanes.Stream) void {
+        defer if (trace.current) |t| { if (t.owned_by_step) t.finish(); };
+        var trace_scope = trace.begin("lanes.prefillEndFn", .phase);
+        defer trace_scope.end();
         const self = of(ptr);
         if (self.fills.fetchRemove(s)) |entry| {
             var f = entry.value;
-            self.m.joinAhead();
+            (blk: { var ts = trace.begin("lanes.prefillEndFn.joinAhead", .wait); defer ts.end(); break :blk self.m.joinAhead(); });
             self.m.fill_seq = &.{};
             f.progress.deinit(self.gpa);
             f.spans.deinit(self.gpa);
@@ -1420,22 +1426,28 @@ pub const Lanes = struct {
         var lo: usize = 0;
         while (true) {
             const hi = model.sliceHi(m.eng.c.layers, m.prefill.slice_layers, lo);
-            if (try self.begin(.fill_slice)) {
-                try putSlice(&self.wire, self.gpa, .{ .lo = @intCast(lo), .hi = @intCast(hi), .args = args, .next_rows = @intCast(m.next_engram_rows) });
-                try self.flush();
+            {
+                var frame_trace = trace.begin("lanes.fillSliced.frame_send", .phase);
+                defer frame_trace.end();
+                if (try self.begin(.fill_slice)) {
+                    try putSlice(&self.wire, self.gpa, .{ .lo = @intCast(lo), .hi = @intCast(hi), .args = args, .next_rows = @intCast(m.next_engram_rows) });
+                    try self.flush();
+                }
             }
             const end = try m.fillSlice(seq[0 .. args.start + args.n], args, lo, hi);
             const b = s.between.?;
             // runSlice only enqueues: unsynchronized, the park's round (verifyRun) would wait out this slice's kernels
             // and the host would bill them to decode, cancelling the share's debt. Share off keeps the old overlap.
             if (end != .more) {
-                if (b.timed and b.wanted(b.ptr)) try m.stream.synchronize();
+                if (b.timed and b.wanted(b.ptr)) { var ts = trace.begin("lanes.fillSliced.chunk_end_synchronize", .wait); defer ts.end(); try m.stream.synchronize(); }
                 return end == .head;
             }
             lo = hi;
             if (b.wanted(b.ptr)) {
-                m.joinParkAhead(); // opt-in parks leave prompt hash/reader custody alone
-                if (b.timed) try m.stream.synchronize();
+                var park_trace = trace.begin("lanes.fillSliced.park", .park);
+                defer park_trace.end();
+                { var ts = trace.begin("lanes.fillSliced.pre_park_join", .wait); defer ts.end(); m.joinParkAhead(); } // opt-in parks leave prompt hash/reader custody alone
+                if (b.timed) { var ts = trace.begin("lanes.fillSliced.pre_park_synchronize", .wait); defer ts.end(); try m.stream.synchronize(); }
                 try b.run(b.ptr);
             }
             if (s.isCancelled()) {
@@ -1449,7 +1461,30 @@ pub const Lanes = struct {
         }
     }
 
+    fn traceLaunchEnter() usize {
+        const scope = trace.begin("cuda.launch.launch", .enqueue);
+        return if (scope.trace != null) scope.index else std.math.maxInt(usize);
+    }
+
+    fn traceLaunchLeave(index: usize) void {
+        if (index == std.math.maxInt(usize)) return;
+        const t = trace.current orelse return;
+        var scope: trace.Scope = .{ .trace = t, .index = index, .generation = t.generation };
+        scope.end();
+    }
+
     fn prefillStepFn(ptr: *anyopaque, s: *lanes.Stream) anyerror!bool {
+        const owned_trace = if (trace.current) |t| t.enabled and !t.chunk else false;
+        var trace_completed = false;
+        if (owned_trace) { trace.current.?.start(); trace.current.?.owned_by_step = true; }
+        defer if (owned_trace and !trace_completed) trace.current.?.finish();
+        var trace_scope = trace.begin("lanes.prefillStepFn", .phase);
+        defer trace_scope.end();
+        const previous_observer = cuda.launch.observer;
+        if (trace.current) |t| if (t.enabled and t.chunk) {
+            cuda.launch.observer = .{ .enter = traceLaunchEnter, .leave = traceLaunchLeave };
+        };
+        defer cuda.launch.observer = previous_observer;
         const self = of(ptr);
         const m = self.m;
         const gpa = self.gpa;
@@ -1458,7 +1493,7 @@ pub const Lanes = struct {
         try self.resumeFill(s, f);
         // The whole-pass path keeps Engram's next-chunk read-ahead alive. A yielded pass joins before returning
         // control to the scheduler, where another stream or a spill restore may reuse the model's sequence.
-        defer if (self.prefill_yield) { m.joinAhead(); m.fill_seq = &.{}; };
+        defer if (self.prefill_yield) { (blk: { var ts = trace.begin("lanes.prefillStepFn.yield_joinAhead", .wait); defer ts.end(); break :blk m.joinAhead(); }); m.fill_seq = &.{}; };
         const seq = &self.seqs[f.slot];
         const len = f.len;
         const slot = f.slot;
@@ -1467,14 +1502,21 @@ pub const Lanes = struct {
         if (start < len) {
             const n = model.prefill128.nextRows(len, start, replay, m.compute_rows, s.reuse.marks);
             if (m.prefill.ae) m.next_engram_rows = model.prefill128.nextRows(len, start + n, replay, m.compute_rows, s.reuse.marks);
-            const sliced = useLayerSlices(self.prefill_yield, m.prefill.slice_layers, self.kv != null, s.between != null);
-            if (!sliced) if (try self.begin(.fill_chunk)) {
-                try self.wire.int(gpa, u64, start);
-                try self.wire.int(gpa, u32, @intCast(n));
-                try self.wire.int(gpa, u64, replay);
-                if (m.prefill.ae) try self.wire.int(gpa, u32, @intCast(m.next_engram_rows));
-                try self.flush();
+            if (trace.current) |t| if (t.enabled and t.chunk) {
+                t.id = .{ .slot = slot, .start = start, .rows = n, .replay = replay };
             };
+            const sliced = useLayerSlices(self.prefill_yield, m.prefill.slice_layers, self.kv != null, s.between != null);
+            {
+                var frame_trace = trace.begin("lanes.prefillStepFn.fill_chunk_frame", .phase);
+                defer frame_trace.end();
+                if (!sliced) if (try self.begin(.fill_chunk)) {
+                    try self.wire.int(gpa, u64, start);
+                    try self.wire.int(gpa, u32, @intCast(n));
+                    try self.wire.int(gpa, u64, replay);
+                    if (m.prefill.ae) try self.wire.int(gpa, u32, @intCast(m.next_engram_rows));
+                    try self.flush();
+                };
+            }
             if (self.spill) |t| t.bump(f.base + start, f.base + start + n);
             const l = self.streams.getPtr(s).?;
             if (self.kv) |k| k.planner.setPartial(l.id, true);
@@ -1487,8 +1529,8 @@ pub const Lanes = struct {
             };
             start += n;
             f.start = start;
-            f.progress.record(self, s, start);
-            if (s.reuse.hook) |k| if (start < len and start <= replay and (start == f.last_end or markEnds(s.reuse.marks, start))) k.at(k.ptr, s, @intCast(start));
+            { var ts = trace.begin("lanes.prefillStepFn.progress.record", .phase); defer ts.end(); f.progress.record(self, s, start); }
+            if (s.reuse.hook) |k| if (start < len and start <= replay and (start == f.last_end or markEnds(s.reuse.marks, start))) (blk: { var ts = trace.begin("lanes.prefillStepFn.cache_mark_hook", .phase); defer ts.end(); break :blk k.at(k.ptr, s, @intCast(start)); });
             if (start < len) {
                 f.needs_resume = self.prefill_yield;
                 return false;
@@ -1497,9 +1539,9 @@ pub const Lanes = struct {
         if (!f.head) return error.NoPromptLogits;
         // Full identical prompts reuse the complete state and logits. A later longer
         // prompt can use its encoder state only when bounded replay starts after it.
-        if (s.images.len == 0) if (s.reuse.hook) |k| k.at(k.ptr, s, @intCast(len));
+        if (s.images.len == 0) if (s.reuse.hook) |k| (blk: { var ts = trace.begin("lanes.prefillStepFn.cache_save_hook", .phase); defer ts.end(); break :blk k.at(k.ptr, s, @intCast(len)); });
         // a state read back from disk: the drafter's rings were rebuilt by the replay before the first draft
-        try f.source_facts.finish(m, self.spill != null and m.drafting(), slot, len);
+        try (blk: { var ts = trace.begin("lanes.prefillStepFn.source_facts.finish", .phase); defer ts.end(); break :blk f.source_facts.finish(m, self.spill != null and m.drafting(), slot, len); });
         var cand_count: usize = 0;
         if (m.cand != 0 and s.grammar == null and !s.prefill_only and !logits_sha and self.logit_dump_dir == null) {
             if (s.sampling) |sm| {
@@ -1509,7 +1551,7 @@ pub const Lanes = struct {
         }
         const candidates = if (cand_count > 0) try m.promptCandidates(cand_count) else null;
         const use_candidates = if (candidates) |c| c.flags[0] == 0 else false;
-        const logits: []const f32 = if (use_candidates) &.{} else try m.promptLogitsHost();
+        const logits: []const f32 = if (use_candidates) &.{} else try (blk: { var ts = trace.begin("lanes.prefillStepFn.promptLogitsHost", .wait); defer ts.end(); break :blk m.promptLogitsHost(); });
         f.progress.poll(self, s);
         self.streams.getPtr(s).?.filled = len;
         if (logits_sha) {
@@ -1533,7 +1575,7 @@ pub const Lanes = struct {
             }
             std.debug.print("{{\"cache_logit_dump\":{d},\"prompt_tokens\":{d},\"cached_tokens\":{d}}}\n", .{ self.logit_dump_serial, len, s.cached });
         }
-        if (s.prefill_only) return true;
+        if (s.prefill_only) { trace_completed = true; return true; }
         const token: u32 = if (use_candidates) blk: {
             const c = candidates.?;
             const sm = s.sampling.?;
@@ -1546,6 +1588,7 @@ pub const Lanes = struct {
             lane.first_row = try gpa.realloc(lane.first_row, logits.len);
             @memcpy(lane.first_row, logits);
         }
+        trace_completed = true;
         return true;
     }
 

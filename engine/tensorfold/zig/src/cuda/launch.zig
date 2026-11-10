@@ -77,7 +77,14 @@ pub const Config = struct {
 /// Kernel launches so far in this process (a profile's count by phase).
 pub var count: u64 = 0;
 
+/// Host instrumentation only. The serving thread installs this only while tracing.
+pub const Observer = struct { enter: *const fn () usize, leave: *const fn (usize) void };
+pub threadlocal var observer: ?Observer = null;
+
 pub fn launch(f: Function, cfg: Config, stream: Stream, args: *Args) Error!void {
+    const observed = observer;
+    const ticket = if (observed) |o| o.enter() else 0;
+    defer if (observed) |o| o.leave(ticket);
     try cfg.validate();
     count += 1;
     const d = f.d;
@@ -147,4 +154,24 @@ test "args keep C alignment and sizes" {
     const ptrs = a.pointers().?;
     try std.testing.expectEqual(@as(i32, -3), @as(*align(1) const i32, @ptrCast(ptrs[1].?)).*);
     try std.testing.expectEqual(@as(f64, 2.5), @as(*align(1) const f64, @ptrCast(ptrs[3].?)).*);
+}
+
+test "launch observer is opt in and closes on validation failure" {
+    const Watch = struct {
+        var enters: usize = 0;
+        var leaves: usize = 0;
+        fn enter() usize { enters += 1; return 7; }
+        fn leave(ticket: usize) void { std.debug.assert(ticket == 7); leaves += 1; }
+    };
+    const old = observer;
+    defer observer = old;
+    observer = null;
+    Watch.enters = 0;
+    Watch.leaves = 0;
+    try std.testing.expectError(error.Invalid, launch(undefined, .{ .grid = .{ .x = 0 }, .block = .{ .x = 1 } }, undefined, undefined));
+    try std.testing.expectEqual(@as(usize, 0), Watch.enters);
+    observer = .{ .enter = Watch.enter, .leave = Watch.leave };
+    try std.testing.expectError(error.Invalid, launch(undefined, .{ .grid = .{ .x = 0 }, .block = .{ .x = 1 } }, undefined, undefined));
+    try std.testing.expectEqual(@as(usize, 1), Watch.enters);
+    try std.testing.expectEqual(@as(usize, 1), Watch.leaves);
 }

@@ -1,6 +1,7 @@
 //! kernels.py's sparse attention and packed FP4 rows: sparse_attn (the split keys and their merge, the merge with the
 //! inverse RoPE and wo_a's input rotation, or one pass for prompt chunks), fp4_store and fp4_qd_p2, as Python launches them.
 const std = @import("std");
+const trace = @import("lanes").slice_trace;
 const cuda = @import("cuda");
 const tri = @import("tri.zig");
 const aot = cuda.aot;
@@ -104,10 +105,10 @@ fn qualifyMasked(t: Tri, a: Attn, which: usize) !void {
     const actual = try alloc.alloc(u8, bytes);
     defer alloc.free(actual);
     try sparseAttnImpl(t, a, 8);
-    try t.stream.synchronize();
+    try (blk: { var ts = trace.begin("tri_attn.qualifyMasked.stream_synchronize.site_108", .wait); defer ts.end(); break :blk t.stream.synchronize(); });
     try t.stream.d.check(t.stream.d.api.cuMemcpyDtoH_v2(reference.ptr, a.out, bytes), "masked attention reference");
     try sparseAttnImpl(t, a, 16);
-    try t.stream.synchronize();
+    try (blk: { var ts = trace.begin("tri_attn.qualifyMasked.stream_synchronize.site_111", .wait); defer ts.end(); break :blk t.stream.synchronize(); });
     try t.stream.d.check(t.stream.d.api.cuMemcpyDtoH_v2(actual.ptr, a.out, bytes), "masked attention candidate");
     if (!std.mem.eql(u8, reference, actual)) return error.MaskedAttentionNumericalMismatch;
     masked_checked[which] = true;

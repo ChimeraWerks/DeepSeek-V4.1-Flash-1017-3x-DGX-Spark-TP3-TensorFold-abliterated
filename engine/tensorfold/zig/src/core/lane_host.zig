@@ -23,10 +23,12 @@ const Reason = api.Reason;
 const Stats = api.Stats;
 const SubmitError = api.SubmitError;
 
+const trace = lanes.slice_trace;
 const Share = @import("prefill_share.zig").Share;
 const prefix = @import("lane_host_prefix.zig");
 
 pub const LaneHost = struct {
+    trace_: ?*trace.Trace = null,
     gpa: Allocator,
     io: std.Io,
     core: *lanes.Engine,
@@ -173,6 +175,8 @@ pub const LaneHost = struct {
 
         /// A completed CUDA event confirms a chunk, without making the engine wait for it.
         fn progress(ptr: *anyopaque, s: *lanes.Stream, at: u32) void {
+            var ts = trace.begin("lane_host.Job.progress", .phase);
+            defer ts.end();
             const job: *Job = @ptrCast(@alignCast(ptr));
             const h = job.host;
             const now = std.Io.Clock.awake.now(h.io).toNanoseconds();
@@ -189,6 +193,8 @@ pub const LaneHost = struct {
 
         /// The backend's prompt pass stands at a mark: the cache keeps the stream's state there.
         fn kept(ptr: *anyopaque, s: *lanes.Stream, at: u32) void {
+            var ts = trace.begin("lane_host.Job.kept", .phase);
+            defer ts.end();
             const job: *Job = @ptrCast(@alignCast(ptr));
             job.reached = @max(job.reached, at);
             job.reported(); // before a keep can evict the entry the pass restored
@@ -207,6 +213,8 @@ pub const LaneHost = struct {
 
         /// Report a restored prefix or its failed copy; an untouched prefix remains kept.
         fn reported(job: *Job) void {
+            var ts = trace.begin("lane_host.Job.reported", .phase);
+            defer ts.end();
             const e = job.entry orelse return;
             job.entry = null;
             const store = job.host.cache orelse return;
@@ -269,7 +277,7 @@ pub const LaneHost = struct {
         enforced.cache_salt = true;
         var ms: i96 = 0;
         if (std.c.getenv("TF_DS_PREFILL_INTERLEAVE_MS")) |v| ms = std.fmt.parseInt(u32, std.mem.span(v), 10) catch 0;
-        return .{ .gpa = gpa, .io = io, .core = core, .info_ = enforced, .share = Share.fromEnv(), .prefix = prefix.Wait.fromEnv(), .interleave_ns = ms * std.time.ns_per_ms };
+        return .{ .trace_ = trace.Trace.fromEnv(gpa, io), .gpa = gpa, .io = io, .core = core, .info_ = enforced, .share = Share.fromEnv(), .prefix = prefix.Wait.fromEnv(), .interleave_ns = ms * std.time.ns_per_ms };
     }
 
     /// The tier's switches (before start). Telemetry is published from here on when either is on: a tier on the cache
@@ -309,6 +317,8 @@ pub const LaneHost = struct {
         h.live_tokens.deinit(h.gpa);
         h.ready.deinit(h.gpa);
         h.loading.deinit(h.gpa);
+        if (h.trace_) |t| t.deinit();
+        h.trace_ = null;
     }
 
     pub fn engine(h: *LaneHost) Engine {
@@ -464,6 +474,8 @@ pub const LaneHost = struct {
 
     /// Hands a stream the tokens its rounds committed since the last delivery.
     fn send(h: *LaneHost, job: *Job) void {
+        var trace_scope = trace.host("lane_host.send", .send);
+        defer trace_scope.end();
         const emitted = job.stream.emitted();
         if (emitted.len > job.delivered) {
             emit(job, .{ .tokens = emitted[job.delivered..] });
@@ -615,6 +627,8 @@ pub const LaneHost = struct {
 
     /// takeCancels, except a cancel of `keep` (the job in its prompt pass) stays in `cancels` for that pass to see.
     fn takeCancelsKeeping(h: *LaneHost, keep: ?Id) void {
+        var trace_scope = trace.host("lane_host.takeCancelsKeeping", .cancels);
+        defer trace_scope.end();
         if (h.broken()) return;
         h.lock();
         // Only visit the original prefix. Producers may append while callbacks run unlocked;
@@ -845,6 +859,8 @@ pub const LaneHost = struct {
     /// One round, or a bounded share payment. No cancellation draining, terminal release,
     /// snapshots, admission, placement, restore pumping or graph capture.
     fn sliceBetween(ptr: *anyopaque) anyerror!void {
+        var trace_scope = trace.host("lane_host.sliceBetween", .phase);
+        defer trace_scope.end();
         const h: *LaneHost = @ptrCast(@alignCast(ptr));
         if (h.broken()) return error.PeerDown;
         if (!sliceWanted(ptr)) return;
@@ -860,11 +876,17 @@ pub const LaneHost = struct {
         h.core.hold_finished = true;
         defer h.core.hold_finished = false;
         while (true) {
+            var decode_trace = trace.host("lane_host.sliceBetween.core.step", .decode);
+            var quiet = trace.quietEnqueue();
             h.core.step() catch |err| {
+                quiet.end();
+                decode_trace.end();
                 if (h.peer_monitor) |*monitor| monitor.signal(err);
                 h.between_err = err;
                 return err;
             };
+            quiet.end();
+            decode_trace.end();
             if (h.broken()) return error.PeerDown;
             for (h.admitted.items) |job| {
                 if (job == h.filling or job.prefilled == null) continue;
@@ -882,6 +904,8 @@ pub const LaneHost = struct {
     /// A complete chunk (or ordered abort) releases and finishes decoders
     /// that settled during a park. Otherwise an empty core could strand them.
     fn finishSlices(h: *LaneHost) !void {
+        var trace_scope = trace.host("lane_host.finishSlices", .phase);
+        defer trace_scope.end();
         try h.core.settle();
         if (h.broken()) return error.PeerDown;
         var i: usize = 0;
@@ -915,11 +939,14 @@ pub const LaneHost = struct {
                 if (h.broken()) return error.PeerDown;
                 if (h.core.runnableCount() == 0 or std.Io.Clock.awake.now(h.io).toNanoseconds() - t0 >= h.interleave_ns) break;
                 if (h.core.learner) |l| l.advanceTo(@intCast(std.Io.Clock.awake.now(h.io).toNanoseconds()));
+                var decode_trace = trace.host("lane_host.between.core.step", .decode);
                 h.core.step() catch |e| {
+                    decode_trace.end();
                     if (h.peer_monitor) |*monitor| monitor.signal(e);
                     h.between_err = e; // the pass fails with it; run() then fails the streams the round held
                     return e;
                 };
+                decode_trace.end();
                 var i: usize = 0;
                 while (i < h.admitted.items.len) {
                     const job = h.admitted.items[i];
@@ -1167,6 +1194,8 @@ pub const LaneHost = struct {
     }
 
     fn admitBatch(h: *LaneHost) void {
+        var trace_scope = trace.host("lane_host.admitBatch", .admission);
+        defer trace_scope.end();
         // Failed/cancelled attempts may drain only while no decoder is live.
         while (h.admitOne()) {
             if (h.broken()) return;
@@ -1211,6 +1240,10 @@ pub const LaneHost = struct {
 
     /// One actual native chunk, never an in-prefill callback. Error cleanup is skipped in a poisoned world.
     fn fillAt(h: *LaneHost, job: *Job) void {
+        const previous_trace = trace.current;
+        trace.current = h.trace_;
+        defer trace.current = previous_trace;
+        defer if (h.trace_) |t| t.finish();
         for (h.admitted.items) |other| if (other.prefilled == null) {
             other.fill_wait = if (other == job) 0 else other.fill_wait +| 1;
         };
@@ -1227,6 +1260,7 @@ pub const LaneHost = struct {
                 return;
             };
             if (h.broken()) return;
+            if (h.trace_) |t| { t.start(); t.id.start = job.fill_at; }
             break :blk b.vtable.prefill_step.?(b.ptr, &job.stream) catch |err| {
                 if (h.peer_monitor) |*monitor| monitor.signal(err);
                 if (!h.broken()) h.finishSlices() catch {};
@@ -1241,7 +1275,11 @@ pub const LaneHost = struct {
         };
         job.reported(); // restore ownership has transferred before any later admission may evict the entry
         if (!done) return;
-        b.vtable.prefill_end.?(b.ptr, &job.stream);
+        {
+            var end_trace = trace.begin("lane_host.fillAt.prefill_end", .phase);
+            defer end_trace.end();
+            b.vtable.prefill_end.?(b.ptr, &job.stream);
+        }
         h.core.openStream(&job.stream) catch |err| {
             h.fillFailed(job, err);
             return;
@@ -1300,6 +1338,9 @@ pub const LaneHost = struct {
     }
 
     fn runIteration(h: *LaneHost) bool {
+        const previous_trace = trace.current;
+        trace.current = h.trace_;
+        defer trace.current = previous_trace;
         if (h.device_probe) |probe| if (probe.failed(probe.ctx)) {
             std.Io.sleep(h.io, .fromMilliseconds(1), .awake) catch {};
             return !h.closing;
@@ -1342,6 +1383,8 @@ pub const LaneHost = struct {
             if (h.core.learner) |l| l.refresh.idle();
             if (!h.hasFills() and h.cancels.items.len == 0 and ((h.queued.items.len == 0 and h.ready.items.len == 0) or h.admitted.items.len >= h.info_.lanes)) {
                 const ms: i64 = if (h.pending()) poll_ns / std.time.ns_per_ms else 100;
+                var idle_trace = trace.host("lane_host.runIteration.wake.waitTimeout", .idle);
+                defer idle_trace.end();
                 h.wake.waitTimeout(h.io, &h.mutex, .{ .duration = .{ .raw = .fromMilliseconds(ms), .clock = .awake } }) catch {};
             }
             h.unlock();
@@ -1351,12 +1394,15 @@ pub const LaneHost = struct {
         if (h.core.learner) |l| l.advanceTo(@intCast(std.Io.Clock.awake.now(h.io).toNanoseconds()));
         const owed = h.share.debt_ns > 0;
         const round_start = if (owed) std.Io.Clock.awake.now(h.io).toNanoseconds() else 0;
+        var decode_trace = trace.host("lane_host.runIteration.core.step", .decode);
         h.core.step() catch |e| {
+            decode_trace.end();
             if (h.peer_monitor) |*monitor| monitor.signal(e);
             if (h.broken()) return true;
             h.failAll(@errorName(e));
             return true;
         };
+        decode_trace.end();
         if (owed) h.share.rounded(@intCast(std.Io.Clock.awake.now(h.io).toNanoseconds() - round_start));
         var i: usize = 0;
         while (i < h.admitted.items.len) {
@@ -1510,6 +1556,8 @@ pub const LaneHost = struct {
     /// Completion-only maintenance/expiry are exempt from debt: charging them while deferring copies could
     /// perpetually refinance the debt. Discretionary begin/poll/pump work still shares the fill account.
     fn service(h: *LaneHost, budget_ns: u64) void {
+        var trace_scope = trace.host("lane_host.service", .service);
+        defer trace_scope.end();
         if (h.broken()) return;
         const store = h.cache orelse return;
         const t0 = std.Io.Clock.awake.now(h.io).toNanoseconds();
@@ -4000,4 +4048,101 @@ test "prefill slice nojoin fake backend runs before read completion and holds fi
         fake.round_hook = null;
         host.closeAll();
     }
+}
+
+test "prefill slice trace fake multi chunk fields accounting and disabled effects" {
+    const gpa = std.testing.allocator;
+    const Watch = struct {
+        var size: usize = 1;
+        var lo: usize = 0;
+        done: bool = false,
+        fn event(ctx: *anyopaque, _: Id, ev: *const Event) void {
+            const w: *@This() = @ptrCast(@alignCast(ctx));
+            if (ev.* == .finished) w.done = true;
+        }
+        fn slice(_: *anyopaque, _: *lanes.Stream) void {
+            var scope = trace.slice(lo, @min(lo + size, 5));
+            defer scope.end();
+            lo += size;
+            var enqueue = trace.begin("fake.stepFill.enqueue", .phase);
+            defer enqueue.end();
+        }
+        fn chunk(ctx: *anyopaque, s: *lanes.Stream, chunk_index: usize) void {
+            slice(ctx, s);
+            if (trace.current) |t| t.id = .{ .slot = 0, .start = chunk_index * 8, .rows = 8, .layers = 5 };
+            lo = 0;
+        }
+    };
+    for ([_]bool{ false, true }) |on| for ([_]usize{ 1, 2, 5 }) |size| for ([_]f64{ 1, 0.5 }) |share| {
+        var cfg = try lanes.Config.init(gpa, .{ .exact_width = 8, .hidden_rows = true }, 8, 7);
+        defer cfg.deinit(gpa);
+        var target: lanes.fake.Fake = .{ .gpa = gpa, .prefill_chunks = 3, .prefill_slices = (5 + size - 1) / size };
+        defer target.deinit();
+        var clock: lanes.fake.FixedClock = .{};
+        var core = lanes.Engine.init(gpa, &cfg, target.stepped(), clock.clock());
+        defer core.deinit();
+        var host = LaneHost.init(gpa, std.testing.io, &core, .{ .lanes = 3 });
+        defer host.stop();
+        host.share = .{ .p = share };
+        var path_buf: [128]u8 = undefined;
+        const path = try std.fmt.bufPrintSentinel(&path_buf, "/tmp/tf-slice-trace-{d}-{d}-{d}-{d}.jsonl", .{ std.c.getpid(), @intFromBool(on), size, @intFromBool(share < 1) }, 0);
+        _ = std.c.unlink(path);
+        defer _ = std.c.unlink(path);
+        trace.counters = .{};
+        if (on) host.trace_ = try trace.Trace.init(gpa, std.testing.io, path);
+        var watch: Watch = .{};
+        Watch.size = size;
+        Watch.lo = 0;
+        target.slice_hook = Watch.slice;
+        target.slice_ctx = &watch;
+        target.prefill_hook = Watch.chunk;
+        target.prefill_hook_ctx = &watch;
+        const prompt: [24]u32 = @splat(5);
+        const request: Request = .{ .prompt = &prompt, .max_tokens = 1 };
+        try host.engine().submit(1, &request, .{ .ctx = &watch, .event = Watch.event });
+        var iteration: usize = 0;
+        while (!watch.done and iteration < 100) : (iteration += 1) _ = host.runIteration();
+        try std.testing.expect(watch.done);
+        if (!on) {
+            try std.testing.expectEqual(trace.Counters{}, trace.counters);
+            continue;
+        }
+        try std.testing.expectEqual(@as(usize, 1), trace.counters.opens);
+        try std.testing.expectEqual(@as(usize, 3), trace.counters.allocations);
+        try std.testing.expect(trace.counters.clocks > 0);
+        try std.testing.expectEqual(@as(usize, 3), trace.counters.writes);
+        const data = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, gpa, .limited(1 << 20));
+        defer gpa.free(data);
+        var lines = std.mem.splitScalar(u8, data, '\n');
+        var count: usize = 0;
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+            const parsed = try std.json.parseFromSlice(std.json.Value, gpa, line, .{});
+            defer parsed.deinit();
+            const o = parsed.value.object;
+            for ([_][]const u8{ "version", "clock", "slot", "start", "rows", "replay", "encoder_only", "layers", "wall_us", "slack_us", "slice_sync", "gpu_time_known", "between_chunks", "events" }) |field| try std.testing.expect(o.contains(field));
+            try std.testing.expectEqual(@as(i64, @intCast(count * 8)), o.get("start").?.integer);
+            try std.testing.expectEqual(@as(i64, 8), o.get("rows").?.integer);
+            try std.testing.expectEqual(@as(i64, 5), o.get("layers").?.integer);
+            const events = o.get("events").?.array.items;
+            var roots: i64 = 0;
+            var slices: usize = 0;
+            for (events) |ev| {
+                const e = ev.object;
+                if (e.get("parent").? == .null) roots += e.get("end_us").?.integer - e.get("begin_us").?.integer;
+                if (std.mem.eql(u8, e.get("kind").?.string, "slice")) slices += 1;
+            }
+            try std.testing.expectEqual((5 + size - 1) / size, slices);
+            try std.testing.expectEqual(o.get("wall_us").?.integer, roots + o.get("slack_us").?.integer);
+            count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 3), count);
+        // Optional fixture capture is test-only and contains no request text or tokens.
+        if (size == 1 and share == 1) if (std.c.getenv("TF_SLICE_TRACE_TEST_SAMPLE")) |capture| {
+            const fd = std.c.open(capture, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o600));
+            try std.testing.expect(fd >= 0);
+            defer _ = std.c.close(fd);
+            try std.testing.expectEqual(@as(isize, @intCast(data.len)), std.c.write(fd, data.ptr, data.len));
+        };
+    };
 }

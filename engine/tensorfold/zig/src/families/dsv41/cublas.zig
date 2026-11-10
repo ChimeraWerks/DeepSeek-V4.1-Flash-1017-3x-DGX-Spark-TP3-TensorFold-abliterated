@@ -3,6 +3,7 @@
 //! CUBLAS_DEFAULT_MATH and a 32 MiB workspace (the recording's cuBLAS log); the same call on the same library picks the
 //! same algorithm.
 const std = @import("std");
+const trace = @import("lanes").slice_trace;
 const cuda = @import("cuda");
 
 pub const Status = c_int;
@@ -94,6 +95,8 @@ pub const Blas = struct {
     /// (cublasGemmEx: transa T, transb N, m = n, n = rows, lda = ldb = k, ldc = n, fp32 alpha 1 and beta 0, bf16
     /// operands, COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP; the recording's cuBLAS log for the vision MLP).
     pub fn linearBf16(b: *const Blas, x: u64, w: u64, out: u64, rows: usize, k: usize, n: usize) Error!void {
+        var trace_enqueue = trace.begin("cublas.linearBf16", .enqueue);
+        defer trace_enqueue.end();
         try cuda.context_health.ensureBoundHealthy();
         const admission = try b.owner.admit();
         defer admission.end();
@@ -106,6 +109,8 @@ pub const Blas = struct {
     /// torch.matmul of x [rows, k] fp32 (row-major) and w [n, k] fp32 transposed: out [rows, n] fp32, as torch issues
     /// it (column-major C^T = W x^T: transa T, transb N, m = n, n = rows, lda = ldb = k, ldc = n, alpha 1, beta 0).
     pub fn xwT(b: *const Blas, x: u64, w: u64, out: u64, rows: usize, k: usize, n: usize) Error!void {
+        var trace_enqueue = trace.begin("cublas.xwT", .enqueue);
+        defer trace_enqueue.end();
         try cuda.context_health.ensureBoundHealthy();
         const admission = try b.owner.admit();
         defer admission.end();
@@ -119,6 +124,8 @@ pub const Blas = struct {
     /// issues C^T = v^T x^T untransposed: transa N, transb N, m = 1, n = rows, lda = 1, ldb = k, ldc = 1 (cuBLAS runs it
     /// as a batched dot product).
     pub fn xv(b: *const Blas, x: u64, v: u64, out: u64, rows: usize, k: usize) Error!void {
+        var trace_enqueue = trace.begin("cublas.xv", .enqueue);
+        defer trace_enqueue.end();
         try cuda.context_health.ensureBoundHealthy();
         const admission = try b.owner.admit();
         defer admission.end();

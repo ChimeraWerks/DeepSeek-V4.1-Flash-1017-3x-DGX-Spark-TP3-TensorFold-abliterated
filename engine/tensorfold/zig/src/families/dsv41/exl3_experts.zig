@@ -9,6 +9,7 @@
 //! grouped_cp_kernel for down with the rows' combine, the last two programmatic dependents.
 //! The map: pipeline/EXL3-EXPERTS-LAUNCHES.md.
 const std = @import("std");
+const trace = @import("lanes").slice_trace;
 const cuda = @import("cuda");
 const elf = @import("elf.zig");
 const weights = @import("weights.zig");
@@ -761,16 +762,16 @@ fn splitStage(s: cuda.Stream, original: *PromptLaunch, original_fn: cuda.Functio
         // Compare against the OLD all-expert template, not a narrowed control.
         // Partition only permutes independent per-slot work in this reference.
         try cuda.launch.launch(original_fn, original.cfg, s, &original.args);
-        try s.synchronize();
+        try (blk: { var ts = trace.begin("exl3_experts.splitStage.stream_synchronize.site_765", .wait); defer ts.end(); break :blk s.synchronize(); });
         try s.d.check(s.d.api.cuMemcpyDtoH_v2(ref.ptr, z, bytes), "shared split original");
         raggedPoison(ref, actual);
         try s.d.check(s.d.api.cuMemcpyHtoDAsync_v2(z, actual.ptr, bytes, s.handle), "shared split poison");
-        try s.synchronize(); // pageable poison upload must finish before reuse/free
+        try (blk: { var ts = trace.begin("exl3_experts.splitStage.stream_synchronize.site_769", .wait); defer ts.end(); break :blk s.synchronize(); }); // pageable poison upload must finish before reuse/free
     }
     try cuda.launch.launch(routed_fn, routed.cfg, s, &routed.args);
     try cuda.launch.launch(shared_fn, shared.cfg, s, &shared.args);
     if (!checked) {
-        try s.synchronize();
+        try (blk: { var ts = trace.begin("exl3_experts.splitStage.stream_synchronize.site_774", .wait); defer ts.end(); break :blk s.synchronize(); });
         try s.d.check(s.d.api.cuMemcpyDtoH_v2(actual.ptr, z, bytes), "shared split candidate");
         if (!std.mem.eql(u8, ref, actual)) return error.RaggedMmaNumericalMismatch;
         std.debug.print("prefill_shared_split_check: rank={d} stage={d} routed_range={d} shared_range={d} bytes={d} exact_fp32=PASS\n", .{ prompt_ragged_rank, stage, routed.range, shared.range, bytes });
@@ -813,17 +814,17 @@ fn raggedLaunch(s: cuda.Stream, l: *PromptLaunch, original: cuda.Function, candi
         const actual = try a.alloc(u8, bytes);
         defer a.free(actual);
         try cuda.launch.launch(original, l.cfg, s, &l.args);
-        try s.synchronize();
+        try (blk: { var ts = trace.begin("exl3_experts.raggedLaunch.stream_synchronize.site_817", .wait); defer ts.end(); break :blk s.synchronize(); });
         try s.d.check(s.d.api.cuMemcpyDtoH_v2(ref.ptr, z, bytes), "ragged original");
         if (l.range == 2) {
             // A missing store must not inherit the reference and pass. Fence the
             // pageable host buffer before launching or freeing it on an error.
             raggedPoison(ref, actual);
             try s.d.check(s.d.api.cuMemcpyHtoDAsync_v2(z, actual.ptr, bytes, s.handle), "ragged poison");
-            try s.synchronize();
+            try (blk: { var ts = trace.begin("exl3_experts.raggedLaunch.stream_synchronize.site_824", .wait); defer ts.end(); break :blk s.synchronize(); });
         }
         try cuda.launch.launch(candidate, cfg, s, &l.args);
-        try s.synchronize();
+        try (blk: { var ts = trace.begin("exl3_experts.raggedLaunch.stream_synchronize.site_827", .wait); defer ts.end(); break :blk s.synchronize(); });
         try s.d.check(s.d.api.cuMemcpyDtoH_v2(actual.ptr, z, bytes), "ragged candidate");
         if (!std.mem.eql(u8, ref, actual)) return error.RaggedMmaNumericalMismatch;
         ragged_checked[stage][l.range] = true;
