@@ -4,6 +4,16 @@ DeepSeek V4.1 Flash 1017 abliterated EXL3 3.84 bpw runs across three NVIDIA DGX 
 
 v1.2 uses engine base `30a9647` with exactly two non-runtime edits in `zig/src/server/metrics.zig`. A documentation comment and a test name describe external metrics samplers generically. Serving logic is unchanged by them. Rebuild comparison results: `release/build-verification.json`.
 
+## 2026-11-10 running replies keep a share of time while a prompt loads
+
+In production since 2026-11-10: main `cd18925` with `TENSORFOLD_PREFILL_SHARE=0.5`, the same kernel images and the other flags unchanged. Measured on the three Sparks with one sampled reply streaming while a cold prompt loads: beside a 30,012-token prompt the reply runs at 30.2 tok/s instead of 6.2 (64 alone), four replies at 16.2 tok/s each instead of 6.5 (33 alone), and the prompt's first token takes 17.0 s instead of 9.6 s (8.2 s alone). At a share of 0.7 the reply runs at 18.6 tok/s and the prompt's first token takes 12.5 s. A prompt loading with nothing else running is unchanged. Checked live after the restart: the mixed-load probe, and identical seeded replies at `top_k` 0 and 20.
+
+- `TENSORFOLD_PREFILL_SHARE` had no effect on this engine. A prompt slice only queues its GPU work, so the decode round at the next park waited for it and was billed its time, which cancelled the debt the share is meant to build. With the share on, rank 0 now synchronizes the stream before a park and at a chunk's end. Share off adds no synchronize.
+- A park between prompt slices ran exactly one decode round. With the share on it now runs rounds until the preceding slice's debt is paid, up to `TF_DS_PARK_MAX_MS` (250 ms by default, 0 for no cap); what a park cannot pay is paid between chunks as before. Share off keeps one round per park.
+- The reply still pauses about 0.7 s once per prompt chunk: before a park the engine waits for the next chunk's Engram read.
+- With `tool_choice` required and thinking on, the first token could be the backend's draw handle instead of the drawn token. The handle is now read before the feed is reassigned (markyu0401's fix, Mia's 2x recipe PR 118).
+- Smaller slices help without any code change (`TF_DS_PREFILL_SLICE=2`: 11.6 tok/s beside the same prompt, first token 11.2 s) but less than the share does; production keeps 5.
+
 ## 2026-11-10 keyed drafts while a prompt loads
 
 In production since 2026-11-10: main `53dedad`, the same kernel images and flags as the entry below. Checked live after the restart: a sampled 2,500-token reply kept streaming while cold 8,012-token and 30,012-token prompts loaded beside it, every rank stayed up, and the seeded `top_k` 0 and `top_k` 20 replies were still identical.

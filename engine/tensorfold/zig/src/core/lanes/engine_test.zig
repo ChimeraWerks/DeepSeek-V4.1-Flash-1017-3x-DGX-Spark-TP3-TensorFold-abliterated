@@ -452,3 +452,68 @@ test "graph telemetry backend without hooks retains legacy clean timing" {
     try std.testing.expect(backend.timingClean());
     try std.testing.expectEqual(@as(usize, 0), target.timing_begins);
 }
+
+// The call gate's first token: the drawn token, not the backend's draw handle (#80).
+fn lexBlank(_: *anyopaque, _: u32) bool {
+    return false;
+}
+fn lexText(_: *anyopaque, _: std.mem.Allocator, _: u32) ![]const u8 {
+    return "";
+}
+fn lexEncode(_: *anyopaque, _: std.mem.Allocator, _: []const u8) ![]const u32 {
+    return &.{};
+}
+
+const gated_prompt = [_]u32{ 3, 1, 4, 1, 5, 7 }; // 7 = think_open last: the gate starts disarmed
+
+fn runGated(prompt: []const u32, gated: bool) ![]u32 {
+    var cfg = try model();
+    defer cfg.deinit(gpa);
+    var target: fake.Fake = .{ .gpa = gpa };
+    defer target.deinit();
+    var clock: fake.FixedClock = .{};
+    var engine = Engine.init(gpa, &cfg, target.backend(), clock.clock());
+    defer engine.deinit();
+    var p = try SuffixLookup.init(gpa, .{ .min_match = 4 });
+    defer p.deinit();
+    var s = try sm.Stream.init(gpa, .{
+        .id = "gated",
+        .prompt = prompt,
+        .max_new = 1,
+        .eos = &.{96},
+        .drafts = false,
+        .proposer = p.proposer(),
+        .think_close = &.{ 90, 91, 92 },
+        .think_end = 8,
+        .call = if (gated) .{
+            .opener = 30,
+            .think_open = 7,
+            .think_end = 8,
+            .lead = "",
+            .names = &.{"x"},
+            .tail = "",
+            .lex = .{ .ctx = @ptrCast(&cfg), .blank = lexBlank, .text = lexText, .encode = lexEncode },
+        } else null,
+    });
+    defer s.deinit(gpa);
+    try engine.addStream(&s);
+    while (engine.activeCount() > 0) try engine.step();
+    return gpa.dupe(u32, s.emitted());
+}
+
+test "a disarmed gate commits the drawn first token, not the backend's handle" {
+    const expected = fake.next(&gated_prompt, null, gated_prompt.len);
+    const gated = try runGated(&gated_prompt, true);
+    defer gpa.free(gated);
+    try std.testing.expectEqualSlices(u32, &.{expected}, gated);
+}
+
+test "an armed gate still forces the opener" {
+    const armed = [_]u32{ 3, 1, 4, 1, 5 }; // no think opener in the prompt: armed
+    const plain = try runGated(&armed, false);
+    defer gpa.free(plain);
+    try std.testing.expectEqualSlices(u32, &.{fake.next(&armed, null, armed.len)}, plain);
+    const gated = try runGated(&armed, true);
+    defer gpa.free(gated);
+    try std.testing.expectEqualSlices(u32, &.{30}, gated);
+}

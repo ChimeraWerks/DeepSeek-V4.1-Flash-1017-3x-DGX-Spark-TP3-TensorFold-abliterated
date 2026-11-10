@@ -19,6 +19,7 @@
 //!   TF_DS_ROUND_ROWS, TF_DS_STREAMS             a round's rows at most (16; the four-node lane's 48) and the pool's
 //!                                               streams (4; its 16): --parallel at most the streams
 //!   TF_RDMA_DEVICES                             the decode gathers over the RDMA ring on these devices (else NCCL)
+//!   TF_DS_PARK_MAX_MS                          share-enabled decode park cap in ms (250; 0: unlimited)
 //!   TF_DS_GRAPHS=1                              the rounds' stretches as CUDA graphs
 //!   TF_DS_GRAPH_CAP=N                           with graphs, at most N round keys (0 or unset: all); followers
 //!                                               use --graph-cap with the same N
