@@ -209,3 +209,15 @@ test "namespace aliases avoid the parser's case folded name collisions" {
     try std.testing.expectEqualStrings("files::read_1", set.namespaces.items[1].flat);
     try std.testing.expectEqualStrings("files", set.resolve("files::read_1").?.namespace);
 }
+
+test "recipe 32 synthetic apply_patch cannot alias a V41 namespace" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    const raw = (try json.parse(cx.a,
+        \\[{"type":"namespace","name":"apply_","tools":[{"type":"function","name":"patch"}]},{"type":"custom","name":"apply_patch"}]
+    )).ok;
+    const set = try Set.init(&cx, raw);
+    try std.testing.expectEqualStrings("apply_::patch", set.offered.?[0].get("function").?.get("name").?.string);
+    try std.testing.expectEqualStrings("apply_patch", set.offered.?[1].get("function").?.get("name").?.string);
+}
