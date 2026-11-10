@@ -2,6 +2,30 @@
 const std = @import("std");
 const lanes = @import("lanes");
 pub const env = "TF_DS_KEYED_DRAFT";
+pub const filter_env = "TF_DS_KEYED_FILTER";
+pub const max_top_k: u32 = 1024;
+
+pub const Filter = enum(u8) {
+    /// filtered samplers draft greedily, as before.
+    greedy = 0,
+    /// every sampled row gets unrestricted noise.
+    open = 1,
+    /// every sampled row gets noise; top_k is mirrored in the draft by default.
+    mirror = 2,
+};
+
+pub fn parseFilter(value: ?[]const u8) Filter {
+    const v = value orelse return .mirror;
+    if (std.mem.eql(u8, v, "0")) return .greedy;
+    if (std.mem.eql(u8, v, "1")) return .open;
+    return .mirror;
+}
+
+pub fn filterMode() Filter {
+    const value = std.c.getenv(filter_env);
+    return parseFilter(if (value) |v| std.mem.span(v) else null);
+}
+
 pub const agreement_bit: u64 = @as(u64, 1) << 63;
 
 pub fn enabled() bool {
@@ -24,12 +48,19 @@ pub fn checkAgreement(rank: u64, leader: u64) !void {
     if ((rank ^ leader) & agreement_bit != 0) return error.KeyedDraftMismatch;
 }
 
-/// The Markov head cannot mirror target-logit filtering. Keep those rows greedy.
-pub fn eligible(s: lanes.Sampling, vocab: usize) bool {
-    return std.math.isFinite(s.temperature) and s.temperature > 0 and
-        (s.top_k == 0 or s.top_k >= vocab) and
+/// sampled rows get noise unless the legacy mode excludes their filters.
+pub fn eligible(s: lanes.Sampling, vocab: usize, mode: Filter) bool {
+    if (!std.math.isFinite(s.temperature) or s.temperature <= 0) return false;
+    if (mode != .greedy) return true;
+    return (s.top_k == 0 or s.top_k >= vocab) and
         std.math.isFinite(s.top_p) and !(s.top_p > 0 and s.top_p < 1) and
         std.math.isFinite(s.min_p) and s.min_p <= 0;
+}
+
+/// mirror a bounded top_k in the draft; zero leaves noise unrestricted.
+pub fn draftTopK(s: lanes.Sampling, vocab: usize, mode: Filter) u32 {
+    if (mode != .mirror or s.top_k == 0 or s.top_k >= vocab) return 0;
+    return @min(s.top_k, max_top_k);
 }
 
 pub fn firstPosition(q0: i64) !i64 {
@@ -49,23 +80,52 @@ test "keyed draft flag agreement includes both TP3 followers" {
     try std.testing.expectEqual(@as(u64, 0), settingBit(false));
 }
 
-test "keyed draft eligibility preserves greedy and filtered launches" {
-    var s: lanes.Sampling = .{ .seed = 91, .temperature = 0.7, .top_k = 0, .top_p = 1 };
-    try std.testing.expect(eligible(s, 129280));
-    s.top_k = 129280;
-    try std.testing.expect(eligible(s, 129280));
-    s.top_k = 20;
-    try std.testing.expect(!eligible(s, 129280));
-    s.top_k = 0;
-    s.top_p = 0.95;
-    try std.testing.expect(!eligible(s, 129280));
-    s.top_p = 1;
-    s.min_p = 0.01;
-    try std.testing.expect(!eligible(s, 129280));
-    s.min_p = 0;
-    for ([_]f64{ 0, -1, std.math.nan(f64), std.math.inf(f64) }) |t| {
-        s.temperature = t;
-        try std.testing.expect(!eligible(s, 129280));
+test "keyed draft filter parsing defaults to mirror" {
+    try std.testing.expectEqual(Filter.mirror, parseFilter(null));
+    try std.testing.expectEqual(Filter.greedy, parseFilter("0"));
+    try std.testing.expectEqual(Filter.open, parseFilter("1"));
+    for ([_][]const u8{ "", "2", "mirror", "unknown", "01" }) |value| {
+        try std.testing.expectEqual(Filter.mirror, parseFilter(value));
+    }
+}
+
+test "keyed draft eligibility preserves greedy and allows open and mirror filters" {
+    for ([_]Filter{ .greedy, .open, .mirror }) |mode| {
+        var s: lanes.Sampling = .{ .seed = 91, .temperature = 0.7, .top_k = 0, .top_p = 1 };
+        try std.testing.expect(eligible(s, 129280, mode));
+        s.top_k = 129280;
+        try std.testing.expect(eligible(s, 129280, mode));
+        s.top_k = 20;
+        try std.testing.expectEqual(mode != .greedy, eligible(s, 129280, mode));
+        s.top_k = 0;
+        s.top_p = 0.95;
+        try std.testing.expectEqual(mode != .greedy, eligible(s, 129280, mode));
+        s.top_p = 1;
+        s.min_p = 0.05;
+        try std.testing.expectEqual(mode != .greedy, eligible(s, 129280, mode));
+        s.min_p = 0;
+        s.top_p = std.math.nan(f64);
+        try std.testing.expectEqual(mode != .greedy, eligible(s, 129280, mode));
+        s.top_p = 1;
+        s.min_p = std.math.inf(f64);
+        try std.testing.expectEqual(mode != .greedy, eligible(s, 129280, mode));
+        s.min_p = 0;
+        for ([_]f64{ 0, -1, std.math.nan(f64), std.math.inf(f64) }) |t| {
+            s.temperature = t;
+            try std.testing.expect(!eligible(s, 129280, mode));
+        }
+        // the API defaults have both top_k and top_p enabled.
+        try std.testing.expectEqual(mode != .greedy, eligible(.{ .seed = 91 }, 129280, mode));
+    }
+}
+
+test "keyed draft top_k mirrors only a bounded active filter" {
+    for ([_]Filter{ .greedy, .open, .mirror }) |mode| {
+        for ([_]u32{ 0, 1, 20, max_top_k, max_top_k + 1, 129280, 129281 }) |k| {
+            const s: lanes.Sampling = .{ .seed = 91, .top_k = k };
+            const want: u32 = if (mode == .mirror and k > 0 and k < 129280) @min(k, max_top_k) else 0;
+            try std.testing.expectEqual(want, draftTopK(s, 129280, mode));
+        }
     }
 }
 

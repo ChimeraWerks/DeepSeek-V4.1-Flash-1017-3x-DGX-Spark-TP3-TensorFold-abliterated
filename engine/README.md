@@ -53,7 +53,7 @@ In the source, off in production:
 |---|---|---|
 | `TF_CACHE_BATCH_DEAD`, `TF_CACHE_FIRST_CONTINUATION` | batched dead-checkpoint release and a first-continuation hint ([port notes](PORT-laky-4.0.2-cache-batch.md)) | LakyFx 4.0.2 |
 | `TF_DS_DRAFT_CAL`, `TF_DS_FIRST_DRAFT_DEPTH` | per-stream draft calibration and full first head depth | Mia's patches 0050 and 0049 (lukaszraczylo) |
-| `TF_DS_KEYED_DRAFT` | sampled drafts keyed to target draws; needs a `KEYED_DRAFT=true` build | Mia's patch 0054 (lukaszraczylo) |
+| `TF_DS_KEYED_DRAFT` | sampled drafts keyed to target draws; needs a `KEYED_DRAFT=true` build. `TF_DS_KEYED_FILTER` on rank 0 picks which sampled requests: `2` (default) all of them, with a request's `top_k` mirrored in the draft; `1` all, unrestricted; `0` only requests without `top_k`, `top_p` or `min_p` | Mia's patch 0054 (lukaszraczylo); `top_k` mirror by ChimeraWerks |
 | `TF_DS_DECODE_GREEDY_HEAD`, `TF_DS_DECODE_SAMPLE_HEAD` | exact reduced output heads; need `TF_DS_REDUCED_HEAD_FATBIN` | LakyFx 4.0.2, adapted to TP3 |
 | `TF_SPILL_ROOM_WAIT_MS` | bounded wait for room before a restore starts | Mia's patch 0040 (nuk3s) |
 | `TF_DS_GRAPH_TELEMETRY` | CUDA graph hit, capture and pressure counters | ChimeraWerks |

@@ -115,13 +115,14 @@ pub const Markov = struct {
     }
 
     /// Markov.local_best: step i of out [N, steps + 1] int64 (row stride ts) on this rank's columns: out[:, i + 1], or the returned send [N, 4] (split).
-    pub fn localBest(m: Markov, t: Tri, lg: u64, out: u64, ts: usize, n: usize, block: usize, i: usize, sc: Scratch) !?u64 {
+    pub fn localBest(m: Markov, t: Tri, lg: u64, out: u64, ts: usize, n: usize, block: usize, i: usize, sc: Scratch, mid: ?Tap) !?u64 {
         if (n > np) return error.TooManyRows;
         const nc = m.n_cols;
         const lw = if (m.lg_w != 0) m.lg_w else nc; // the logits' row width
         const l_seg = if (m.lg_w != 0) nc else n * block * nc; // a segment's offset in them
         const tok = out + 8 * i;
         try m.bias(t, tok, ts, m.slot, sc.stage, m.cols, n);
+        if (mid) |x| try x.run(x.ctx, i);
         try t.run("_score", .{ u(m.s_tiles), u(m.segs), 1 }, &.{
             p("LG", "*fp32", lg + 4 * i * lw), int("l_seg", l_seg),       int("l_row", block * lw),     p("TOK", "*i64", tok),
             int("t_stride", ts),               p("SLOT", "*i32", m.slot), p("CACHE", "*fp16", m.cache), int("c_row", m.cols),
@@ -142,14 +143,14 @@ pub const Markov = struct {
 
     /// Markov.steps: out [N, count + 1] int64 (out[:, 0] the last tokens) -> out[:, 1:] the drafts, each step's bests gathered over the ranks before its pick.
     pub fn steps(m: Markov, t: Tri, lg: u64, out: u64, ts: usize, n: usize, block: usize, count: usize, sc: Scratch, gather: Gather) !void {
-        return m.stepsWith(t, lg, out, ts, n, block, count, sc, gather, null);
+        return m.stepsWith(t, lg, out, ts, n, block, count, sc, gather, null, null);
     }
 
-    /// `steps` with `pre` run before step i's first launch (it may rewrite the step's logits block row: no later step reads it).
-    pub fn stepsWith(m: Markov, t: Tri, lg: u64, out: u64, ts: usize, n: usize, block: usize, count: usize, sc: Scratch, gather: Gather, pre: ?Tap) !void {
+    /// `steps` with `pre` before the first launch and `mid` between bias and score (only this step reads its logits row).
+    pub fn stepsWith(m: Markov, t: Tri, lg: u64, out: u64, ts: usize, n: usize, block: usize, count: usize, sc: Scratch, gather: Gather, pre: ?Tap, mid: ?Tap) !void {
         for (0..count) |i| {
             if (pre) |x| try x.run(x.ctx, i);
-            const send = try m.localBest(t, lg, out, ts, n, block, i, sc) orelse continue;
+            const send = try m.localBest(t, lg, out, ts, n, block, i, sc, mid) orelse continue;
             try m.pick(t, try gather.run(gather.ctx, send, n), m.world, out, ts, n, i);
         }
     }
@@ -219,7 +220,7 @@ test "Markov bias rows (fill at load, each step's staging rows) launch as record
             m.slot = c.ptr("SLOT");
             // a step's bias reads out[:, i] (TOK) and nothing else of the step's own: step 0 of out = TOK
             const sc: Scratch = .{ .pv = elsewhere, .pi = elsewhere, .send = elsewhere, .stage = c.ptr("OUT") };
-            _ = try m.localBest(t, elsewhere, c.ptr("TOK"), c.stride("TOK", 0), c.dim("TOK", 0), cfg.dspark_block, 0, sc);
+            _ = try m.localBest(t, elsewhere, c.ptr("TOK"), c.stride("TOK", 0), c.dim("TOK", 0), cfg.dspark_block, 0, sc, null);
         }
     }.call);
 }
@@ -236,7 +237,7 @@ test "Markov scoring launches as recorded" {
             // LG is lg.view(-1)[i * nc:] of the drafter head's [N block, nc] logits: its length gives the step i
             const i = n * cfg.dspark_block - c.dim("LG", 0) / nc;
             const sc: Scratch = .{ .pv = c.ptr("PV"), .pi = c.ptr("PI"), .send = elsewhere, .stage = c.ptr("STAGE") };
-            _ = try m.localBest(t, c.ptr("LG") - 4 * i * nc, c.ptr("TOK") - 8 * i, c.stride("TOK", 0), n, cfg.dspark_block, i, sc);
+            _ = try m.localBest(t, c.ptr("LG") - 4 * i * nc, c.ptr("TOK") - 8 * i, c.stride("TOK", 0), n, cfg.dspark_block, i, sc, null);
         }
     }.call);
 }
@@ -248,7 +249,7 @@ test "Markov step finish launches as recorded" {
             const m = try markovOf(cfg, c, elsewhere, elsewhere, elsewhere);
             // the finish writes out[:, i + 1] (OUT) and takes nothing else of the step's own: step 0 of out = OUT less a column
             const sc: Scratch = .{ .pv = c.ptr("PV"), .pi = c.ptr("PI"), .send = c.ptr("SEND"), .stage = elsewhere };
-            _ = try m.localBest(t, elsewhere, c.ptr("OUT") - 8, c.stride("OUT", 0), c.dim("OUT", 0), cfg.dspark_block, 0, sc);
+            _ = try m.localBest(t, elsewhere, c.ptr("OUT") - 8, c.stride("OUT", 0), c.dim("OUT", 0), cfg.dspark_block, 0, sc, null);
         }
     }.call);
 }
@@ -324,9 +325,36 @@ test "a pre hook runs before each step's launches and adds none" {
     };
     var pr: Probe = .{ .log = &log };
     const sc: Scratch = .{ .pv = 0x7c00_0000_0000, .pi = 0x7c00_0000_0100, .send = 0x7c00_0000_0200, .stage = 0x7c00_0000_0300 };
-    try m.stepsWith(.{ .log = &log }, elsewhere, 0x7b00_0000_0000, 4, 3, cfg.dspark_block, 3, sc, .{ .ctx = &pr, .run = Probe.gather }, .{ .ctx = &pr, .run = Probe.pre });
+    try m.stepsWith(.{ .log = &log }, elsewhere, 0x7b00_0000_0000, 4, 3, cfg.dspark_block, 3, sc, .{ .ctx = &pr, .run = Probe.gather }, .{ .ctx = &pr, .run = Probe.pre }, null);
     try std.testing.expectEqual(@as(usize, 3), pr.n);
     try std.testing.expectEqualSlices(usize, &.{ 0, 4, 8 }, &pr.seen);
+    try std.testing.expectEqual(@as(usize, 12), log.items.items.len);
+}
+
+test "a keyed Markov mid hook runs after each step's bias and adds none" {
+    var log: tri.Log = .{ .gpa = std.testing.allocator };
+    defer log.deinit();
+    const cfg = try modelConfig();
+    const m = try Markov.init(cfg, .{ .rank = 1, .world = tp }, elsewhere, elsewhere, elsewhere);
+    const Probe = struct {
+        log: *tri.Log,
+        seen: [3]usize = undefined,
+        n: usize = 0,
+        fn gather(_: *anyopaque, _: u64, _: usize) anyerror!u64 {
+            return 0x7d00_0000_0000;
+        }
+        fn mid(ctx: *anyopaque, step: usize) anyerror!void {
+            const r: *@This() = @ptrCast(@alignCast(ctx));
+            try std.testing.expectEqual(r.n, step);
+            r.seen[step] = r.log.items.items.len;
+            r.n += 1;
+        }
+    };
+    var pr: Probe = .{ .log = &log };
+    const sc: Scratch = .{ .pv = 0x7c00_0000_0000, .pi = 0x7c00_0000_0100, .send = 0x7c00_0000_0200, .stage = 0x7c00_0000_0300 };
+    try m.stepsWith(.{ .log = &log }, elsewhere, 0x7b00_0000_0000, 4, 3, cfg.dspark_block, 3, sc, .{ .ctx = &pr, .run = Probe.gather }, null, .{ .ctx = &pr, .run = Probe.mid });
+    try std.testing.expectEqual(@as(usize, 3), pr.n);
+    try std.testing.expectEqualSlices(usize, &.{ 1, 5, 9 }, &pr.seen);
     try std.testing.expectEqual(@as(usize, 12), log.items.items.len);
 }
 

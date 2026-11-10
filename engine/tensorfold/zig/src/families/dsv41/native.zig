@@ -45,7 +45,8 @@
 //! other nodes; TF_RDMA_DEVICES (and TF_DS_RDMA_KERNELS: rdma_gather.cu's fatbin, unset: the embedded one) put its
 //! decode-size exchanges on the RDMA rings, as the four-node Python lane's TF_RDMA_DEVICES does.
 //! TF_DS_KEYED_DRAFT=1 adds keyed Gumbel noise to eligible sampled drafts; default off.
-//! All ranks must agree. Unfiltered sampling only; target verification is unchanged.
+//! All ranks must agree. TF_DS_KEYED_FILTER: 0 greedy filters, 1 open noise, otherwise mirror top_k (default).
+//! Target verification is unchanged; grammar-constrained rows stay greedy.
 //! Build with -Dkeyed_draft=true to embed dsv41_keyed.fatbin; enabled startup refuses if absent.
 const std = @import("std");
 const cuda = @import("cuda");

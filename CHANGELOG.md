@@ -4,6 +4,17 @@ DeepSeek V4.1 Flash 1017 abliterated EXL3 3.84 bpw runs across three NVIDIA DGX 
 
 v1.2 uses engine base `30a9647` with exactly two non-runtime edits in `zig/src/server/metrics.zig`. A documentation comment and a test name describe external metrics samplers generically. Serving logic is unchanged by them. Rebuild comparison results: `release/build-verification.json`.
 
+## 2026-11-09 keyed drafts for top_k requests
+
+Built and host-tested on branch `engine/keyed-draft-topk`; not in production and not yet measured on the Sparks.
+
+- Keyed drafts reached only requests that sample without `top_k`, `top_p` or `min_p`, so API-default requests (`top_k` 20) still drafted greedily against a sampled target. Every sampled request now gets keyed draft noise, and a request with `top_k` has it mirrored in the draft: each rank keeps its `top_k` best columns of the draft logits plus the Markov bias before the noise is added, so a tail token the target cannot pick is never proposed.
+- Target sampling and acceptance are unchanged, so a reply still depends only on its seed, never on the draft. Grammar-constrained requests still draft greedily. `top_p` and `min_p` are not mirrored.
+- `TF_DS_KEYED_FILTER` on rank 0 selects the rule (`2` mirror, the default; `1` noise without the mirror; `0` the previous rule). The draft pass frame carries each stream's `top_k`, and the rank protocol version is 3, checked at startup with CUDA graphs on or off, so old and new ranks refuse to start together.
+- The new kernel `tf_ds_keyed_filter_kernel` lives in the opt-in `dsv41_keyed` image, and its row grew from 24 to 32 bytes: a `KEYED_DRAFT=true` build needs that fatbin rebuilt.
+- `tf-dsv41-lanes` requests take `min_p`.
+- Checked on the host: the kernel matched a CPU reference on an RTX 5090 (19,178,030 checks: masked sets exact, noise within 2e-6, `top_k` 0 bit-equal to the old kernel), 34 keyed-draft tests and the structured-output, graph-vote and drafter-fault steps pass, and the aarch64 `native` and `dsv41-tools` build succeeds.
+
 ## 2026-11-09 measured round costs
 
 In production since 2026-11-09, with the owner's approval, in the bundled restart: `TF_DS_ROUND_MS` set on every rank to a round-cost table measured on this cluster, in place of the served `ROUND_MS`.

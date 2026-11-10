@@ -12,9 +12,8 @@ fn blocks(count: usize, threads: usize) u32 {
     return @intCast(@min((count + threads - 1) / threads, 65535));
 }
 
-/// One stream's row of tf_ds_keyed_noise_kernel's table: the sampler's seed and temperature, and the absolute position
-/// of its step-0 draft.
-pub const KeyedRow = extern struct { seed: u64, temp: f64, pos: i64 };
+/// one stream's keyed kernel row: seed, temperature, first draft position and draft top_k.
+pub const KeyedRow = extern struct { seed: u64, temp: f64, pos: i64, top_k: u32 = 0, reserved: u32 = 0 };
 
 /// tf_ds_l2_prefetch_kernel's argument: up to 16 device ranges (their first byte and length).
 pub const Prefetch = extern struct { ptr: [16]u64 = @splat(0), bytes: [16]u64 = @splat(0), n: c_int = 0 };
@@ -51,6 +50,7 @@ pub const Ops = struct {
     gpu_clock: cuda.Function,
     keyed: ?cuda.Module = null,
     keyed_noise: ?cuda.Function = null,
+    keyed_filter: ?cuda.Function = null,
 
     /// The three images (cuda.kernels.torch_pointwise, torch_movement and dsv41_ops, or the fatbins' bytes).
     pub fn load(d: *const cuda.Driver, pointwise: []const u8, movement: []const u8, family: []const u8) !Ops {
@@ -92,8 +92,10 @@ pub const Ops = struct {
         var module = try cuda.Module.load(d, image);
         errdefer module.unload();
         const f = try module.function("tf_ds_keyed_noise_kernel");
+        const filter = try module.function("tf_ds_keyed_filter_kernel");
         o.keyed = module;
         o.keyed_noise = f;
+        o.keyed_filter = filter;
     }
 
     /// A separate image: existing production CUDA images remain byte-identical.
@@ -442,6 +444,27 @@ pub const Ops = struct {
         try cuda.launch.launch(f, .{ .grid = .{ .x = blocks(width, 256), .y = @intCast(rows) }, .block = .{ .x = 256 } }, s, &a);
     }
 
+    /// noise restricted to each row's draft top_k after bias, before scoring; zero top_k is unrestricted.
+    pub fn keyedFilter(o: *const Ops, s: cuda.Stream, logits: u64, l_row: usize, width: usize, col0: usize, table: u64, step: usize, rows: usize, tok: u64, t_stride: usize, slot: u64, cache: u64, c_row: usize, stage: u64, s_row: usize) !void {
+        const f = o.keyed_filter orelse return error.KeyedDraftOff;
+        if (rows == 0 or width == 0) return;
+        var a: cuda.Args = .{};
+        a.add(logits);
+        a.add(@as(u64, l_row));
+        a.add(@as(u32, @intCast(width)));
+        a.add(@as(u64, col0));
+        a.add(table);
+        a.add(@as(u32, @intCast(step)));
+        a.add(tok);
+        a.add(@as(u64, t_stride));
+        a.add(slot);
+        a.add(cache);
+        a.add(@as(u64, c_row));
+        a.add(stage);
+        a.add(@as(u64, s_row));
+        try cuda.launch.launch(f, .{ .grid = .{ .x = 1, .y = @intCast(rows) }, .block = .{ .x = 1024 } }, s, &a);
+    }
+
     /// The GPU clock (ns) into buf[i] when the stream reaches it (a profile).
     pub fn gpuClock(o: *const Ops, s: cuda.Stream, buf: u64, tag: u32, reset: bool, cap: u32) !void {
         var a: cuda.Args = .{};
@@ -474,8 +497,11 @@ test "launch geometry of the development launchers" {
     try std.testing.expectEqual(@as(u32, 65535), blocks(1 << 40, 256));
 }
 
-test "a keyed row is the kernel's TfDsKeyedRow: u64 seed, f64 temperature, i64 position" {
-    try std.testing.expectEqual(@as(usize, 24), @sizeOf(KeyedRow));
+test "a keyed row is the kernel's 32-byte TfDsKeyedRow with top_k" {
+    try std.testing.expectEqual(@as(usize, 32), @sizeOf(KeyedRow));
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(KeyedRow, "seed"));
+    try std.testing.expectEqual(@as(usize, 24), @offsetOf(KeyedRow, "top_k"));
+    try std.testing.expectEqual(@as(usize, 28), @offsetOf(KeyedRow, "reserved"));
     try std.testing.expectEqual(@as(usize, 8), @offsetOf(KeyedRow, "temp"));
     try std.testing.expectEqual(@as(usize, 16), @offsetOf(KeyedRow, "pos"));
 }
@@ -545,4 +571,55 @@ test "decode greedy head actual Ops launcher ABI and grids without CUDA" {
     ops.sample_head_local = null;
     try std.testing.expectError(error.NoGreedyHeadKernel, ops.sampleHeadLocal(stream, 0x11000, 43136, 129280, 86272, 3, 28, 0x22000));
     try std.testing.expectEqual(@as(usize, 4), Fake.calls);
+}
+
+
+test "keyed filter actual launcher ABI and grid without CUDA" {
+    const Fake = struct {
+        var calls: usize = 0;
+        var good: bool = true;
+        fn arg(comptime T: type, params: ?[*]?*anyopaque, i: usize) T {
+            return @as(*const T, @ptrCast(@alignCast(params.?[i].?))).*;
+        }
+        fn launch(f: cuda.abi.Function, gx: c_uint, gy: c_uint, gz: c_uint,
+            bx: c_uint, by: c_uint, bz: c_uint, shared: c_uint,
+            _: cuda.abi.Stream, params: ?[*]?*anyopaque, _: ?[*]?*anyopaque) callconv(.c) cuda.abi.Result {
+            calls += 1;
+            good = good and @intFromPtr(f) == 105 and gx == 1 and gy == 3 and gz == 1 and
+                bx == 1024 and by == 1 and bz == 1 and shared == 0;
+            good = good and arg(u64, params, 0) == 0x11000 and arg(u64, params, 1) == 215680 and
+                arg(u32, params, 2) == 43136 and arg(u64, params, 3) == 86272 and
+                arg(u64, params, 4) == 0x22000 and arg(u32, params, 5) == 2 and
+                arg(u64, params, 6) == 0x33010 and arg(u64, params, 7) == 6 and
+                arg(u64, params, 8) == 0x44000 and arg(u64, params, 9) == 0x55000 and
+                arg(u64, params, 10) == 43136 and arg(u64, params, 11) == 0x66000 and
+                arg(u64, params, 12) == 43136;
+            return cuda.abi.success;
+        }
+    };
+    Fake.calls = 0;
+    Fake.good = true;
+    var driver: cuda.Driver = undefined;
+    driver.api.cuLaunchKernel = Fake.launch;
+    // host-only fixture: no driver loading or GPU context creation.
+    const health = cuda.context_health;
+    const fake_context: cuda.abi.Context = @ptrFromInt(0x7dd85002);
+    try health.retain(@intFromPtr(&driver), fake_context);
+    defer health.release(@intFromPtr(&driver), fake_context);
+    health.setCurrent(@intFromPtr(&driver), fake_context);
+    defer health.clearCurrent(@intFromPtr(&driver), fake_context);
+    var owner = health.Owner.capture();
+    defer owner.release();
+    const stream: cuda.Stream = .{ .d = &driver, .owner = owner, .handle = null };
+    var ops: Ops = undefined;
+    ops.keyed_filter = .{ .d = &driver, .owner = owner, .handle = @ptrFromInt(105) };
+    try ops.keyedFilter(stream, 0x11000, 215680, 43136, 86272, 0x22000, 2, 3, 0x33010, 6, 0x44000, 0x55000, 43136, 0x66000, 43136);
+    try std.testing.expectEqual(@as(usize, 1), Fake.calls);
+    try std.testing.expect(Fake.good);
+    try ops.keyedFilter(stream, 0x11000, 215680, 43136, 86272, 0x22000, 2, 0, 0x33010, 6, 0x44000, 0x55000, 43136, 0x66000, 43136);
+    try ops.keyedFilter(stream, 0x11000, 215680, 0, 86272, 0x22000, 2, 3, 0x33010, 6, 0x44000, 0x55000, 43136, 0x66000, 43136);
+    try std.testing.expectEqual(@as(usize, 1), Fake.calls);
+    ops.keyed_filter = null;
+    try std.testing.expectError(error.KeyedDraftOff, ops.keyedFilter(stream, 0x11000, 215680, 43136, 86272, 0x22000, 2, 3, 0x33010, 6, 0x44000, 0x55000, 43136, 0x66000, 43136));
+    try std.testing.expectEqual(@as(usize, 1), Fake.calls);
 }

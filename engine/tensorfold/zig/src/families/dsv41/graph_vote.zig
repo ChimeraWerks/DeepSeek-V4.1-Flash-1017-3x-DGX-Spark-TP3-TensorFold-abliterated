@@ -4,7 +4,7 @@ const link = @import("link.zig");
 
 pub const size = 48;
 pub const discriminator: u8 = 14;
-pub const version: u8 = 2; // 2: draft frames carry the keyed bit (c = 0 or 1)
+pub const version: u8 = 3; // 3: keyed pass frames carry each stream's top_k
 pub const Message = enum(u8) { start = 1, vote = 2, decision = 3 };
 pub const Stage = enum(u8) { reserve = 1, ready = 2 };
 pub const Family = enum(u8) { round = 1, draft = 2 };
@@ -234,7 +234,10 @@ test "draft frames carry the keyed bit and reject unknown values" {
     for ([_]u64{ 0, 1 }) |c| for ([_]Stage{ .reserve, .ready }) |stage| {
         const f: Frame = .{ .message = .start, .stage = stage, .sender = 0, .world = 3, .step = 7, .ordinal = 0, .family = .draft, .status = .none, .key = .{ .a = 16, .b = 3, .c = c } };
         var b = try encode(f);
+        try std.testing.expectEqual(@as(u8, 3), b[1]);
         try std.testing.expectEqualDeep(f, try decode(&b));
+        b[1] = 2; // old keyed pass frames have no top_k.
+        try std.testing.expectError(error.BadFrame, decode(&b));
     };
     for ([_]u64{ 2, 3, 1 << 63 }) |c| {
         const f: Frame = .{ .message = .start, .stage = .reserve, .sender = 0, .world = 3, .step = 7, .ordinal = 0, .family = .draft, .status = .none, .key = .{ .a = 16, .b = 3, .c = c } };
