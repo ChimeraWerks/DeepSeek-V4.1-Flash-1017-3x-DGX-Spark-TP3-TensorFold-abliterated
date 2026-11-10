@@ -3911,3 +3911,93 @@ test "prefill slice share debt gives decode rounds between chunks with asynchron
         try std.testing.expect(log.done[0]);
     };
 }
+
+test "prefill slice nojoin fake backend runs before read completion and holds finished decoders" {
+    const Log = struct { fn event(_: *anyopaque, _: Id, _: *const Event) void {} };
+    const Probe = struct {
+        host: *LaneHost,
+        target: *lanes.fake.Fake,
+        reader: ?std.Thread = null,
+        go: std.atomic.Value(bool) = .init(false),
+        ready: std.atomic.Value(bool) = .init(false),
+        row: u32 = 0,
+        parks: usize = 0,
+        rounds: usize = 0,
+        release_baseline: usize = 0,
+        good: bool = true,
+        cancel: bool,
+        fn read(p: *@This()) void {
+            while (!p.go.load(.acquire)) std.Thread.yield() catch {};
+            p.row = 42;
+            p.ready.store(true, .release);
+        }
+        fn consume(p: *@This()) void {
+            p.go.store(true, .release);
+            if (p.reader) |th| th.join();
+            p.reader = null;
+            p.good = p.good and p.ready.load(.acquire) and p.row == 42;
+        }
+        fn slice(ctx: *anyopaque, _: *lanes.Stream) void {
+            const p: *@This() = @ptrCast(@alignCast(ctx));
+            if (p.parks == 0) {
+                p.reader = std.Thread.spawn(.{}, read, .{p}) catch { p.good = false; return; };
+            } else {
+                // The next consuming slice waits before using the prompt rows.
+                p.consume();
+            }
+            p.parks += 1;
+        }
+        fn round(ctx: *anyopaque) void {
+            const p: *@This() = @ptrCast(@alignCast(ctx));
+            p.good = p.good and p.host.core.hold_finished;
+            p.good = p.good and p.target.release_calls == p.release_baseline;
+            if (p.rounds == 0) p.good = p.good and p.reader != null and !p.ready.load(.acquire);
+            p.rounds += 1;
+            if (p.cancel) p.host.engine().cancel(2);
+        }
+    };
+    for ([_]bool{ false, true }) |cancel| {
+        const a = std.testing.allocator;
+        var cfg = try lanes.Config.init(a, .{ .exact_width = 8, .hidden_rows = true }, 8, 7);
+        defer cfg.deinit(a);
+        var fake: lanes.fake.Fake = .{ .gpa = a };
+        defer fake.deinit();
+        var clock: lanes.fake.FixedClock = .{};
+        var core = lanes.Engine.init(a, &cfg, fake.stepped(), clock.clock());
+        defer core.deinit();
+        var host = LaneHost.init(a, std.testing.io, &core, .{ .lanes = 3 });
+        defer host.stop();
+        host.share = .{};
+        var log: Log = .{};
+        const short = [_]u32{ 2, 7, 1, 8 };
+        const long: [1024]u32 = @splat(5);
+        const decoder: Request = .{ .prompt = &short, .max_tokens = 2 };
+        const filling: Request = .{ .prompt = &long, .max_tokens = 1 };
+        try host.engine().submit(1, &decoder, .{ .ctx = &log, .event = Log.event });
+        host.admitBatch();
+        host.runFills();
+        try host.engine().submit(2, &filling, .{ .ctx = &log, .event = Log.event });
+        host.admitBatch();
+        var p: Probe = .{ .host = &host, .target = &fake, .cancel = cancel, .release_baseline = fake.release_calls };
+        defer if (p.reader != null) p.consume();
+        fake.prefill_slices = 3;
+        fake.slice_hook = Probe.slice;
+        fake.slice_ctx = &p;
+        fake.round_hook = Probe.round;
+        fake.round_ctx = &p;
+        host.runFills();
+        if (cancel) {
+            // Cancellation skipped the next consuming slice. Ordered abort cleanup
+            // must still retain and join the worker before reclaiming its input.
+            try std.testing.expect(p.reader != null and !p.ready.load(.acquire));
+            p.consume();
+        }
+        try std.testing.expect(p.good and p.reader == null);
+        try std.testing.expectEqual(@as(usize, 1), p.rounds);
+        try std.testing.expectEqual(@as(usize, if (cancel) 1 else 2), p.parks);
+        try std.testing.expect(!core.hold_finished);
+        fake.slice_hook = null;
+        fake.round_hook = null;
+        host.closeAll();
+    }
+}

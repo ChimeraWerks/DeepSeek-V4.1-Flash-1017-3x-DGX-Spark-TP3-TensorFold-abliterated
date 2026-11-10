@@ -228,6 +228,9 @@ pub const Model = struct {
     aio: ?*engram_aio.Aio = null,
     paio: ?*engram_aio.Aio = null, // the prompt chunks' Engram reads, on a ring of their own
     eh: ?prompt.EngramHost = null,
+    park_nojoin: bool = false, // TF_DS_PARK_NOJOIN, agreed without changing checkpoint identity
+    park_eh: ?prompt.EngramHost = null,
+    park_pool: ?*engram_io.Pool = null,
     host_pos: []i64,
     ids64: []i64,
     vocab: usize,
@@ -339,6 +342,9 @@ pub const Model = struct {
         m.aio = null;
         m.paio = null;
         m.eh = null;
+        m.park_nojoin = prefill128.enabled("TF_DS_PARK_NOJOIN");
+        m.park_eh = null;
+        m.park_pool = null;
         m.rdma_mod = null;
         m.ring = null;
         m.graphs = null;
@@ -673,7 +679,7 @@ pub const Model = struct {
             // the prompt's collectives pair up only when every rank runs the same kind
             @import("cache_batch.zig").Flags.fromEnv().agreement(@as(u64, @intFromBool(prompt.owned_on)) | @as(u64, @intFromBool(directGather())) << 1 | (m.prefill.bits() << 2) |
                 (if (@import("graph_telemetry.zig").enabled()) @import("graph_telemetry.zig").agreement_bit else 0) | keyed_draft.settingBit(keyed_draft.enabled()) | greedy_head.agreement(m.decode_greedy_head) | (if (m.decode_sample_head) greedy_head.sample_agreement_bit else @as(u64, 0)) |
-                (@as(u64, @intFromBool(prompt.bf16_wire_on)) << 52) | (@as(u64, @intFromBool(prompt.owned_router_on)) << 53)),
+                parkAgreement(m.park_nojoin) | (@as(u64, @intFromBool(prompt.bf16_wire_on)) << 52) | (@as(u64, @intFromBool(prompt.owned_router_on)) << 53)),
             draft_words[0], draft_words[1],
             @import("engine_api").Spill.roomWaitMs(if (std.c.getenv("TF_SPILL_ROOM_WAIT_MS")) |v| std.mem.span(v) else null),
         };
@@ -771,6 +777,7 @@ pub const Model = struct {
         if (!cuda.context_health.cleanupReleased(cleanup)) return false;
         if (m.paio) |x| x.deinit();
         if (!cuda.context_health.cleanupReleased(cleanup)) return false;
+        if (m.park_pool) |p| p.deinit(m.gpa);
         if (m.epool) |p| p.deinit(m.gpa);
         if (!cuda.context_health.cleanupReleased(cleanup)) return false;
         if (m.tables) |*t| t.close();
@@ -936,6 +943,46 @@ pub const Model = struct {
         m.rs.ahead = null;
         if (m.ahead) |th| th.join();
         m.ahead = null;
+    }
+
+    pub fn independentPark(m: *const Model) bool {
+        return m.park_nojoin and m.rs.live;
+    }
+
+    /// Only live parks retain reader custody. Abort, release and row consumption
+    /// still call joinAhead, regardless of the setting.
+    pub fn joinParkAhead(m: *Model) void {
+        if (!m.independentPark()) m.joinAhead();
+    }
+
+    fn roundEngram(m: *Model) !?*prompt.EngramHost {
+        const eh = if (m.eh) |*x| x else return null;
+        if (!m.independentPark()) return eh;
+        if (m.park_eh == null) {
+            // Lazy: a prompt with no runnable decoder creates no storage or workers.
+            const pool = try engram_io.Pool.init(m.gpa, m.io, if (eh.aio != null) 0 else 64);
+            errdefer pool.deinit(m.gpa);
+            m.park_eh = try prompt.EngramHost.initRound(m.host.allocator(), eh, pool, 2 * round.max_rows);
+            m.park_pool = pool;
+        }
+        m.park_eh.?.io = eh.io;
+        return &m.park_eh.?;
+    }
+
+    fn parkProfile(m: *Model) void {
+        if (!m.independentPark()) return;
+        const src = if (m.park_eh) |*x| x else return;
+        const dst = &m.eh.?;
+        dst.t_hash += src.t_hash;
+        dst.t_read += src.t_read;
+        dst.t_decode += src.t_decode;
+        dst.t_upload += src.t_upload;
+        dst.calls += src.calls;
+        src.t_hash = 0;
+        src.t_read = 0;
+        src.t_decode = 0;
+        src.t_upload = 0;
+        src.calls = 0;
     }
 
     /// A kept prompt state's own bytes (the prompt cache's snapshots; the compressed plane stays in the stream's
@@ -1653,11 +1700,13 @@ pub const Model = struct {
     }
 
     fn verifyRun(m: *Model, rows: round.Rows, absorb: []const bool) !void {
-        m.joinAhead(); // a prompt chunk's Engram read-ahead shares the host buffers a round's Engram reads use
+        m.joinParkAhead();
+        const eh = try m.roundEngram();
+        defer m.parkProfile();
         const e = &m.eng;
         if (m.prof) try m.stream.synchronize(); // (the GPU idle, so the issue time shows whether the host keeps it fed)
         const t0 = m.now();
-        try round.forward(e, &m.rd, &m.ch, &m.caches, m.rings, if (m.eh) |*x| x else null, &.{}, rows, m.request_cap, null, if (m.rs.live) null else if (m.graphs) |*g| g else null);
+        try round.forward(e, &m.rd, &m.ch, &m.caches, m.rings, eh, &.{}, rows, m.request_cap, null, if (m.rs.live) null else if (m.graphs) |*g| g else null);
         if (m.prof) {
             m.t_enqueue = m.now() - t0;
             try m.stream.synchronize();
@@ -1690,9 +1739,9 @@ pub const Model = struct {
         }
         try m.stream.synchronize();
         if (m.prof) m.t_absorb = m.now() - t1;
-        if (m.rs.live) if (m.eh) |*eh| {
+        if (m.rs.live and !m.independentPark()) if (m.eh) |*fill_eh| {
             const args = m.rs.args;
-            eh.hasher.hashes(m.fill_seq, args.start, args.n, eh.hashes[0 .. args.n * eh.hasher.layers * eh.hasher.cols()]);
+            fill_eh.hasher.hashes(m.fill_seq, args.start, args.n, fill_eh.hashes[0 .. args.n * fill_eh.hasher.layers * fill_eh.hasher.cols()]);
         };
     }
 
@@ -1966,4 +2015,87 @@ test "prefill slice mismatch refuses either follower and off word stays exact" {
         try std.testing.expectError(error.PrefillSettingMismatch, prefillAgreement(base | @as(u64, 5) << 26, followers[mismatch]));
     }
     try prefillAgreement(base, base | (prefill128.Flags{}).bits() << 2);
+}
+
+/// Actual startup word 6 bit 32. The policy changes no persisted state.
+fn parkAgreement(on: bool) u64 {
+    return if (on) @as(u64, 1) << 32 else 0;
+}
+
+test "prefill slice nojoin agrees all ranks and keeps off word exact" {
+    const old = (prefill128.Flags{ .slice_layers = 5, .ae = true, .ac = true, .rows = 8192 }).bits() << 2;
+    const on = old | parkAgreement(true);
+    for (1..3) |rank| {
+        var words = [_]u64{ on, on, on };
+        try prefillAgreement(words[0], words[rank]);
+        words[rank] = old;
+        try std.testing.expectError(error.PrefillSettingMismatch, prefillAgreement(words[0], words[rank]));
+    }
+    try std.testing.expectEqual(old, old | parkAgreement(false));
+    try std.testing.expectEqual(@as(u64, 1) << 32, parkAgreement(true));
+    try prefillAgreement(old, old | parkAgreement(false));
+}
+
+test "prefill slice nojoin actual custody leaves both reads live until consumption or abort" {
+    const Gate = struct {
+        go: std.atomic.Value(bool) = .init(false),
+        done: std.atomic.Value(bool) = .init(false),
+        rows: [8]u16 = @splat(0),
+        fn run(g: *@This()) void {
+            while (!g.go.load(.acquire)) std.Thread.yield() catch {};
+            @memset(&g.rows, 42);
+            g.done.store(true, .release);
+        }
+    };
+    for ([_]bool{ false, true }) |abort| {
+        var current: Gate = .{};
+        var next: Gate = .{};
+        var m: Model = undefined;
+        m.park_nojoin = true;
+        m.rs = .{ .live = true, .ahead = try std.Thread.spawn(.{}, Gate.run, .{&current}) };
+        m.ahead = try std.Thread.spawn(.{}, Gate.run, .{&next});
+        defer { current.go.store(true, .release); next.go.store(true, .release); m.joinAhead(); }
+        // Both the leader park and verify/follower dispatch use this exact boundary.
+        for (0..3) |_| m.joinParkAhead();
+        try std.testing.expect(m.rs.ahead != null and m.ahead != null);
+        try std.testing.expect(!current.done.load(.acquire) and !next.done.load(.acquire));
+        current.go.store(true, .release);
+        next.go.store(true, .release);
+        if (abort) m.dropChunk() else m.joinAhead();
+        try std.testing.expect(current.done.load(.acquire) and next.done.load(.acquire));
+        try std.testing.expectEqualSlices(u16, &@as([8]u16, @splat(42)), &current.rows);
+        try std.testing.expectEqualSlices(u16, &current.rows, &next.rows);
+        try std.testing.expect(m.rs.ahead == null and m.ahead == null);
+        try std.testing.expectEqual(!abort, m.rs.live);
+    }
+    // Off, or outside a live chunk, still joins even with the switch set.
+    for ([_]bool{ false, true }) |on| {
+        var g: Gate = .{};
+        g.go.store(true, .release);
+        var m: Model = undefined;
+        m.park_nojoin = on;
+        m.rs = .{ .live = !on };
+        m.ahead = try std.Thread.spawn(.{}, Gate.run, .{&g});
+        m.joinParkAhead();
+        try std.testing.expect(g.done.load(.acquire) and m.ahead == null);
+    }
+}
+
+test "prefill slice nojoin off and empty Engram never allocate a decode host" {
+    var m: Model = undefined;
+    m.park_nojoin = false;
+    m.rs = .{ .live = true };
+    m.park_eh = null;
+    m.park_pool = null;
+    m.eh = @as(prompt.EngramHost, undefined);
+    // Allocators are deliberately undefined: off returns the original pointer.
+    try std.testing.expect((try m.roundEngram()).? == &m.eh.?);
+    try std.testing.expect(m.park_eh == null and m.park_pool == null);
+    m.park_nojoin = true;
+    m.rs.live = false;
+    try std.testing.expect((try m.roundEngram()).? == &m.eh.?);
+    m.rs.live = true;
+    m.eh = null;
+    try std.testing.expect(try m.roundEngram() == null);
+    try std.testing.expect(m.park_eh == null and m.park_pool == null);
 }

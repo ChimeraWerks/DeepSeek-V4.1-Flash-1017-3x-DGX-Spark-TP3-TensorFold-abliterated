@@ -1387,7 +1387,7 @@ pub const Lanes = struct {
             }
             lo = hi;
             if (b.wanted(b.ptr)) {
-                m.joinAhead(); // shared Engram hashes and reader pool, not just row arrays
+                m.joinParkAhead(); // opt-in parks leave prompt hash/reader custody alone
                 if (b.timed) try m.stream.synchronize();
                 try b.run(b.ptr);
             }
@@ -2959,7 +2959,7 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
         if (!m.rs.live and move_state.pending == null and kind != .idle_move and kind != .fill_slice) if (spill) |sd| sd.service(std.time.ns_per_ms); // relocation does not service unrelated work
         // a chunk's read-ahead of the next is done before anything but that chunk (a prompt's ids may change)
         if (kind != .fill_chunk and kind != .fill_slice and kind != .snap_save and kind != .snap_restore and kind != .fill_images and kind != .rank_wire) {
-            if (kind != .idle_move) m.joinAhead();
+            if (kind != .idle_move) m.joinParkAhead();
             if (!m.rs.live) m.fill_seq = &.{};
         }
         switch (kind) {
