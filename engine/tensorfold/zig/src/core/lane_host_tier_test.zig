@@ -26,6 +26,7 @@ const Box = struct {
         b.mutex.lockUncancelable(io);
         defer b.mutex.unlock(io);
         switch (e.*) {
+            .logprobs => {},
             .prefilled => |c| b.cached = c,
             .tokens => |t| b.tokens.appendSlice(gpa, t) catch {},
             .finished => |f| b.done = f.reason,

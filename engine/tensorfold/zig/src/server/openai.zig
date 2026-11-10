@@ -145,7 +145,7 @@ const Plan = struct {
 fn plan(srv: *Server, cx: *Cx, is_chat: bool, raw: Value) errors.Refused!Plan {
     const body = try fields.parseNumbers(cx, raw);
     try fields.validateModalities(cx, body);
-    try fields.probabilityOptions(cx, body);
+    try fields.probabilityOptionsWith(cx, body, is_chat and srv.info.logprobs);
     if (srv.config.request_log) |path| request_log.append(cx.a, path, body);
     var input: chat.Input = .{ .fields = undefined };
     if (body.get("cache_salt")) |salt| if (salt != .null) {
@@ -181,6 +181,10 @@ fn plan(srv: *Server, cx: *Cx, is_chat: bool, raw: Value) errors.Refused!Plan {
     };
     const sampling = try json.newObject(cx.a);
     for ([_][]const u8{ "temperature", "top_p", "top_k", "min_p", "presence_penalty", "frequency_penalty", "repetition_penalty", "repetition_penalty_window", "penalty_include_prompt", "seed", "priority", "draft", "thinking_budget", "ignore_eos", "stop" } ++ grammar.fields) |k| if (body.get(k)) |v| try sampling.put(cx.a, k, v);
+    if (json.truthyField(body, "logprobs")) {
+        try sampling.put(cx.a, "logprobs", .{ .bool = true });
+        if (body.get("top_logprobs")) |v| try sampling.put(cx.a, "top_logprobs", v);
+    }
     try grammar.refusal(cx, body);
     if (input.tools.len > 0 and try tool_specs.choiceRequiresCall(cx.a, body.get("tool_choice"))) try sampling.put(cx.a, "tool_call_required", .{ .bool = true });
     if (body.field("parallel_tool_calls")) |p0| if (p0 == .bool and !p0.bool) try sampling.put(cx.a, "tool_call_single", .{ .bool = true });
@@ -427,6 +431,7 @@ const Run = struct {
         const choice = try json.newObject(a);
         try choice.put(a, "index", .{ .int = "0" });
         if (r.is_chat) {
+            if (reply.logprobs != .null) try choice.put(a, "logprobs", reply.logprobs);
             const message = try json.newObject(a);
             try message.put(a, "role", .{ .string = "assistant" });
             // the text before the calls is the reply's too (DeepSeek-V4.1's reference parser keeps it as the content)
@@ -459,6 +464,11 @@ const Run = struct {
         fn call(ctx: *anyopaque, delta: Value) error{Closed}!void {
             const s: *StreamSink = @ptrCast(@alignCast(ctx));
             const r = s.run;
+            if (delta.get("_reply_logprobs")) |scores| {
+                const c = r.chunk(null, null) catch return error.Closed;
+                c.get("choices").?.array[0].object.put(r.a, "logprobs", scores) catch return error.Closed;
+                return r.emit(c);
+            }
             if (!s.tools) {
                 if (!r.is_chat and delta != .string) return; // completions stream text only
                 return r.emit(r.chunk(delta, null) catch return error.Closed);

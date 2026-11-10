@@ -21,6 +21,7 @@ const draft = @import("draft.zig");
 const sampling = @import("sampling.zig");
 const keyed_draft = @import("keyed_draft.zig");
 const penalty_pool = @import("penalty_pool.zig");
+const reply_lp = @import("reply_logprobs.zig");
 const greedy_head = @import("decode_greedy_head.zig");
 const link = @import("link.zig");
 const graph_vote = @import("graph_vote.zig");
@@ -70,7 +71,7 @@ pub var logits_sha = false;
 /// coordinated RDMA idle boundary (not the old, untracked spill notes); all ranks need this version.
 const penalties = @import("logit_penalties.zig");
 
-pub const Kind = enum(u8) { verify_penalties = penalties.verify_kind, prompt_penalties = penalties.prompt_kind, fill_begin = 1, fill_chunk = 2, verify = 3, pass = 4, snap_save = 5, snap_restore = 6, snap_drop = 7, fill_images = 8, done = 9, rank_wire = 10, idle_move = 12, fill_resume = 13, graph_vote_agree = 15, fill_slice = 18, rdma_idle = 11, snap_drop_many = cache_batch.kind, pass_keyed = 17 };
+pub const Kind = enum(u8) { verify_penalties = penalties.verify_kind, prompt_penalties = penalties.prompt_kind, logprobs = reply_lp.frame_kind, fill_begin = 1, fill_chunk = 2, verify = 3, pass = 4, snap_save = 5, snap_restore = 6, snap_drop = 7, fill_images = 8, done = 9, rank_wire = 10, idle_move = 12, fill_resume = 13, graph_vote_agree = 15, fill_slice = 18, rdma_idle = 11, snap_drop_many = cache_batch.kind, pass_keyed = 17 };
 
 // Shared with the real follower loop; reserved/unknown outer kinds fail closed.
 fn decodeOuterKind(raw: u8) !Kind {
@@ -94,6 +95,7 @@ fn decodeOuterKind(raw: u8) !Kind {
             18 => .fill_slice,
             penalties.verify_kind => .verify_penalties,
             penalties.prompt_kind => .prompt_penalties,
+            reply_lp.frame_kind => .logprobs,
             else => return error.BadFrame,
         };
 }
@@ -102,13 +104,13 @@ fn decodeOuterKind(raw: u8) !Kind {
 /// between slices (each round's verify and draft pass, plain or keyed). Any other outer operation would run inside the chunk.
 fn openChunkAllows(kind: Kind) bool {
     return switch (kind) {
-        .fill_slice, .verify, .verify_penalties, .pass, .pass_keyed => true,
+        .fill_slice, .verify, .verify_penalties, .pass, .pass_keyed, .logprobs => true,
         else => false,
     };
 }
 
 test "keyed draft pass frame is admitted while a prefill slice chunk is open" {
-    for ([_]Kind{ .fill_slice, .verify, .verify_penalties, .pass, .pass_keyed }) |k| try std.testing.expect(openChunkAllows(k));
+    for ([_]Kind{ .fill_slice, .verify, .verify_penalties, .pass, .pass_keyed, .logprobs }) |k| try std.testing.expect(openChunkAllows(k));
     for ([_]Kind{ .fill_begin, .fill_chunk, .snap_save, .snap_restore, .snap_drop, .fill_images, .done, .rank_wire, .rdma_idle, .idle_move, .fill_resume, .graph_vote_agree, .snap_drop_many, .prompt_penalties }) |k| try std.testing.expect(!openChunkAllows(k));
 }
 
@@ -125,7 +127,7 @@ test "outer follower decoder covers every enum byte and open chunk policy" {
         if (std.enums.fromInt(Kind, byte)) |kind| {
             try std.testing.expectEqual(kind, try decodeOuterKind(byte));
             const allowed = switch (kind) {
-                .verify, .verify_penalties, .pass, .pass_keyed, .fill_slice => true,
+                .verify, .verify_penalties, .pass, .pass_keyed, .fill_slice, .logprobs => true,
                 .fill_begin, .fill_chunk, .snap_save, .snap_restore, .snap_drop,
                 .fill_images, .done, .rank_wire, .idle_move, .fill_resume,
                 .graph_vote_agree, .rdma_idle, .snap_drop_many, .prompt_penalties => false,
@@ -195,6 +197,18 @@ fn getSlice(r: *Reader) !SliceFrame {
         .next_rows = try r.int(u32),
     };
     if (f.hi <= f.lo or f.args.n == 0 or r.rest().len != 0) return error.BadFrame;
+    return f;
+}
+
+fn putLogprobs(w: *Wire, gpa: std.mem.Allocator, f: reply_lp.Frame) !void {
+    try f.validate();
+    inline for (.{ "op", "slot", "row", "token", "k" }) |field| try w.int(gpa, u32, @field(f, field));
+}
+fn getLogprobs(r: *Reader) !reply_lp.Frame {
+    var f: reply_lp.Frame = undefined;
+    inline for (.{ "op", "slot", "row", "token", "k" }) |field| @field(f, field) = try r.int(u32);
+    if (r.rest().len != 0) return error.BadFrame;
+    try f.validate();
     return f;
 }
 
@@ -546,6 +560,9 @@ const Lane = struct {
     part: u8 = 0,
     gen: u64 = 0,
     decoding: bool = false,
+    scored: bool = false,
+    score_start: u64 = 0,
+    score_row: u32 = 0,
     first: u64 = 0, // the prompt's draw (a handle)
     first_row: []f32 = &.{}, // this stream's full prompt row while a grammar may redraw it
     held: [draft.max_block]u32 = undefined,
@@ -736,6 +753,7 @@ pub const Lanes = struct {
     }
 
     const vt_whole: be.Backend.VTable = .{
+        .logprobs = supportsLogprobs,
         .prefill = prefillFn,
         .first = firstFn, .first_masked = firstMaskedFn, .held = heldFn, .queue = queueFn, .read = readFn,
         .verify = verifyFn, .keep = keepFn, .draft = draftFn,
@@ -1567,12 +1585,42 @@ pub const Lanes = struct {
         } else try self.drawToken(logits, len, s.sampling);
         const lane = self.streams.getPtr(s).?;
         lane.first = self.take(token);
+        if (s.logprobs != null) {
+            if (!supportsLogprobs(self)) return error.LogprobsUnsupported;
+            _ = try self.scoreFrame(.{ .op = 0, .slot = @intCast(slot) });
+            lane.scored = true;
+            s.score_hook = .{ .ptr = self, .call = scoreToken };
+        }
         if (s.grammar != null) {
             // TP3 can interleave 16 prefills; a single shared "last prompt row" loses another stream's draw.
             lane.first_row = try gpa.realloc(lane.first_row, logits.len);
             @memcpy(lane.first_row, logits);
         }
         return true;
+    }
+
+    fn supportsLogprobs(ptr: *anyopaque) bool {
+        const m = of(ptr).m;
+        return m.reply_logprobs and m.two == null and m.eng.world == 3 and cuda.kernels.dsv41_logprobs.len != 0;
+    }
+    fn scoreFrame(self: *Lanes, f: reply_lp.Frame) !?lanes.logprob.Row {
+        try f.validate();
+        // Once a score frame can reach a follower, failures must not unwind through collective cleanup.
+        if (try self.begin(.logprobs)) {
+            putLogprobs(&self.wire, self.gpa, f) catch |err| self.m.pairFault(err);
+            self.flush() catch |err| self.m.pairFault(err);
+        }
+        const shards = self.m.reply_scores.run(self.m, f) catch |err| self.m.pairFault(err);
+        if (f.op == 0 or f.op == 3) return null;
+        // every rank has finished this frame's collectives: a bad merge is this request's, not the group's
+        return try reply_lp.mergeRow(shards, f.token, f.k);
+    }
+    fn scoreToken(ptr: *anyopaque, s: *lanes.Stream, position: u64, token: u32, k: u8) anyerror!lanes.logprob.Row {
+        const self = of(ptr);
+        const l = self.streams.getPtr(s) orelse return error.UnknownStream;
+        const row = try reply_lp.rowFor(s.prompt_len, position, l.score_start, l.score_row, window_rows);
+        return (try self.scoreFrame(.{ .op = if (row == null) 1 else 2, .slot = @intCast(l.slot),
+            .row = row orelse 0, .token = token, .k = k })) orelse error.NoLogprobRow;
     }
 
     fn firstFn(ptr: *anyopaque, s: *lanes.Stream, position: u64) anyerror!u64 {
@@ -1744,6 +1792,10 @@ pub const Lanes = struct {
         for (windows, out, 0..) |w, *o, k| {
             const row0 = self.built.wins[k].row;
             const l = self.streams.getPtr(w.stream).?;
+            if (w.stream.logprobs != null) {
+                l.score_start = w.positions[0];
+                l.score_row = @intCast(row0);
+            }
             @memcpy(o.drafts[0..w.held], l.held[0..w.held]);
             @memcpy(o.drafts[w.held..][0..w.tokens.len], w.tokens);
             if (greedy and w.masks.len == 0) {
@@ -2484,6 +2536,10 @@ pub const Lanes = struct {
             const at = std.mem.alignBackward(usize, @intCast(s.cache_len), 2);
             if (at > s.prompt_len and at <= s.context.items.len) if (s.reuse.hook) |k| k.at(k.ptr, s, @intCast(at));
         }
+        if (self.streams.getPtr(s).?.scored) {
+            const l = self.streams.getPtr(s).?;
+            _ = self.scoreFrame(.{ .op = 3, .slot = @intCast(l.slot) }) catch |err| self.m.pairFault(err);
+        }
         const kv = self.streams.fetchRemove(s).?;
         self.gpa.free(kv.value.first_row);
         self.used[kv.value.slot] = false;
@@ -3070,6 +3126,10 @@ pub fn followPair(gpa: std.mem.Allocator, m: *Model, spill: ?*SpillFollower, fx:
             if (!m.rs.live) m.fill_seq = &.{};
         }
         switch (kind) {
+            .logprobs => {
+                const f = getLogprobs(&r) catch |err| m.pairFault(err);
+                _ = m.reply_scores.run(m, f) catch |err| m.pairFault(err);
+            },
             .rdma_idle => {
                 const dev: Model.SpillDev = .{ .m = m };
                 // m.joinAhead ran before dispatch; synchronize all CUDA streams,
@@ -3817,6 +3877,7 @@ const TestDev = struct {
 fn testStream(id: []const u8, saved: ?*Snap) lanes.Stream {
     var s: lanes.Stream = undefined;
     s.id = id;
+    s.logprobs = null;
     s.reuse = .{ .saved = if (saved) |sn| @ptrCast(sn) else null };
     s.reuse_failed = false;
     s.images = &.{};
@@ -4853,4 +4914,28 @@ test "penalties new frames roundtrip and neutral verify bytes unchanged" {
     try std.testing.expectEqualSlices(u8,&.{19,7,0,0,0,0,0,0,0},w.buf.items);
     try std.testing.expect(openChunkAllows(.verify_penalties));
     try std.testing.expect(!openChunkAllows(.prompt_penalties));
+}
+
+test "reply logprobs compact frame and step replay identically on both TP3 followers" {
+    const a = std.testing.allocator;
+    var w: Wire = .{};
+    defer w.deinit(a);
+    for (0..4) |op| {
+        const f: reply_lp.Frame = .{ .op = @intCast(op), .slot = 15, .row = 47, .token = 129279, .k = 20 };
+        try w.begin(a, .logprobs, op + 42);
+        try putLogprobs(&w, a, f);
+        try std.testing.expectEqual(@as(usize, 29), w.buf.items.len);
+        for (0..2) |_| {
+            var r: Reader = .{ .b = w.buf.items };
+            try std.testing.expectEqual(Kind.logprobs, try decodeOuterKind(try r.int(u8)));
+            try std.testing.expectEqual(@as(u64, op + 42), try r.int(u64));
+            try std.testing.expectEqualDeep(f, try getLogprobs(&r));
+        }
+        var short: Reader = .{ .b = w.buf.items[9..28] };
+        try std.testing.expectError(error.ShortFrame, getLogprobs(&short));
+        try w.int(a, u8, 1);
+        var long: Reader = .{ .b = w.buf.items[9..] };
+        try std.testing.expectError(error.BadFrame, getLogprobs(&long));
+    }
+    try std.testing.expect(openChunkAllows(.logprobs));
 }

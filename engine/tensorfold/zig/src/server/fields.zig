@@ -333,8 +333,11 @@ pub fn effortLevels(a: Allocator, template: []const u8) Allocator.Error![]const 
     return found.items;
 }
 
-/// ``probability_options``: n must be 1, and logprobs are refused (no engine reports them yet).
+/// ``probability_options``: n must be 1; old callers retain unsupported logprobs.
 pub fn probabilityOptions(cx: *Cx, body: Value) errors.Refused!void {
+    return probabilityOptionsWith(cx, body, false);
+}
+pub fn probabilityOptionsWith(cx: *Cx, body: Value, supported: bool) errors.Refused!void {
     if (body.field("n")) |n| if (n != .int or !std.mem.eql(u8, n.int, "1")) return cx.refuse("n must be 1; multiple choices are not supported");
     const enabled = body.field("logprobs");
     if (enabled) |e| if (e != .bool) return cx.refuse("logprobs must be a boolean or null");
@@ -343,7 +346,13 @@ pub fn probabilityOptions(cx: *Cx, body: Value) errors.Refused!void {
         if (n == null or n.? < 0 or n.? > 20) return cx.refuse("top_logprobs must be an integer between 0 and 20, or null");
         if (enabled == null or !enabled.?.bool) return cx.refuse("top_logprobs requires logprobs: true");
     }
-    if (enabled != null and enabled.?.bool) return cx.refuse("logprobs are not supported by this model or backend");
+    if (!supported and enabled != null and enabled.?.bool) return cx.refuse("logprobs are not supported by this model or backend");
+}
+
+pub fn logprobCount(cx: *Cx, body: Value, supported: bool) errors.Refused!?u8 {
+    try probabilityOptionsWith(cx, body, supported);
+    if (!json.truthyField(body, "logprobs")) return null;
+    return @intCast(if (body.field("top_logprobs")) |v| v.int64().? else 0);
 }
 
 const media = [_][]const u8{ "image", "images", "image_url", "input_image", "audio", "input_audio", "video", "video_url" };
@@ -411,4 +420,23 @@ test "penalties off keeps the legacy fields raw and ignored, refuses window and 
         try std.testing.expectError(error.Refused,penalties(&cx,(try json.parse(cx.a,body)).ok,false));
         try std.testing.expect(std.mem.indexOf(u8,cx.message,"started without penalties") != null);
     }
+}
+
+test "reply logprobs range checks and off request behavior" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    for ([_][]const u8{ "-1", "21", "1.5", "true", "\"3\"" }) |n| {
+        const body = (try json.parse(cx.a, try std.fmt.allocPrint(cx.a, "{{\"logprobs\":true,\"top_logprobs\":{s}}}", .{n}))).ok;
+        try std.testing.expectError(error.Refused, probabilityOptionsWith(&cx, body, true));
+    }
+    for (0..21) |n| {
+        const body = (try json.parse(cx.a, try std.fmt.allocPrint(cx.a, "{{\"logprobs\":true,\"top_logprobs\":{d}}}", .{n}))).ok;
+        try std.testing.expectEqual(@as(?u8, @intCast(n)), try logprobCount(&cx, body, true));
+        try std.testing.expectError(error.Refused, probabilityOptionsWith(&cx, body, false));
+    }
+    const plain = (try json.parse(cx.a, "{}")).ok;
+    try std.testing.expectEqual(@as(?u8, null), try logprobCount(&cx, plain, true));
+    try probabilityOptions(&cx, plain);
 }

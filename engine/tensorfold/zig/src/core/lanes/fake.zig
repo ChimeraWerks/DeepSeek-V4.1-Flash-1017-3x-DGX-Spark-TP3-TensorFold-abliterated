@@ -33,6 +33,7 @@ pub const Fake = struct {
     lanes: std.AutoHashMapUnmanaged(*Stream, Lane) = .empty,
     drawn: std.ArrayList(u32) = .empty, // handle -> token
     release_calls: usize = 0, // count invocations, including erroneous duplicate releases
+    reject_score: ?struct { id: []const u8, at: usize } = null, // the stream's score at that many emitted tokens fails its merge
     rounds: u64 = 0,
     capture_timing: CaptureTiming = .none,
     timing_dirty: bool = false,
@@ -82,13 +83,24 @@ pub const Fake = struct {
     fn timingClean(ptr: *anyopaque) bool { return !self(ptr).timing_dirty; }
 
     pub fn backend(x: *Fake) be.Backend {
-        return .{ .ptr = x, .vtable = &.{ .prefill = prefill, .first = first, .first_masked = firstMasked, .queue = queue, .read = read, .verify = verify, .keep = keep, .draft = draft, .held = heldDrafts, .release = release, .begin_timing = beginTiming, .timing_clean = timingClean } };
+        return .{ .ptr = x, .vtable = &.{ .logprobs = supportsLogprobs, .prefill = prefill, .first = first, .first_masked = firstMasked, .queue = queue, .read = read, .verify = verify, .keep = keep, .draft = draft, .held = heldDrafts, .release = release, .begin_timing = beginTiming, .timing_clean = timingClean } };
     }
 
     pub fn stepped(x: *Fake) be.Backend {
-        return .{ .ptr = x, .vtable = &.{ .prefill = prefill, .prefill_begin = beginFill, .prefill_step = stepFill, .prefill_end = endFill, .first = first, .first_masked = firstMasked, .queue = queue, .read = read, .verify = verify, .keep = keep, .draft = draft, .held = heldDrafts, .release = release } };
+        return .{ .ptr = x, .vtable = &.{ .logprobs = supportsLogprobs, .prefill = prefill, .prefill_begin = beginFill, .prefill_step = stepFill, .prefill_end = endFill, .first = first, .first_masked = firstMasked, .queue = queue, .read = read, .verify = verify, .keep = keep, .draft = draft, .held = heldDrafts, .release = release } };
+    }
+    fn supportsLogprobs(_: *anyopaque) bool { return true; }
+    fn score(ptr: *anyopaque, s: *Stream, position: u64, token: u32, k: u8) anyerror!@import("logprob.zig").Row {
+        if (position != s.context.items.len) return error.LogprobPosition;
+        const x: *Fake = @ptrCast(@alignCast(ptr));
+        if (x.reject_score) |r| if (std.mem.eql(u8, r.id, s.id) and s.emitted().len == r.at) return error.LogprobRowRejected;
+        const peak = next(s.context.items, null, position);
+        var row: [vocab]f32 = undefined;
+        for (&row, 0..) |*v, i| v.* = -@as(f32, @floatFromInt((i + vocab - peak) % vocab));
+        return @import("logprob.zig").reference(&row, token, k);
     }
     fn beginFill(ptr: *anyopaque, s: *Stream) anyerror!void {
+        if (s.logprobs != null) s.score_hook = .{ .ptr = ptr, .call = score };
         const x = self(ptr);
         if (x.refuse_sampled and s.sampling != null) return error.SamplingRefused;
         if (x.refuse_full > 0 and x.lanes.count() > 0 and !x.lanes.contains(s)) {
@@ -194,6 +206,7 @@ pub const Fake = struct {
     }
 
     fn prefill(ptr: *anyopaque, s: *Stream) anyerror!void {
+        if (s.logprobs != null) s.score_hook = .{ .ptr = ptr, .call = score };
         const x = self(ptr);
         if (x.refuse_sampled and s.sampling != null) return error.SamplingRefused;
         const got = try x.lanes.getOrPut(x.gpa, s);

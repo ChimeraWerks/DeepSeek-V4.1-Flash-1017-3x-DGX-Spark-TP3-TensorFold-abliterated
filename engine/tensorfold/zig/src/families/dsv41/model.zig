@@ -17,6 +17,7 @@ const tri_attn = @import("tri_attn.zig");
 const round = @import("round.zig");
 const sampling = @import("sampling.zig");
 const graph_vote = @import("graph_vote.zig");
+const reply_lp = @import("reply_logprobs.zig");
 const greedy_head = @import("decode_greedy_head.zig");
 const draft = @import("draft.zig");
 const engram = @import("engram.zig");
@@ -258,6 +259,8 @@ pub const Model = struct {
     logits: []f32, // round.max_rows rows of logits on the host
     amax: u64, // u32 [round.max_rows]: a round's greedy tokens on the device (roundArgmax)
     amax_host: [round.max_rows]u32 = undefined,
+    reply_logprobs: bool = false,
+    reply_scores: reply_lp.State = .{},
     decode_greedy_head: bool = false,
     decode_sample_head: bool = false,
     sample_output: usize = 0,
@@ -307,6 +310,10 @@ pub const Model = struct {
     penalty_device: ?cuda.DeviceBuffer = null,
     penalty_host: []penalties.Counts = &.{},
     penalty_prompt: u64 = 0,
+    /// TF_DS_PENALTIES with TF_DS_REPLY_LOGPROBS: a round's rows before the penalty kernel (reply logprobs are raw).
+    penalty_raw: ?cuda.DeviceBuffer = null,
+    /// The last verify round's raw rows when it was penalized and reply logprobs are on, else 0 (score rd.hl).
+    score_raw: u64 = 0,
 
     /// TF_DS_PENALTIES: every rank's scratch, allocated once at open (off: nothing). A failure here is a start failure,
     /// never a rank-group exit inside a request; the native budget's model bytes measure it like any other open buffer.
@@ -317,11 +324,15 @@ pub const Model = struct {
         const count = round.max_rows * m.w.head.n;
         const host = try m.gpa.alloc(penalties.Counts, count);
         errdefer m.gpa.free(host);
-        const dev = try cuda.DeviceBuffer.alloc(m.ctx.d, count * @sizeOf(penalties.Counts) + round.max_rows * @sizeOf(penalties.Params) + (m.w.head.n + m.vocab) * 4);
+        var dev = try cuda.DeviceBuffer.alloc(m.ctx.d, count * @sizeOf(penalties.Counts) + round.max_rows * @sizeOf(penalties.Params) + (m.w.head.n + m.vocab) * 4);
+        errdefer dev.free();
+        if (m.reply_logprobs) m.penalty_raw = try cuda.DeviceBuffer.alloc(m.ctx.d, round.max_rows * m.w.head.n * 4);
         m.penalty_host = host;
         m.penalty_device = dev;
     }
     fn freePenaltyStorage(m: *Model) void {
+        if (m.penalty_raw) |*b| b.free();
+        m.penalty_raw = null;
         if (m.penalty_device) |*b| b.free();
         m.penalty_device = null;
         m.gpa.free(m.penalty_host);
@@ -344,7 +355,13 @@ pub const Model = struct {
         }
         try m.penalty_device.?.upload(0,std.mem.sliceAsBytes(m.penalty_host[0..rows.ids.len*width]));
         try m.penalty_device.?.upload(round.max_rows*width*@sizeOf(penalties.Counts),std.mem.sliceAsBytes(params[0..rows.ids.len]));
-        m.rd.penalty = .{ .counts = m.penalty_device.?.ptr, .params = m.penaltyParamPtr() };
+        // the raw copy only when a window's stream reports logprobs: its slot's prompt copy is saved (op 0 to op 3,
+        // mirrored by the score frames on every rank), so all ranks decide alike with no extra frame byte
+        const scored = if (m.penalty_raw != null) if (rows.slots) |slots| for (wins) |win| {
+            const slot: usize = @intCast(slots[win.row]);
+            if (slot < m.reply_scores.saved.len and m.reply_scores.saved[slot]) break true;
+        } else false else false else false;
+        m.rd.penalty = .{ .counts = m.penalty_device.?.ptr, .params = m.penaltyParamPtr(), .raw = if (scored) m.penalty_raw.?.ptr else 0 };
     }
     /// Preserve the snapshot's raw prompt row. Only this draw uses the gathered scratch.
     pub fn penalizePrompt(m: *Model, seq: []const i32, req: penalties.Request) !void {
@@ -395,6 +412,8 @@ pub const Model = struct {
         m.penalty_device = null;
         m.penalty_host = &.{};
         m.penalty_prompt = 0;
+        m.penalty_raw = null;
+        m.score_raw = 0;
         m.prefill = prefill128.Flags.fromEnv();
         try m.prefill.validate();
         m.compute_rows = m.prefill.computeRows();
@@ -437,6 +456,9 @@ pub const Model = struct {
         m.pgraphs = null;
         m.gvote = null;
         m.cand = 0;
+        m.reply_logprobs = reply_lp.enabled();
+        if (m.reply_logprobs and o.world != 3) return error.LogprobsUnsupported; // before the weights load, on every rank
+        m.reply_scores = .{};
         m.decode_greedy_head = greedy_head.enabled(envOf("TF_DS_DECODE_GREEDY_HEAD"));
         m.decode_sample_head = greedy_head.enabled(envOf("TF_DS_DECODE_SAMPLE_HEAD"));
         m.sample_output = 0;
@@ -539,6 +561,8 @@ pub const Model = struct {
             try m.exk.loadRagged(d, blob);
         }
         if (!cuda.kernels.available) return error.NoKernelImages;
+        if (m.reply_logprobs and (o.world != 3 or m.two != null)) return error.LogprobsUnsupported;
+        if (m.reply_logprobs and cuda.kernels.dsv41_logprobs.len == 0) return error.NoLogprobKernel;
         const sample_cand = std.mem.eql(u8, envOf("TF_DS_SAMPLE_CAND") orelse "", "1");
         if (sample_cand and cuda.kernels.dsv41_sample_cand.len == 0) return error.NoSampleCandidateKernel;
         m.ops = try ops_mod.Ops.load(d, cuda.kernels.torch_pointwise, cuda.kernels.torch_movement, cuda.kernels.dsv41_ops);
@@ -711,6 +735,8 @@ pub const Model = struct {
         m.logits = try a.alloc(f32, round.max_rows * m.vocab);
         try m.penaltyStorage(); // after head.n and vocab; TF_DS_PENALTIES off allocates nothing
         errdefer if (cleanupAllowed(m, cleanup)) m.freePenaltyStorage();
+        if (m.reply_logprobs) try m.reply_scores.init(d, m.w.head.n); // TF_DS_REPLY_LOGPROBS off: nothing loaded or allocated
+        errdefer if (cleanupAllowed(m, cleanup)) m.reply_scores.deinit();
         if (mode != .off or window != pool) m.notePlan(mode, pl);
         custody.release();
         return m;
@@ -768,7 +794,7 @@ pub const Model = struct {
             // the prompt's collectives pair up only when every rank runs the same kind
             @import("cache_batch.zig").Flags.fromEnv().agreement(@as(u64, @intFromBool(prompt.owned_on)) | @as(u64, @intFromBool(directGather())) << 1 | (m.prefill.bits() << 2) |
                 (if (@import("graph_telemetry.zig").enabled()) @import("graph_telemetry.zig").agreement_bit else 0) | keyed_draft.settingBit(keyed_draft.enabled()) | greedy_head.agreement(m.decode_greedy_head) | (if (m.decode_sample_head) greedy_head.sample_agreement_bit else @as(u64, 0)) |
-                parkAgreement(m.park_nojoin) | @import("draft_head.zig").settingBit(@import("draft_head.zig").enabled()) | penalties.agreement(m.penalty_on) | (@as(u64, @intFromBool(prompt.bf16_wire_on)) << 52) | (@as(u64, @intFromBool(prompt.owned_router_on)) << 53) | @import("round_timing.zig").agreement(@import("round_timing.zig").enabled()) | checkpointAgreementBit(prefill128.enabled("TF_DS_PREFILL_CHECKPOINTS"))),
+                parkAgreement(m.park_nojoin) | @import("draft_head.zig").settingBit(@import("draft_head.zig").enabled()) | penalties.agreement(m.penalty_on) | (if (m.reply_logprobs) reply_lp.agreement_bit else @as(u64, 0)) | (@as(u64, @intFromBool(prompt.bf16_wire_on)) << 52) | (@as(u64, @intFromBool(prompt.owned_router_on)) << 53) | @import("round_timing.zig").agreement(@import("round_timing.zig").enabled()) | checkpointAgreementBit(prefill128.enabled("TF_DS_PREFILL_CHECKPOINTS"))),
             draft_words[0], draft_words[1],
             @import("engine_api").Spill.roomWaitMs(if (std.c.getenv("TF_SPILL_ROOM_WAIT_MS")) |v| std.mem.span(v) else null),
         };
@@ -794,6 +820,7 @@ pub const Model = struct {
             try @import("draft_head.zig").checkAgreement(r[6], all[0][6]);
             try @import("round_timing.zig").check(all[0][6], r[6]);
             try penalties.agree(r[6], all[0][6]);
+            try reply_lp.agree(r[6], all[0][6]);
             try greedy_head.agree(r[6], all[0][6]);
             try keyed_draft.checkAgreement(r[6], all[0][6]);
             try checkpointAgreement(all[0][6], r[6]);
@@ -889,6 +916,8 @@ pub const Model = struct {
         m.blas.close();
         if (!cuda.context_health.cleanupReleased(cleanup)) return false;
         if (m.kvs) |*x| x.k.unload();
+        if (!cuda.context_health.cleanupReleased(cleanup)) return false;
+        m.reply_scores.deinit();
         if (!cuda.context_health.cleanupReleased(cleanup)) return false;
         m.arena.deinit();
         if (!cuda.context_health.cleanupReleased(cleanup)) return false;
@@ -1795,6 +1824,7 @@ pub const Model = struct {
     }
 
     fn verifyRun(m: *Model, rows: round.Rows, absorb: []const bool) !void {
+        m.score_raw = if (m.rd.penalty) |p| p.raw else 0; // reply logprobs read these rows at commit
         m.joinParkAhead();
         const eh = try m.roundEngram();
         defer m.parkProfile();
@@ -2195,7 +2225,7 @@ test "prefill slice nojoin off and empty Engram never allocate a decode host" {
     try std.testing.expect(m.park_eh == null and m.park_pool == null);
 }
 
-fn checkpointAgreementBit(on: bool) u64 { return @as(u64, @intFromBool(on)) << 56; } // 54 draft head, 55 round timing, 57 penalties
+fn checkpointAgreementBit(on: bool) u64 { return @as(u64, @intFromBool(on)) << 56; } // 54 draft head, 55 round timing, 57 penalties, 58 reply logprobs
 fn checkpointAgreement(leader: u64, follower: u64) !void {
     if ((leader ^ follower) & checkpointAgreementBit(true) != 0) return error.PrefillCheckpointSettingMismatch;
 }

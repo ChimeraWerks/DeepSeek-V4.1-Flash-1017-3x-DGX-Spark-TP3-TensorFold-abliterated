@@ -62,6 +62,7 @@ fn channelOf(structure: ?api.Structure) ResponseChannel {
 }
 
 pub const Reply = struct {
+    logprobs: Value = .null,
     response_channel: ResponseChannel = .automatic,
     markup: reply_text.Markup = .{},
     content: []const u8,
@@ -87,6 +88,8 @@ const Mailbox = struct {
     gpa: Allocator,
     mutex: std.Io.Mutex = .init,
     cond: std.Io.Condition = .init,
+    scores: std.ArrayList(api.LogprobRow) = .empty,
+    scores_failed: bool = false,
     tokens: std.ArrayList(u32) = .empty,
     chunks: std.ArrayList(usize) = .empty, // where each round's tokens end
     cached: ?u32 = null,
@@ -105,6 +108,7 @@ const Mailbox = struct {
         m.mutex.lockUncancelable(m.io);
         defer m.mutex.unlock(m.io);
         switch (event.*) {
+            .logprobs => |rows| m.scores.appendSlice(m.gpa, rows) catch { m.scores_failed = true; },
             .prefilled => |cached| {
                 m.cached = cached;
                 m.prefilled_ns = std.Io.Clock.awake.now(m.io).toNanoseconds();
@@ -128,6 +132,7 @@ const Mailbox = struct {
     }
 
     fn deinit(m: *Mailbox) void {
+        m.scores.deinit(m.gpa);
         m.tokens.deinit(m.gpa);
         m.chunks.deinit(m.gpa);
         m.gpa.free(m.widths);
@@ -211,6 +216,7 @@ pub fn prepare(srv: *Server, cx: *Cx, input: Input, gone: anytype) Failure!Prepa
         .cache_media = rendered.media,
         .max_tokens = @intCast(@min(limit, std.math.maxInt(u32))),
         .sampling = sampling,
+        .logprobs = try fields_mod.logprobCount(cx, f, srv.info.logprobs),
         .eos = if (stops_opt.ignore_eos) &.{} else srv.eos,
         .drafts = drafts,
         .background = background,
@@ -273,7 +279,7 @@ pub fn generate(srv: *Server, cx: *Cx, prepared: Prepared, sink: ?Sink, gone: an
     preparing = false;
     // A grammar's EOS is its required terminator even when the caller ignores ordinary EOS.
     // Apply the same rule to streaming and final decoding, so neither exposes the terminator.
-    var gen: Generation = .{ .last_out_ns = submitted, .srv = srv, .a = a, .box = &box, .id = id, .reply_id = input.id, .sink = sink, .thinking = thinking or reply_text.isChannel(srv.markers), .stops = .{ .strings = stops_opt.strings }, .ignore_eos = effectiveIgnoreEos(stops_opt.ignore_eos, request.structure != null), .max_tokens = request.max_tokens, .tools = if (prepared.response_channel == .structured_json) &.{} else input.tools, .token_ids = input.token_ids, .response_channel = prepared.response_channel };
+    var gen: Generation = .{ .scored = request.logprobs != null, .last_out_ns = submitted, .srv = srv, .a = a, .box = &box, .id = id, .reply_id = input.id, .sink = sink, .thinking = thinking or reply_text.isChannel(srv.markers), .stops = .{ .strings = stops_opt.strings }, .ignore_eos = effectiveIgnoreEos(stops_opt.ignore_eos, request.structure != null), .max_tokens = request.max_tokens, .tools = if (prepared.response_channel == .structured_json) &.{} else input.tools, .token_ids = input.token_ids, .response_channel = prepared.response_channel };
     defer srv.metrics.noteDiagnostics(io, box.stats);
     defer srv.noteRequest(prepared.prompt_len, gen.collected.items.len, box.stats.drafted, box.stats.accepted, box.stats.rounds, received, gen.first_ns, gen.last_ns, box.stats.prefill_seconds);
     errdefer if (!gen.engine_done) gen.cancel(); // the engine writes to the mailbox until it says finished
@@ -367,6 +373,8 @@ test "structured ignore_eos hides the grammar's terminal EOS in streaming and fi
 }
 
 const Generation = struct {
+    scored: bool = false,
+    scores: std.ArrayList(api.LogprobRow) = .empty,
     last_out_ns: i96 = 0, // the last byte a streaming sink heard; a ping goes out after ping_after_ns of silence
     srv: *Server,
     a: Allocator,
@@ -520,11 +528,17 @@ const Generation = struct {
         while (true) {
             m.mutex.lockUncancelable(m.io);
             var chunk: ?[]u32 = null;
+            var scores: []const api.LogprobRow = &.{};
+            var score_failure = false;
             var ended = false;
             if (g.chunk_index < m.chunks.items.len) {
                 const end = m.chunks.items[g.chunk_index];
                 g.chunk_index += 1;
                 chunk = g.a.dupe(u32, m.tokens.items[g.consumed..end]) catch null;
+                if (g.scored) {
+                    if (m.scores_failed or m.scores.items.len < end) score_failure = true else
+                        scores = g.a.dupe(api.LogprobRow, m.scores.items[g.consumed..end]) catch blk: { score_failure = true; break :blk &.{}; };
+                }
                 g.consumed = end;
             } else if (m.finished) {
                 ended = true;
@@ -532,6 +546,7 @@ const Generation = struct {
                 m.cond.waitTimeout(m.io, &m.mutex, .{ .duration = .{ .raw = .fromMilliseconds(50), .clock = .awake } }) catch {};
             }
             m.mutex.unlock(m.io);
+            if (score_failure) return error.Failed;
             if (ended) {
                 g.engine_done = true;
                 return;
@@ -553,7 +568,20 @@ const Generation = struct {
                 };
                 continue;
             };
-            if (g.reason == null) try g.commit(tokens);
+            if (g.reason == null) {
+                const before = g.collected.items.len;
+                if (g.scored) for (scores) |row| if (!std.math.isFinite(row.chosen.logprob)) return error.Failed;
+                try g.commit(tokens);
+                if (g.scored) {
+                    const landed = g.collected.items.len - before;
+                    try g.scores.appendSlice(g.a, scores[0..landed]);
+                    if (g.sink) |sink| {
+                        const d = try json.newObject(g.a);
+                        try d.put(g.a, "_reply_logprobs", try @import("logprobs.zig").rows(g.a, g.srv.text, scores[0..landed]));
+                        try g.emit(sink, .{ .object = d });
+                    }
+                }
+            }
         }
     }
 
@@ -654,6 +682,7 @@ const Generation = struct {
         try runtime.put(a, "post_prefill_first_delivery_seconds", if (eventDelay(m.prefilled_ns, g.first_ns)) |t| .{ .float = t } else .null);
         try runtime.put(a, "server_prepare_seconds", .{ .float = seconds(submitted - received) });
         try runtime.put(a, "time_to_first_token", if (g.first_ns) |t| .{ .float = seconds(t - received) } else .null);
+        if (g.scored) try runtime.put(a, "logprobs_distribution", .{ .string = "raw model at temperature 1; unmasked, before sampling filters; all committed tokens" });
         try runtime.put(a, "sampling", .{ .string = if (exact) "exact" else "greedy" });
         try runtime.put(a, "drafts", .{ .bool = drafts });
         const sha = tokenSha(g.collected.items);
@@ -694,6 +723,7 @@ const Generation = struct {
         if (m.telemetry.len > 0) if ((try json.parse(a, m.telemetry)) == .ok) try spec.put(a, "proposer", (try json.parse(a, m.telemetry)).ok);
         const think_end: ?u32 = if (thinking) g.srv.text.tokenId(g.srv.markers.close) else null;
         const reply: Reply = .{
+            .logprobs = if (g.scored) try @import("logprobs.zig").rows(a, g.srv.text, g.scores.items) else .null,
             .response_channel = g.response_channel,
             .markup = markup,
             .content = content,

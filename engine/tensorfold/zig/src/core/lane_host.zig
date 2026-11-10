@@ -364,7 +364,10 @@ pub const LaneHost = struct {
     }
 
     fn infoFn(ctx: *anyopaque) Info {
-        return self(ctx).info_;
+        const h = self(ctx);
+        var info = h.info_;
+        info.logprobs = if (h.core.backend.vtable.logprobs) |f| f(h.core.backend.ptr) else false;
+        return info;
     }
 
     fn submitFn(ctx: *anyopaque, id: Id, request: *const Request, sink: Sink) SubmitError!void {
@@ -471,6 +474,8 @@ pub const LaneHost = struct {
     fn send(h: *LaneHost, job: *Job) void {
         const emitted = job.stream.emitted();
         if (emitted.len > job.delivered) {
+            if (job.stream.logprobs != null)
+                emit(job, .{ .logprobs = job.stream.score_rows.items[job.delivered..emitted.len] });
             emit(job, .{ .tokens = emitted[job.delivered..] });
             h.noteDecoded(emitted.len - job.delivered);
             job.delivered = emitted.len;
@@ -784,6 +789,7 @@ pub const LaneHost = struct {
             .prefill_only = job.warm != null,
             .eos = r.eos,
             .sampling = r.sampling,
+            .logprobs = r.logprobs,
             .drafts = r.drafts,
             .proposer = job.proposer.proposer(),
             .stop_check = if (r.stop) |s| .{ .ptr = s.ctx, .check = s.check } else null,
@@ -2434,6 +2440,7 @@ test "stepped prefill long prompts interleave exact tokens and bound short burst
         fn event(ctx: *anyopaque, id: Id, ev: *const Event) void {
             const o: *@This() = @ptrCast(@alignCast(ctx));
             switch (ev.*) {
+                .logprobs => {},
                 .tokens => |ts| {
                     if (id <= 3) o.tokens[id - 1].appendSlice(std.testing.allocator, ts) catch unreachable;
                     if (id == 1) o.burst = 0;
@@ -3412,6 +3419,7 @@ const RoomRig = struct {
         fn event(ptr: *anyopaque, _: Id, e: *const Event) void {
             const b: *Reply = @ptrCast(@alignCast(ptr));
             switch (e.*) {
+                .logprobs => {},
                 .prefilled => |v| b.cached = v,
                 .finished => |v| b.done = v.reason,
                 .tokens => |v| b.tokens.appendSlice(a, v) catch unreachable,

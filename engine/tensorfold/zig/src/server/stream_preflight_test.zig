@@ -70,6 +70,7 @@ const HiEngine = struct {
     tokens: []const u32 = &.{ 'h', 'i' },
     window: u32 = 8,
     structures: bool = false,
+    logprobs: bool = false,
     submissions: usize = 0,
     fn engine(e: *@This()) api.Engine {
         return .{ .ctx = e, .vtable = &.{ .info = info, .submit = submit, .cancel = cancel, .status = status, .memory = memory } };
@@ -77,14 +78,21 @@ const HiEngine = struct {
 
     fn info(ctx: *anyopaque) api.Info {
         const e: *HiEngine = @ptrCast(@alignCast(ctx));
-        return .{ .context_window = e.window, .structures = e.structures };
+        return .{ .context_window = e.window, .structures = e.structures, .logprobs = e.logprobs };
     }
 
-    fn submit(ctx: *anyopaque, id: api.Id, _: *const api.Request, sink: api.Sink) api.SubmitError!void {
+    fn submit(ctx: *anyopaque, id: api.Id, request: *const api.Request, sink: api.Sink) api.SubmitError!void {
         const e: *HiEngine = @ptrCast(@alignCast(ctx));
         e.submissions += 1;
         sink.event(sink.ctx, id, &.{ .prefilled = 0 });
-        for (e.tokens) |token| sink.event(sink.ctx, id, &.{ .tokens = &.{token} });
+        for (e.tokens) |token| {
+            if (request.logprobs) |k| {
+                var row: api.LogprobRow = .{ .chosen = .{ .id = token, .logprob = -1.25 }, .count = k };
+                for (row.top[0..k], 0..) |*v, i| v.* = .{ .id = @intCast(65 + i), .logprob = -1.0 - @as(f64, @floatFromInt(i)) };
+                sink.event(sink.ctx, id, &.{ .logprobs = &.{row} });
+            }
+            sink.event(sink.ctx, id, &.{ .tokens = &.{token} });
+        }
         sink.event(sink.ctx, id, &.{ .finished = .{ .reason = .stop } });
     }
 
@@ -101,6 +109,10 @@ const HiEngine = struct {
 
 /// What the route's output saw: a whole reply's status, error code and sampling label, or a stream and its first role.
 const Seen = struct {
+    logprobs: bool = false,
+    score_rows: usize = 0,
+    score_top: usize = 0,
+    score_sum: f64 = 0,
     tokens: ?[]const u32 = null,
     submissions: usize = 0,
     answer: [2048]u8 = undefined,
@@ -140,6 +152,13 @@ const Seen = struct {
     }
 
     fn finished(c: *Seen, choice: json.Value) void {
+        if (choice.get("logprobs")) |scores| if (scores.get("content")) |rows| {
+            for (rows.array) |row| {
+                c.score_rows += 1;
+                c.score_top += row.get("top_logprobs").?.array.len;
+                c.score_sum += row.get("logprob").?.float;
+            }
+        };
         if (choice.strField("finish_reason")) |f| if (std.mem.eql(u8, f, "tool_calls")) {
             c.called = true;
         };
@@ -222,7 +241,7 @@ fn send(route: Route, body: []const u8) !Seen {
 
 fn sendTo(route: Route, body: []const u8, start: Seen) !Seen {
     var text: TestText = .{};
-    var backend: HiEngine = .{ .structures = start.structures };
+    var backend: HiEngine = .{ .structures = start.structures, .logprobs = start.logprobs };
     if (start.tokens) |tokens| {
         backend.tokens = tokens;
         backend.window = 8192;
@@ -245,7 +264,7 @@ fn sendTo(route: Route, body: []const u8, start: Seen) !Seen {
     const chat = switch (route) {
         .chat => raw,
         .messages => try anthropic_translate.translate(&cx, raw, false),
-        .responses => (try responses_translate.translate(&cx, raw, NoHistory{})).chat,
+        .responses => (try responses_translate.translateWith(&cx, raw, NoHistory{}, start.logprobs)).chat,
     };
     var conn: Conn = .{ .fd = -1, .peer = "", .buf = &.{}, .gpa = a };
     var seen = start;
@@ -610,4 +629,22 @@ test "a silent streamed Responses request sends a ping comment before its first 
     const delta = std.mem.indexOf(u8, bytes, "response.output_text.delta") orelse return error.NoDelta;
     try std.testing.expect(created < ping and ping < delta);
     try std.testing.expect(std.mem.indexOf(u8, bytes, "response.completed") != null);
+}
+
+
+test "reply logprobs Chat and Responses request rows reach whole and streaming replies" {
+    for ([_]bool{ false, true }) |stream| {
+        var buf: [1024]u8 = undefined;
+        const raw = try std.fmt.bufPrint(&buf, "{{\"model\":\"test-model\",\"messages\":[{{\"role\":\"user\",\"content\":\"x\"}}],\"stream\":{s},\"max_tokens\":2,\"logprobs\":true,\"top_logprobs\":3}}", .{if (stream) "true" else "false"});
+        const seen = try sendTo(.chat, raw, .{ .logprobs = true });
+        try std.testing.expectEqual(@as(usize, 2), seen.score_rows);
+        try std.testing.expectEqual(@as(usize, 6), seen.score_top);
+        try std.testing.expectEqual(@as(f64, -2.5), seen.score_sum);
+        try std.testing.expectEqualStrings("hi", seen.answer[0..seen.answer_len]);
+        const response_raw = try std.fmt.bufPrint(&buf, "{{\"model\":\"test-model\",\"input\":\"x\",\"stream\":{s},\"max_output_tokens\":2,\"include\":[\"message.output_text.logprobs\"],\"top_logprobs\":0}}", .{if (stream) "true" else "false"});
+        const response = try sendTo(.responses, response_raw, .{ .logprobs = true });
+        try std.testing.expectEqual(@as(usize, 2), response.score_rows);
+        try std.testing.expectEqual(@as(usize, 0), response.score_top);
+        try std.testing.expectEqual(@as(f64, -2.5), response.score_sum);
+    }
 }

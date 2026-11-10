@@ -52,6 +52,7 @@ pub const Backend = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
+        logprobs: ?*const fn (*anyopaque) bool = null,
         /// Prefill the stream's prompt into its caches (and its draft head's).
         prefill: *const fn (ptr: *anyopaque, s: *Stream) anyerror!void,
         /// Optional resumable prompt pass. Begin owns state until end; step runs one exact native chunk.

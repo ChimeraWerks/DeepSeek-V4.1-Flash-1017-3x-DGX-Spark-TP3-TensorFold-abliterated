@@ -38,6 +38,7 @@ test "cancelled reply resends reuse only a matching kept prefix" {
             b.mutex.lockUncancelable(std.testing.io);
             defer b.mutex.unlock(std.testing.io);
             switch (e.*) {
+                .logprobs => {},
                 .prefilled => |c| b.cached = c,
                 .tokens => |t| {
                     b.tokens.appendSlice(gpa, t) catch unreachable;
@@ -172,6 +173,7 @@ fn resumed(partial: bool) !void {
             b.mutex.lockUncancelable(std.testing.io);
             defer b.mutex.unlock(std.testing.io);
             switch (e.*) {
+                .logprobs => {},
                 .prefilled => |c| b.cached = c,
                 .tokens => |t| b.tokens.appendSlice(gpa, t) catch {},
                 .finished => |f| b.done = f.reason,
@@ -291,6 +293,7 @@ fn evicted(partial: bool) !void {
             b.mutex.lockUncancelable(std.testing.io);
             defer b.mutex.unlock(std.testing.io);
             switch (e.*) {
+                .logprobs => {},
                 .prefilled => |c| b.cached = c,
                 .tokens => |t| b.tokens.appendSlice(gpa, t) catch {},
                 .finished => |f| b.done = f.reason,
@@ -385,6 +388,7 @@ fn imageReuse(partial: bool) !void {
             b.mutex.lockUncancelable(std.testing.io);
             defer b.mutex.unlock(std.testing.io);
             switch (e.*) {
+                .logprobs => {},
                 .prefilled => |c| b.cached = c,
                 .tokens => |t| b.tokens.appendSlice(gpa, t) catch {},
                 .finished => |f| b.done = f.reason,
@@ -543,6 +547,7 @@ const AheadKit = struct {
             b.mutex.lockUncancelable(std.testing.io);
             defer b.mutex.unlock(std.testing.io);
             switch (e.*) {
+                .logprobs => {},
                 .prefilled => |c| b.cached = c,
                 .tokens => |t| b.tokens.appendSlice(std.testing.allocator, t) catch {},
                 .finished => |f| b.done = f.reason,

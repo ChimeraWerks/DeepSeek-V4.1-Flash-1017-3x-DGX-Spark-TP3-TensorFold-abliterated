@@ -201,7 +201,7 @@ pub const Round = struct {
     sample_ids: u64 = 0,
     sample_flags: u64 = 0,
     sample_count: usize = 0,
-    penalty: ?struct { counts: u64, params: u64 } = null,
+    penalty: ?struct { counts: u64, params: u64, raw: u64 = 0 } = null, // raw: reply logprobs' copy of the unpenalized rows
     sample_reference: u64 = 0,
     sample_oracle: bool = false,
     sample_qualified: [max_rows + 1][65]bool = @splat(@splat(false)),
@@ -1885,7 +1885,11 @@ fn stretch(e: *const Engine, rd: *Round, ch: *const Chunk, cs: *const Caches, ri
     try tri_basic.collapseNorm(t, h, pre, w.norm, rd.xc, c.eps, R, d);
     const hn: usize = w.head.n;
     try prompt.grouped(e, ch, R, &.{w.head}, &.{rd.xc}, &.{d}, &.{rd.hl}, &.{hn}, &.{.f32});
-    if (rd.penalty) |p| try e.ops.applyPenalties(e.s,rd.hl,rd.hl,p.counts,p.params,hn,R);
+    if (rd.penalty) |p| {
+        // reply logprobs score the raw distribution: keep the rows the penalty kernel is about to change
+        if (p.raw != 0) try e.d.check(e.d.api.cuMemcpyDtoDAsync_v2(p.raw, rd.hl, R * hn * 4, e.s.handle), "cuMemcpyDtoDAsync");
+        try e.ops.applyPenalties(e.s,rd.hl,rd.hl,p.counts,p.params,hn,R);
+    }
     try Probe.check(probe, .head_cols, w.layers.len, rd.hl);
     if (rd.greedy_out != 0) {
         const Head = struct {
