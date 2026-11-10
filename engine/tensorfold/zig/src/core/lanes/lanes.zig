@@ -1,6 +1,8 @@
 //! The lane engine's host core (Python lane_engine.py); backends run forwards and draws behind `backend.Backend`.
 const std = @import("std");
 
+pub const slice_trace = @import("slice_trace.zig");
+
 pub const table = @import("table.zig");
 pub const allocate = @import("allocate.zig");
 pub const accept = @import("accept.zig");

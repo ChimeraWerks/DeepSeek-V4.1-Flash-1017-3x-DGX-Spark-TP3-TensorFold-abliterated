@@ -11,6 +11,7 @@
 //! Not yet: ring mode (verify windows), a pool that leaves blocks out, a chunk starting inside a compressor group;
 //! those return error.NotPortedYet.
 const std = @import("std");
+const trace = @import("lanes").slice_trace;
 const cuda = @import("cuda");
 const Config = @import("config.zig").Config;
 const weights = @import("weights.zig");
@@ -468,8 +469,8 @@ pub const Chunk = struct {
                 const ev = try std.heap.page_allocator.alloc(i64, cap);
                 defer std.heap.page_allocator.free(ev);
                 @memset(ev, tri_index.every_vis);
-                try upload(e, ch.every, ev.ptr, cap * 8);
-                try e.s.synchronize(); // (the host copy is freed next)
+                try (blk: { var ts = trace.begin("prompt.init.upload.site_472", .wait); defer ts.end(); break :blk upload(e, ch.every, ev.ptr, cap * 8); });
+                try blk: { var ts = trace.begin("prompt.init.stream_synchronize.site_473", .wait); defer ts.end(); break :blk e.s.synchronize(); }; // (the host copy is freed next)
             }
             if (tri_index.prunes(ch.max_comp, c.index_topk)) {
                 ch.pbufs = .{ .tpos = try a.take(pruned_rows * c.index_topk * 8), .cand = 0, .every = ch.every };
@@ -565,7 +566,7 @@ pub const Chunk = struct {
         try fill(e, ch.neg, 0xff, cap * 8);
         var had: [128 * 128]u16 = undefined;
         exl3_prefill.hadamard(&had);
-        try upload(e, ch.ws.h, &had, had.len * 2);
+        try (blk: { var ts = trace.begin("prompt.init.upload.site_569", .wait); defer ts.end(); break :blk upload(e, ch.ws.h, &had, had.len * 2); });
         return ch;
     }
 
@@ -648,6 +649,8 @@ pub fn decodeScratch(e: *const Engine, a: *Arena, ex: weights.Experts, slots: us
 /// Host bytes to the device in the stream's order (the stream is non-blocking: the legacy stream's synchronous copies
 /// would not wait for its kernels). Pageable host memory is staged before the call returns.
 pub fn upload(e: *const Engine, dst: u64, src: *const anyopaque, bytes: usize) !void {
+    var trace_scope = trace.begin("prompt.upload", .wait);
+    defer trace_scope.end();
     try e.d.check(e.d.api.cuMemcpyHtoDAsync_v2(dst, src, bytes, e.s.handle), "cuMemcpyHtoDAsync");
 }
 
@@ -852,26 +855,30 @@ pub const Shared = struct { kv_layer: ?usize = null, kk: ?usize = null, pool: bo
 /// The chunk's rows: token ids at positions start .., their streams h [n, hc, D] (every stream the token's embedding
 /// row) and pre [n, hc] = (1, 0, 0, 0): embed_init, the bytes of forward()'s embedding rows expanded over the streams.
 pub fn begin(e: *const Engine, ch: *Chunk, ids: []const i64, start: usize, host_pos: []i64) !void {
+    var trace_scope = trace.begin("prompt.begin", .phase);
+    defer trace_scope.end();
     const n = ids.len;
     if (n > ch.cap or host_pos.len < n) return error.ChunkTooLong;
     ch.n = n;
     ch.start = start;
     ch.pending = false;
     ch.own = ownFor(e, n);
-    for (host_pos[0..n], 0..) |*p, i| p.* = @intCast(start + i);
-    try upload(e, ch.ids, ids.ptr, n * 8);
+    { var ts = trace.begin("prompt.begin.positions_setup", .phase); defer ts.end(); for (host_pos[0..n], 0..) |*p, i| p.* = @intCast(start + i); }
+    try blk: { var ts = trace.begin("prompt.begin.ids_upload", .wait); defer ts.end(); break :blk upload(e, ch.ids, ids.ptr, n * 8); };
     ch.pos = ch.pos0;
-    try upload(e, ch.pos, host_pos.ptr, n * 8);
+    try blk: { var ts = trace.begin("prompt.begin.positions_upload", .wait); defer ts.end(); break :blk upload(e, ch.pos, host_pos.ptr, n * 8); };
     if (embed_rows_on) if (ch.own) |o| {
-        try tri_basic.embedInit(e.t, e.w.embed, ch.ids + o.r0 * 8, ch.h + o.r0 * e.c.hc * e.c.hidden * 2, ch.pre + o.r0 * e.c.hc * 4, o.n, e.c.hidden, e.c.hc);
+        try blk: { var ts = trace.begin("prompt.begin.embedding_owned", .phase); defer ts.end(); break :blk tri_basic.embedInit(e.t, e.w.embed, ch.ids + o.r0 * 8, ch.h + o.r0 * e.c.hc * e.c.hidden * 2, ch.pre + o.r0 * e.c.hc * 4, o.n, e.c.hidden, e.c.hc); };
         return;
     };
-    try tri_basic.embedInit(e.t, e.w.embed, ch.ids, ch.h, ch.pre, n, e.c.hidden, e.c.hc);
+    try blk: { var ts = trace.begin("prompt.begin.embedding", .phase); defer ts.end(); break :blk tri_basic.embedInit(e.t, e.w.embed, ch.ids, ch.h, ch.pre, n, e.c.hidden, e.c.hc); };
 }
 
 /// merge_image_embeddings on the chunk: each span row's embedding (in every one of the hc streams) replaced by its
 /// image row (the delimiters' learned rows and the aligner's), before the first layer.
 pub fn embedSpans(e: *const Engine, ch: *Chunk) !void {
+    var trace_scope = trace.begin("prompt.embedSpans", .phase);
+    defer trace_scope.end();
     const c = e.c;
     const row = c.hidden * 2;
     for (ch.spans) |sp| {
@@ -1091,19 +1098,19 @@ pub fn attention(e: *const Engine, ch: *Chunk, cs: *const Caches, sh: *Shared, l
         // kv_norm_rope into ring rows pos % R (and its rows out), the attention's window keys the ring, WLO zero
         var slots: [ring_extra]i64 = undefined;
         for (0..n) |j| slots[j] = @intCast((start + j) % ring_rows);
-        try upload(e, ch.rslot, &slots, n * 8);
+        try (blk: { var ts = trace.begin("prompt.attention.upload.site_1101", .wait); defer ts.end(); break :blk upload(e, ch.rslot, &slots, n * 8); });
         try tri_norm.kvNormRope(e.t, ch.y, lay.kv_norm, rope.cos, rope.sin, ch.pos, ring, ring_rows, ch.rslot, c.eps, true, rd, ch.wsrc, n, hd);
     } else if (start > lo) {
         // wsrc[:start - lo] = ring[arange(lo, start) % R]
         var ridx: [256]i64 = undefined;
         if (start - lo > ridx.len) return error.WindowTooLong;
         for (0..start - lo) |j| ridx[j] = @intCast((lo + j) % ring_rows);
-        try upload(e, ch.ring_idx, &ridx, (start - lo) * 8);
+        try (blk: { var ts = trace.begin("prompt.attention.upload.site_1108", .wait); defer ts.end(); break :blk upload(e, ch.ring_idx, &ridx, (start - lo) * 8); });
         try fill(e, ch.invalid, 0, 4);
         try e.ops.gatherRows(e.s, ring, ring_rows, ch.ring_idx, ch.wsrc, hd * 2, start - lo, ch.invalid);
     }
     var lo64: i64 = if (ring_mode) 0 else @intCast(lo);
-    try upload(e, ch.wlo, &lo64, 8);
+    try (blk: { var ts = trace.begin("prompt.attention.upload.site_1113", .wait); defer ts.end(); break :blk upload(e, ch.wlo, &lo64, 8); });
     const kv = ch.wsrc + (start - lo) * hd * 2;
     // slots -1: the keys go to wsrc only (ring_mode is off); the ring is written after the attention
     if (!ring_mode) try tri_norm.kvNormRope(e.t, ch.y, lay.kv_norm, rope.cos, rope.sin, ch.pos, ring, ring_rows, ch.neg, c.eps, true, rd, kv, n, hd);
@@ -1120,7 +1127,7 @@ pub fn attention(e: *const Engine, ch: *Chunk, cs: *const Caches, sh: *Shared, l
         var vis_host: [prefill128.max_rows]i64 = undefined;
         if (n > vis_host.len) return error.ChunkTooLong;
         for (0..n) |i| vis_host[i] = @intCast((start + i + 1) / r);
-        try upload(e, ch.vis, &vis_host, n * 8);
+        try (blk: { var ts = trace.begin("prompt.attention.upload.site_1130", .wait); defer ts.end(); break :blk upload(e, ch.vis, &vis_host, n * 8); });
         if (lay.idx_wq_b) |wqb| try indexer(e, ch, cs, sh, li, wqb, src, n_comp_end, rope);
         const kk = sh.kk orelse return error.NoIndexerSelection;
         comp = .{ .fp4 = .{ .codes = cs.comp_codes[src], .scales = cs.comp_scales[src] } };
@@ -1161,7 +1168,7 @@ pub fn attention(e: *const Engine, ch: *Chunk, cs: *const Caches, sh: *Shared, l
     if (keep > 0) {
         var idx: [256]i64 = undefined;
         for (0..keep) |j| idx[j] = @intCast((start + n - keep + j) % ring_rows);
-        try upload(e, ch.ring_idx, &idx, keep * 8);
+        try (blk: { var ts = trace.begin("prompt.attention.upload.site_1171", .wait); defer ts.end(); break :blk upload(e, ch.ring_idx, &idx, keep * 8); });
         try e.ops.scatterRows(e.s, kv + (n - keep) * hd * 2, hd * 2, ch.ring_idx, ring, hd * 2, hd * 2, keep);
     }
     // wo_a: each group's column block of o read in place, written into its column block of u; then wo_b to fp32
@@ -1285,7 +1292,7 @@ fn shardAttend(e: *const Engine, ch: *Chunk, cs: *const Caches, a: tri_attn.Attn
 fn unionOf(e: *const Engine, ch: *Chunk, kv: *shard_ops.KvShard, r0: usize, m: usize, kk: usize, limit: usize) !usize {
     try fill32(e, ch.sf_cum, 0, limit);
     try shard_ops.unionCount(&kv.k, e.s, ch.cidx + r0 * kk * 8, kk, kk, m, ch.sf_cum, limit, ch.sf_sums);
-    try e.s.synchronize();
+    try blk: { var ts = trace.begin("prompt.unionOf.stream_synchronize.site_1295", .wait); defer ts.end(); break :blk e.s.synchronize(); };
     var count: i32 = 0;
     try e.d.check(e.d.api.cuMemcpyDtoH_v2(&count, ch.sf_sums + shard_ops.scan_segs * 4, 4), "cuMemcpyDtoH");
     kv.stats.prompt_syncs += 1;
@@ -1330,7 +1337,7 @@ fn kvSourceUpdate(e: *const Engine, ch: *Chunk, cs: *const Caches, sh: *Shared, 
         const keep: usize = @min(n, raw_rows);
         var idx: [raw_rows]i64 = undefined;
         for (0..keep) |j| idx[j] = @intCast((start + n - keep + j) % raw_rows);
-        try upload(e, ch.raw_idx, &idx, keep * 8);
+        try (blk: { var ts = trace.begin("prompt.kvSourceUpdate.upload.site_1340", .wait); defer ts.end(); break :blk upload(e, ch.raw_idx, &idx, keep * 8); });
         try e.ops.scatterRows(e.s, ch.kvc + (n - keep) * hd * 4, hd * 4, ch.raw_idx, cs.raw_kv[li], hd * 4, hd * 4, keep);
         try e.ops.scatterRows(e.s, ch.scc + (n - keep) * hd * 4, hd * 4, ch.raw_idx, cs.raw_score[li], hd * 4, hd * 4, keep);
         if (full == 0) { // a one-row chunk (a prompt one past a chunk end): its row waits in the store, no new group
@@ -1349,8 +1356,8 @@ fn kvSourceUpdate(e: *const Engine, ch: *Chunk, cs: *const Caches, sh: *Shared, 
         g_host[j] = @intCast(start / r + j);
         p_host[j] = @intCast((start / r + j) * r);
     }
-    try upload(e, ch.groups, &g_host, full * 8);
-    try upload(e, ch.gpos, &p_host, full * 8);
+    try (blk: { var ts = trace.begin("prompt.kvSourceUpdate.upload.site_1359", .wait); defer ts.end(); break :blk upload(e, ch.groups, &g_host, full * 8); });
+    try (blk: { var ts = trace.begin("prompt.kvSourceUpdate.upload.site_1360", .wait); defer ts.end(); break :blk upload(e, ch.gpos, &p_host, full * 8); });
     const rot = e.compressed;
     if (lay.idx_wk) |iwk| {
         const id = c.index_head_dim;
@@ -1705,11 +1712,41 @@ fn engramAhead1(eh: *EngramHost, c: *const Config, seq: []const i32, start: usiz
     eh.ahead_ready[j] = true;
 }
 
+/// Host consumption shared by the prompt path and CPU custody tests.
+pub fn engramRows(eh: *EngramHost, li: usize, seq: []const i32, start: usize, n: usize, layers: []const u16) ![]u16 {
+    const l = std.mem.indexOfScalar(u16, layers, @intCast(li)) orelse return error.NotAnEngramLayer;
+    const t = eh.tables.layers.get(@intCast(li)) orelse return error.MissingEngramTable;
+    return engramHostRows(eh, t, l, seq, start, n);
+}
+
+fn engramHostRows(eh: *EngramHost, t: engram_io.Table, l: usize, seq: []const i32, start: usize, n: usize) ![]u16 {
+    const cols = eh.hasher.cols();
+    const k = eh.hi - eh.lo;
+    const m = n * k;
+    // the rows read ahead (fillChunk's thread) when they are this chunk's, else read here
+    var rows: []u16 = eh.rows;
+    if (l < 2 and eh.ahead_ready[l] and eh.ahead_start == start and eh.ahead_n == n) {
+        rows = eh.ahead_rows[l];
+        eh.ahead_ready[l] = false;
+    } else {
+        _ = blk: { var ts = trace.begin("prompt.engramApply.hashes", .phase); defer ts.end(); break :blk eh.hasher.hashes(seq, start, n, eh.hashes[0 .. n * eh.hasher.layers * cols]); };
+        for (0..n) |r| {
+            for (0..k) |j| eh.flat[r * k + j] = eh.hashes[(r * eh.hasher.layers + l) * cols + eh.lo + j];
+        }
+        const read = if (eh.paio) |aio| blk: { var ts = trace.begin("prompt.engramApply.aioGather", .wait); defer ts.end(); break :blk aioGather(aio, t, eh.flat[0..m], eh.w[0 .. m * t.row_w], eh.s[0 .. m * t.row_s]); } else blk: { var ts = trace.begin("prompt.engramApply.pool_gather", .wait); defer ts.end(); break :blk eh.pool.gather(t, eh.flat[0..m], eh.w[0 .. m * t.row_w], eh.s[0 .. m * t.row_s]); };
+        read catch |err| return rankFault(err);
+        _ = blk: { var ts = trace.begin("prompt.engramApply.decodeRows", .wait); defer ts.end(); break :blk engram.decodeRows(eh.w[0 .. m * t.row_w], eh.s[0 .. m * t.row_s], eh.rows[0 .. m * t.row_w], m, t.row_w, t.row_s, 8); }; // the rows on 8 threads
+    }
+    return rows;
+}
+
 /// Layer li's Engram on the chunk (engram_apply, no image span), as _forward_k runs it before the attention mixes: a
 /// pending MoE post into the streams first (hc_post), then the rows of each position's n-grams (hashed on the host from
 /// `seq`, the whole sequence's ids so far; read from the tables; decoded to bf16 as Engram._decode does), their
 /// projection summed over the ranks in rank order, rounded to bf16, and the gate into the streams.
 pub fn engramApply(e: *const Engine, ch: *Chunk, eh: *EngramHost, li: usize, seq: []const i32) !void {
+    var trace_scope = trace.begin("prompt.engramApply", .phase);
+    defer trace_scope.end();
     const lay = e.w.layers[li];
     const ew = lay.engram_wkv orelse return;
     const c = e.c;
@@ -1724,28 +1761,13 @@ pub fn engramApply(e: *const Engine, ch: *Chunk, eh: *EngramHost, li: usize, seq
     const li32: u16 = @intCast(li);
     const l = std.mem.indexOfScalar(u16, c.engram_layers.slice(), li32) orelse return error.NotAnEngramLayer;
     const t = eh.tables.layers.get(@intCast(li)) orelse return error.MissingEngramTable;
-    const cols = eh.hasher.cols();
-    const k = eh.hi - eh.lo;
-    const m = n * k;
+    const m = n * (eh.hi - eh.lo);
     const prof = eh.io != null;
     var tq = if (prof) pstamp(e, eh) else 0;
-    // the rows read ahead (fillChunk's thread) when they are this chunk's, else read here
-    var rows: []u16 = eh.rows;
-    if (l < 2 and eh.ahead_ready[l] and eh.ahead_start == ch.start and eh.ahead_n == n) {
-        rows = eh.ahead_rows[l];
-        eh.ahead_ready[l] = false;
-    } else {
-        eh.hasher.hashes(seq, ch.start, n, eh.hashes[0 .. n * eh.hasher.layers * cols]);
-        for (0..n) |r| {
-            for (0..k) |j| eh.flat[r * k + j] = eh.hashes[(r * eh.hasher.layers + l) * cols + eh.lo + j];
-        }
-        const read = if (eh.paio) |aio| aioGather(aio, t, eh.flat[0..m], eh.w[0 .. m * t.row_w], eh.s[0 .. m * t.row_s]) else eh.pool.gather(t, eh.flat[0..m], eh.w[0 .. m * t.row_w], eh.s[0 .. m * t.row_s]);
-        read catch |err| return rankFault(err);
-        engram.decodeRows(eh.w[0 .. m * t.row_w], eh.s[0 .. m * t.row_s], eh.rows[0 .. m * t.row_w], m, t.row_w, t.row_s, 8); // the rows on 8 threads
-    }
+    const rows = try engramHostRows(eh, t, l, seq, ch.start, n);
     if (m * t.row_w != n * ew.k) return error.EngramShape;
     if (prof) eh.p_rows += lap(e, eh, &tq);
-    try upload(e, ch.eb, rows.ptr, m * t.row_w * 2);
+    try blk: { var ts = trace.begin("prompt.engramApply.rows_upload", .wait); defer ts.end(); break :blk upload(e, ch.eb, rows.ptr, m * t.row_w * 2); };
     if (prof) eh.p_upload += lap(e, eh, &tq);
     try mm(e, ch, ew, ch.eb, ew.k, ch.ek, .fp32, ew.n);
     if (prof) eh.p_mm += lap(e, eh, &tq);
@@ -1797,7 +1819,7 @@ pub fn engramApply(e: *const Engine, ch: *Chunk, eh: *EngramHost, li: usize, seq
 
 /// A profile's clock after the stream drains (prompt Engram split).
 fn pstamp(e: *const Engine, eh: *const EngramHost) u64 {
-    e.s.synchronize() catch {};
+    (blk: { var ts = trace.begin("prompt.pstamp.stream_synchronize.site_1809", .wait); defer ts.end(); break :blk e.s.synchronize(); }) catch {};
     return @intCast(std.Io.Timestamp.now(eh.io.?, .awake).nanoseconds);
 }
 
@@ -1838,6 +1860,8 @@ fn aioGather(aio: *engram_aio.Aio, t: engram_io.Table, ids: []const i64, out_w: 
 /// on those rows with no window key before replay and this layer's update done. False: an encoder-only chunk (no
 /// row at or past replay), which ends here.
 pub fn replayCut(e: *const Engine, ch: *Chunk, cs: *const Caches, sh: *Shared, li: usize, replay: usize, host_pos: []i64) !bool {
+    var trace_scope = trace.begin("prompt.replayCut", .phase);
+    defer trace_scope.end();
     try attnMixes(e, ch, li);
     if (e.w.layers[li].comp_wkv == null) return error.NoKvSource;
     try kvSourceUpdate(e, ch, cs, sh, li);
@@ -1865,6 +1889,8 @@ pub fn replayCut(e: *const Engine, ch: *Chunk, cs: *const Caches, sh: *Shared, l
 /// DSpark tap j (_forward_k at a tap layer): a pending MoE gather posted into the streams first (hc_post, not fused),
 /// then h.to(fp32).mean(1).to(bf16) into tap j's rows.
 pub fn tap(e: *const Engine, ch: *Chunk, j: usize) !void {
+    var trace_scope = trace.begin("prompt.tap", .phase);
+    defer trace_scope.end();
     const c = e.c;
     if (ch.own != null) return error.OwnedRows; // the taps are decoder layers: the chunk is whole there
     if (ch.pending) {
@@ -1883,6 +1909,8 @@ pub fn tapRows(e: *const Engine, ch: *const Chunk, j: usize) u64 {
 /// its pre, the head's columns (one row through the head's own group, fp32) and their gather: head_g holds the
 /// prompt's logits, the ranks' columns in rank order.
 pub fn head(e: *const Engine, ch: *Chunk) !void {
+    var trace_scope = trace.begin("prompt.head", .phase);
+    defer trace_scope.end();
     const c = e.c;
     const n = ch.n;
     if (ch.own != null) return error.OwnedRows; // after the decoder: the chunk is whole there

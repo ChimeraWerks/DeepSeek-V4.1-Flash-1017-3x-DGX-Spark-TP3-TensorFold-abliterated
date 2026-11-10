@@ -6,6 +6,7 @@
 //! the windows' taps absorbed (verify), and the drafter's batched pass (pass). Every primitive is the gates' own code
 //! path (prompt.zig, round.zig, draft.zig) with no checks.
 const std = @import("std");
+const trace = @import("lanes").slice_trace;
 const cuda = @import("cuda");
 const Config = @import("config.zig").Config;
 const rank_cache = @import("rank_cache.zig");
@@ -16,11 +17,13 @@ const prompt2d = @import("prompt2d.zig");
 const tri_attn = @import("tri_attn.zig");
 const round = @import("round.zig");
 const sampling = @import("sampling.zig");
+const park_graphs = @import("park_graphs.zig");
 const graph_vote = @import("graph_vote.zig");
 const reply_lp = @import("reply_logprobs.zig");
 const greedy_head = @import("decode_greedy_head.zig");
 const draft = @import("draft.zig");
 const engram = @import("engram.zig");
+pub const engram_keep = @import("engram_keep.zig");
 const engram_io = @import("engram_io.zig");
 const engram_aio = @import("engram_aio.zig");
 const exl3_prefill = @import("exl3_prefill.zig");
@@ -250,6 +253,9 @@ pub const Model = struct {
     aio: ?*engram_aio.Aio = null,
     paio: ?*engram_aio.Aio = null, // the prompt chunks' Engram reads, on a ring of their own
     eh: ?prompt.EngramHost = null,
+    keep_engram: bool = false, // TF_DS_ENGRAM_KEEP, private decode hashes also at outer yields
+    retained: engram_keep.State = .{},
+    park_graphs: bool = false, // TF_DS_PARK_GRAPHS, coherent warm hits only
     park_nojoin: bool = false, // TF_DS_PARK_NOJOIN, agreed without changing checkpoint identity
     park_eh: ?prompt.EngramHost = null,
     park_pool: ?*engram_io.Pool = null,
@@ -447,6 +453,9 @@ pub const Model = struct {
         m.aio = null;
         m.paio = null;
         m.eh = null;
+        m.keep_engram = prefill128.enabled("TF_DS_ENGRAM_KEEP");
+        m.retained = .{};
+        m.park_graphs = prefill128.enabled("TF_DS_PARK_GRAPHS");
         m.park_nojoin = prefill128.enabled("TF_DS_PARK_NOJOIN");
         m.park_eh = null;
         m.park_pool = null;
@@ -794,7 +803,7 @@ pub const Model = struct {
             // the prompt's collectives pair up only when every rank runs the same kind
             @import("cache_batch.zig").Flags.fromEnv().agreement(@as(u64, @intFromBool(prompt.owned_on)) | @as(u64, @intFromBool(directGather())) << 1 | (m.prefill.bits() << 2) |
                 (if (@import("graph_telemetry.zig").enabled()) @import("graph_telemetry.zig").agreement_bit else 0) | keyed_draft.settingBit(keyed_draft.enabled()) | greedy_head.agreement(m.decode_greedy_head) | (if (m.decode_sample_head) greedy_head.sample_agreement_bit else @as(u64, 0)) |
-                parkAgreement(m.park_nojoin) | @import("draft_head.zig").settingBit(@import("draft_head.zig").enabled()) | penalties.agreement(m.penalty_on) | (if (m.reply_logprobs) reply_lp.agreement_bit else @as(u64, 0)) | (@as(u64, @intFromBool(prompt.bf16_wire_on)) << 52) | (@as(u64, @intFromBool(prompt.owned_router_on)) << 53) | @import("round_timing.zig").agreement(@import("round_timing.zig").enabled()) | checkpointAgreementBit(prefill128.enabled("TF_DS_PREFILL_CHECKPOINTS"))),
+                engram_keep.agreement(m.keep_engram) | park_graphs.agreement(m.park_graphs) | parkAgreement(m.park_nojoin) | @import("draft_head.zig").settingBit(@import("draft_head.zig").enabled()) | penalties.agreement(m.penalty_on) | (if (m.reply_logprobs) reply_lp.agreement_bit else @as(u64, 0)) | (@as(u64, @intFromBool(prompt.bf16_wire_on)) << 52) | (@as(u64, @intFromBool(prompt.owned_router_on)) << 53) | @import("round_timing.zig").agreement(@import("round_timing.zig").enabled()) | checkpointAgreementBit(prefill128.enabled("TF_DS_PREFILL_CHECKPOINTS"))),
             draft_words[0], draft_words[1],
             @import("engine_api").Spill.roomWaitMs(if (std.c.getenv("TF_SPILL_ROOM_WAIT_MS")) |v| std.mem.span(v) else null),
         };
@@ -824,6 +833,8 @@ pub const Model = struct {
             try greedy_head.agree(r[6], all[0][6]);
             try keyed_draft.checkAgreement(r[6], all[0][6]);
             try checkpointAgreement(all[0][6], r[6]);
+            try park_graphs.check(all[0][6], r[6]);
+            try engram_keep.check(all[0][6], r[6]);
             try prefillAgreement(all[0][6], r[6]);
             try draft_config.check(all[0][7..9].*, r[7..9].*);
             try roomWaitAgreement(all[0][9], r[9]);
@@ -863,7 +874,7 @@ pub const Model = struct {
 
     fn cleanupAllowed(m: *Model, mark: usize) bool {
         if (!cuda.context_health.cleanupReleased(mark)) return false;
-        m.stream.synchronize() catch { cuda.context_health.cleanupRetained(); return false; };
+        (blk: { var ts = trace.begin("model.cleanupAllowed.synchronize.site_770", .wait); defer ts.end(); break :blk m.stream.synchronize(); }) catch { cuda.context_health.cleanupRetained(); return false; };
         return true;
     }
 
@@ -872,7 +883,7 @@ pub const Model = struct {
     pub fn closeOutcome(m: *Model) bool {
         const cleanup = cuda.context_health.cleanupMark();
         m.joinAhead();
-        m.stream.synchronize() catch { cuda.context_health.cleanupRetained(); return false; };
+        (blk: { var ts = trace.begin("model.closeOutcome.synchronize.site_779", .wait); defer ts.end(); break :blk m.stream.synchronize(); }) catch { cuda.context_health.cleanupRetained(); return false; };
         m.freePenaltyStorage();
         if (m.img_buf) |*b| b.free();
         if (!cuda.context_health.cleanupReleased(cleanup)) return false;
@@ -1063,18 +1074,18 @@ pub const Model = struct {
     }
 
     pub fn joinAhead(m: *Model) void {
-        if (m.rs.ahead) |th| th.join();
+        if (m.rs.ahead) |th| (blk: { var ts = trace.begin("model.joinAhead.thread_join.site_967", .wait); defer ts.end(); break :blk th.join(); });
         m.rs.ahead = null;
-        if (m.ahead) |th| th.join();
+        if (m.ahead) |th| (blk: { var ts = trace.begin("model.joinAhead.thread_join.site_969", .wait); defer ts.end(); break :blk th.join(); });
         m.ahead = null;
     }
 
     pub fn independentPark(m: *const Model) bool {
-        return m.park_nojoin and m.rs.live;
+        return (m.park_nojoin and m.rs.live) or (m.keep_engram and (m.rs.live or m.retained.key != null));
     }
 
-    /// Only live parks retain reader custody. Abort, release and row consumption
-    /// still call joinAhead, regardless of the setting.
+    /// Retained future rows also own prompt hashes outside a live slice.
+    /// Abort, release and row consumption still join regardless of the setting.
     pub fn joinParkAhead(m: *Model) void {
         if (!m.independentPark()) m.joinAhead();
     }
@@ -1343,7 +1354,7 @@ pub const Model = struct {
 
         /// The copies before `ev` completed (a cancel, a drop, a shutdown: bounded by what was enqueued).
         pub fn wait(_: SpillDev, ev: cuda.Event) !void {
-            try ev.synchronize();
+            try (blk: { var ts = trace.begin("model.wait.synchronize.site_1247", .wait); defer ts.end(); break :blk ev.synchronize(); });
         }
 
         /// Unknown DMA quiescence requires process teardown, not buffer reuse.
@@ -1412,8 +1423,14 @@ pub const Model = struct {
     /// is one call at the start of every pass, in fillBegin after its joinAhead (outside this block: routed to the
     /// coordinator, docs/port/dsv41-state.md); until it lands, a restore calls this right before the resumed pass.
     pub fn resetEngramAhead(m: *Model) void {
+        var trace_scope = trace.begin("model.resetEngramAhead", .phase);
+        defer trace_scope.end();
         m.joinAhead();
+        if (m.keep_engram) m.retained.key = null; // TF_DS_ENGRAM_KEEP: joined future rows lose their identity too
         if (m.eh) |*eh| {
+            // trace only: ready rows thrown away here (lo, hi: their rows), the next chunk's when a yield resumes
+            if (trace_scope.trace != null and eh.ahead_n > 0 and (eh.ahead_ready[0] or eh.ahead_ready[1]))
+                trace.mark("model.resetEngramAhead.dropped_ready", eh.ahead_start, eh.ahead_start + eh.ahead_n);
             eh.ahead_ready = .{ false, false };
             eh.ahead_n = 0;
             eh.ahead_err = null;
@@ -1590,7 +1607,7 @@ pub const Model = struct {
             }
             const d = m.ctx.d;
             try d.check(d.api.cuMemcpyHtoDAsync_v2(m.img_buf.?.ptr, rows.ptr, rows.len, m.stream.handle), "cuMemcpyHtoDAsync");
-            try m.stream.synchronize(); // (the caller's rows may go once this returns)
+            try (blk: { var ts = trace.begin("model.setImages.synchronize.site_1494", .wait); defer ts.end(); break :blk m.stream.synchronize(); }); // (the caller's rows may go once this returns)
         }
         m.spans.clearRetainingCapacity();
         try m.spans.appendSlice(m.gpa, spans);
@@ -1604,11 +1621,57 @@ pub const Model = struct {
         // next chunk start would otherwise take its rows, hashed from the other prompt's ids
         if (m.rs.live) return error.OpenPrefillChunk;
         m.resetEngramAhead();
+        if (m.keep_engram) try m.retained.begin();
+        try m.selectFill(slot, base);
+    }
+
+    /// fill_resume is not a new occupant. openChunk checks the exact identity.
+    pub fn fillResume(m: *Model, slot: usize, base: usize) !void {
+        if (!m.keep_engram) return m.fillBegin(slot, base);
+        if (slot >= m.streams) return error.BadSlot;
+        if (m.rs.live) return error.OpenPrefillChunk;
+        if (m.retained.key) |key| if (key.slot != slot) m.resetEngramAhead();
+        try m.selectFill(slot, base);
+    }
+
+    fn selectFill(m: *Model, slot: usize, base: usize) !void {
         m.spans.clearRetainingCapacity();
         m.ch.spans = &.{};
         m.view = try m.caches.view(&m.eng, slot, base);
         for (m.rings, m.ring_view) |r, *v| v.* = r + slot * m.eng.ringBytes();
         m.fill_slot = slot;
+    }
+
+    fn retainedKey(m: *const Model, seq: []const i32, start: usize, n: usize) ?engram_keep.Key {
+        if (m.kvs != null or m.two != null or m.ch.spans.len != 0) return null;
+        const eh = if (m.eh) |*host| host else return null;
+        const layers: u8 = if (m.prefill.ae or eh.hasher.layers == 1) 1 else 3;
+        return engram_keep.Key.make(m.fill_slot, m.retained.generation, seq, start, n, eh.hasher.ngram, layers);
+    }
+
+    /// A spawn refusal cannot make only one rank drop an otherwise identical key.
+    pub fn retainAhead(m: *Model, seq: []const i32, start: usize, n: usize) void {
+        if (!m.keep_engram) return;
+        m.retained.key = m.retainedKey(seq, start, n);
+        if (m.retained.key != null and m.ahead == null) {
+            const eh = &m.eh.?;
+            if (m.prefill.ae) prompt.engramReadAhead(eh, m.eng.c, seq[0 .. start + n], start, n, 0)
+            else prompt.engramReadAheadAll(eh, m.eng.c, seq[0 .. start + n], start, n);
+        }
+    }
+
+    /// Only the joined result is inspected. A miss leaves the baseline read path.
+    pub fn claimRetained(m: *Model, seq: []const i32, start: usize, n: usize) bool {
+        if (!m.keep_engram) return false;
+        m.joinAhead();
+        const same = if (m.retained.key) |saved| if (m.retainedKey(seq, start, n)) |key| saved.eql(key) else false else false;
+        // a failed future read is retried here, as the reset at a yielded resume did before
+        if (!same or m.eh.?.ahead_err != null) {
+            m.resetEngramAhead();
+            return false;
+        }
+        m.retained.key = null; // single use, even if the chunk subsequently fails
+        return true;
     }
 
     /// TF_DS_KV_SHARD: the filling prompt's view (fillBegin's, at `base`) with its borrowed twins (`on`; `local`: this
@@ -1628,18 +1691,20 @@ pub const Model = struct {
     }
 
     pub fn dropChunk(m: *Model) void {
-        m.joinAhead();
+        if (m.keep_engram) m.resetEngramAhead() else m.joinAhead();
         m.rs = .{};
     }
 
     pub fn fillSlice(m: *Model, seq: []const i32, args: SliceArgs, lo: usize, hi: usize) !SliceEnd {
         try m.rs.validate(args, lo, hi, m.eng.c.layers, seq.len);
-        if (lo == 0) try m.openChunk(seq, args);
+        { var ts = trace.begin("model.fillSlice.openChunk", .phase); defer ts.end(); if (lo == 0) try m.openChunk(seq, args); }
         // Fatal rank-local failures must poison the world before any joining cleanup.
         return m.runSlice(seq, lo, hi);
     }
 
     fn openChunk(m: *Model, seq: []const i32, args: SliceArgs) !void {
+        var trace_scope = trace.begin("model.openChunk", .phase);
+        defer trace_scope.end();
         const start = args.start;
         const n = args.n;
         if (n == 0 or n > m.compute_rows or seq.len != start + n) return error.BadChunk;
@@ -1650,37 +1715,47 @@ pub const Model = struct {
         // an image position's id is negative in the sequence (its n-grams dead for Engram): its embedding's id is the
         // image token's, which its span row then replaces
         const image_id: i64 = if (c.image_token) |t| t else 0;
-        for (0..n) |j| m.ids64[j] = if (seq[start + j] < 0) image_id else seq[start + j];
+        { var ts = trace.begin("model.openChunk.sequence_setup", .phase); defer ts.end(); for (0..n) |j| m.ids64[j] = if (seq[start + j] < 0) image_id else seq[start + j]; }
         const pt = m.ptimer;
         if (pt) |t| try t.mark(m.stream, .start);
-        try prompt.begin(e, ch, m.ids64[0..n], start, m.host_pos);
-        if (ch.spans.len > 0) try prompt.embedSpans(e, ch);
+        { var ts = trace.begin("model.openChunk.prompt.begin", .phase); defer ts.end(); try prompt.begin(e, ch, m.ids64[0..n], start, m.host_pos); }
+        { var ts = trace.begin("model.openChunk.image_spans", .phase); defer ts.end(); if (ch.spans.len > 0) try prompt.embedSpans(e, ch); }
         if (pt) |t| try t.mark(m.stream, .embed);
         // Engram rows read ahead on a thread while the GPU runs the layers before them (the served reader pool's
         // overlap): this chunk's both layers' during the chunk before it (m.ahead), else the first layer's from the
         // chunk's start and the next's once the first is applied
+        if (m.keep_engram) _ = m.claimRetained(seq, start, n);
         var ahead: ?std.Thread = m.ahead;
         m.ahead = null;
-        errdefer if (ahead) |th| th.join();
+        errdefer if (ahead) |th| { var ts = trace.begin("model.openChunk.error_cleanup.thread_join", .wait); defer ts.end(); th.join(); };
         if (m.eh) |*eh| {
             if (ahead != null and (eh.ahead_start != start or eh.ahead_n != n)) {
-                ahead.?.join();
+                { var ts = trace.begin("model.openChunk.stale_ahead.thread_join", .wait); defer ts.end(); ahead.?.join(); }
                 ahead = null;
             }
             // a read-ahead of this chunk already joined (a round ran between two chunks): its rows stand ready
             const joined = ahead == null and eh.ahead_start == start and eh.ahead_n == n and eh.ahead_ready[0];
+            // trace only: where this chunk's first Engram rows come from (lo, hi: its rows); else a spawn below
+            if (trace_scope.trace != null) {
+                if (joined) trace.mark("model.openChunk.read_ahead_reused", start, start + n);
+                if (ahead != null) trace.mark("model.openChunk.read_ahead_inflight", start, start + n);
+            }
             if (ahead == null and !joined) {
                 eh.ahead_start = start;
                 eh.ahead_n = n;
                 eh.ahead_ready = .{ false, false };
                 eh.ahead_err = null;
-                ahead = std.Thread.spawn(.{}, prompt.engramReadAhead, .{ eh, c, seq, start, n, @as(usize, 0) }) catch null;
+                ahead = (blk: { var ts = trace.begin("model.readAhead.spawn", .phase); defer ts.end(); break :blk std.Thread.spawn(.{}, prompt.engramReadAhead, .{ eh, c, seq, start, n, @as(usize, 0) }); }) catch null;
             }
         }
         m.rs = .{ .live = true, .args = args, .ahead = ahead };
     }
 
     fn runSlice(m: *Model, seq: []const i32, lo: usize, hi: usize) !SliceEnd {
+        var trace_scope = trace.begin("model.runSlice", .phase);
+        defer trace_scope.end();
+        var slice_trace = trace.slice(lo, hi);
+        defer slice_trace.end();
         const e = &m.eng;
         const c = e.c;
         const ch = &m.ch;
@@ -1691,26 +1766,36 @@ pub const Model = struct {
         const pt = m.ptimer;
         const taps = m.dr != null;
         for (lo..hi) |li| {
+            var layer_trace = trace.indexed("model.runSlice.layer", .phase, li, li + 1);
+            defer layer_trace.end();
+
             if (li == c.layers / 2) {
                 if (!try prompt.replayCut(e, ch, &m.view, &rs.shared, li, replay, m.host_pos)) {
                     // encoder-only: no synchronize either (as at the chunk's end below), so the next chunk's host steps
                     // run while this one's last layers do; the profile alone waits
                     if (pt) |t| {
-                        try m.stream.synchronize();
-                        try t.finish();
+                        try (blk: { var ts = trace.begin("model.runSlice.synchronize.site_1614", .wait); defer ts.end(); break :blk m.stream.synchronize(); });
+                        try (blk: { var ts = trace.begin("model.phase_timer.finish.site_1", .wait); defer ts.end(); break :blk t.finish(); });
                     }
-                    if (rs.ahead) |th| th.join();
+                    if (rs.ahead) |th| { var ts = trace.begin("model.runSlice.encoder_only.thread_join", .wait); defer ts.end(); th.join(); }
                     rs.* = .{}; // preserve next-chunk read-ahead exactly as whole chunks did
+                    if (trace.current) |t| if (t.enabled and t.chunk) {
+                        var drain_trace = trace.begin("model.fillSlice.trace_end_synchronize", .wait);
+                        defer drain_trace.end();
+                        try m.stream.synchronize();
+                        t.id.encoder_only = true;
+                    };
                     return .encoder_only;
                 }
                 rs.floor = replay;
                 rs.kv_done = li;
             }
+            if (trace.current) |t| if (t.enabled and t.chunk) { t.id.layers += 1; };
             if (e.w.layers[li].engram_wkv != null) {
                 const eh = if (m.eh) |*x| x else return error.NoEngramTables;
                 if (rs.ahead) |th| {
                     const wait_begin = if (m.engram_audit) m.now() else 0;
-                    th.join();
+                    { var ts = trace.begin("model.runSlice.engram_consumption.thread_join", .wait); defer ts.end(); th.join(); }
                     if (m.engram_audit) std.debug.print("prefill_engram_wait: rank={d} start={d} rows={d} layer={d} ns={d}\n", .{ m.rank, start, n, li, m.now() - wait_begin });
                     rs.ahead = null;
                 }
@@ -1720,7 +1805,7 @@ pub const Model = struct {
                 const ne = @min(2, c.engram_layers.slice().len);
                 if (j + 1 < ne) {
                     if (!eh.ahead_ready[j + 1])
-                        rs.ahead = std.Thread.spawn(.{}, prompt.engramReadAhead, .{ eh, c, seq, start, n, j + 1 }) catch null;
+                        rs.ahead = (blk: { var ts = trace.begin("model.readAhead.spawn", .phase); defer ts.end(); break :blk std.Thread.spawn(.{}, prompt.engramReadAhead, .{ eh, c, seq, start, n, j + 1 }); }) catch null;
                 } else if (m.fill_seq.len > start + n and m.fill_seq.ptr == seq.ptr) {
                     // the next chunk's rows while this one's layers run
                     const nn = if (m.prefill.ae) m.next_engram_rows else @min(m.compute_rows, m.fill_seq.len - start - n);
@@ -1732,8 +1817,9 @@ pub const Model = struct {
                     // AE inherits only the first layer. The second is scheduled
                     // after applying it, rather than joining both at layer one.
                     m.ahead = if (m.prefill.ae)
-                        std.Thread.spawn(.{}, prompt.engramReadAhead, .{ eh, c, m.fill_seq[0 .. start + n + nn], start + n, nn, @as(usize, 0) }) catch null
-                    else std.Thread.spawn(.{}, prompt.engramReadAheadAll, .{ eh, c, m.fill_seq[0 .. start + n + nn], start + n, nn }) catch null;
+                        (blk: { var ts = trace.begin("model.readAhead.spawn", .phase); defer ts.end(); break :blk std.Thread.spawn(.{}, prompt.engramReadAhead, .{ eh, c, m.fill_seq[0 .. start + n + nn], start + n, nn, @as(usize, 0) }); }) catch null
+                    else (blk: { var ts = trace.begin("model.readAhead.spawn", .phase); defer ts.end(); break :blk std.Thread.spawn(.{}, prompt.engramReadAheadAll, .{ eh, c, m.fill_seq[0 .. start + n + nn], start + n, nn }); }) catch null;
+                    if (m.keep_engram) m.retainAhead(m.fill_seq, start + n, nn);
                     if (m.engram_audit) std.debug.print("prefill_engram_plan: rank={d} start={d} rows={d} first_layer_only={d}\n", .{ m.rank, start + n, nn, @intFromBool(m.prefill.ae) });
                 }
                 if (pt) |t| try t.mark(m.stream, .engram);
@@ -1755,23 +1841,31 @@ pub const Model = struct {
             prompt.endLayer(ch);
         }
         rs.next = hi;
+        if (trace.current) |t| if (t.enabled and t.chunk) {
+            var drain_trace = trace.begin("model.fillSlice.trace_end_synchronize", .wait);
+            defer drain_trace.end();
+            try m.stream.synchronize();
+        };
+        slice_trace.end();
         if (hi < c.layers) return .more;
         try prompt.head(e, ch);
         if (pt) |t| try t.mark(m.stream, .head);
         if (m.dr) |*dr| {
             // its taps (the tap layers side by side) into the slot's drafter rings
             const dw = c.hidden;
+            { var ts = trace.begin("model.runSlice.tap_copy", .phase); defer ts.end();
             for (0..c.dspark_taps.slice().len) |j| try e.ops.copyRows(e.s, prompt.tapRows(e, ch, j), dw * 2, dr.at + j * dw * 2, dr.taps_w * 2, dw * 2, ch.n);
-            try dr.absorb(e, ch, &m.dpool.?, m.fill_slot, dr.at, ch.n, ch.start);
+            }
+            { var ts = trace.begin("model.runSlice.dspark_absorb", .phase); defer ts.end(); try dr.absorb(e, ch, &m.dpool.?, m.fill_slot, dr.at, ch.n, ch.start); }
         }
         // no synchronize: the next chunk's host steps (its first Engram layer's hashing, table reads and decode, ~0.14 s
         // at 2,048 rows) run while this chunk's kernels do; readers of the results (the prompt's logits) synchronize.
         // The profile (--profile 2) times a chunk to its end, so it alone waits.
         if (pt) |t| {
-            try m.stream.synchronize();
-            try t.finish();
+            try (blk: { var ts = trace.begin("model.runSlice.synchronize.site_1687", .wait); defer ts.end(); break :blk m.stream.synchronize(); });
+            try (blk: { var ts = trace.begin("model.phase_timer.finish.site_2", .wait); defer ts.end(); break :blk t.finish(); });
         }
-        if (rs.ahead) |th| th.join();
+        if (rs.ahead) |th| { var ts = trace.begin("model.runSlice.chunk_end.thread_join", .wait); defer ts.end(); th.join(); }
         rs.* = .{}; // next-chunk m.ahead deliberately survives the whole-chunk path
         return .head;
     }
@@ -1823,20 +1917,33 @@ pub const Model = struct {
         if (!m.rd.sample_fallback) m.greedy_output.complete(rows.ids.len);
     }
 
+    pub fn parkGraphMode(m: *const Model) park_graphs.Mode {
+        // Spill may disable voting. Such caches have no cross-rank hit guarantee.
+        if (!m.rs.live) return .normal;
+        if (!m.park_graphs) return .eager;
+        return park_graphs.mode(true, true, m.world == 1 or m.gvote != null);
+    }
+
     fn verifyRun(m: *Model, rows: round.Rows, absorb: []const bool) !void {
         m.score_raw = if (m.rd.penalty) |p| p.raw else 0; // reply logprobs read these rows at commit
         m.joinParkAhead();
         const eh = try m.roundEngram();
         defer m.parkProfile();
         const e = &m.eng;
-        if (m.prof) try m.stream.synchronize(); // (the GPU idle, so the issue time shows whether the host keeps it fed)
+        if (m.prof) try (blk: { var ts = trace.begin("model.verifyRun.synchronize.site_1747", .wait); defer ts.end(); break :blk m.stream.synchronize(); }); // (the GPU idle, so the issue time shows whether the host keeps it fed)
         const t0 = m.now();
-        try round.forward(e, &m.rd, &m.ch, &m.caches, m.rings, eh, &.{}, rows, m.request_cap, null, if (m.rs.live or m.rd.penalty != null) null else if (m.graphs) |*g| g else null);
+        const mode = if (m.rs.live) m.parkGraphMode() else park_graphs.Mode.normal;
+        // A penalized round stays eager in and out of a park (main's rule); park graphs never replay it.
+        const graphs = if (mode == .eager or m.rd.penalty != null) null else if (m.graphs) |*g| g else null;
+        if (graphs) |g| g.replay_only = mode == .replay;
+        defer if (graphs) |g| { g.replay_only = false; };
+        if (m.rs.live and m.park_graphs and graphs == null) trace.mark("park_graph.verify.eager", 0, 0);
+        try round.forward(e, &m.rd, &m.ch, &m.caches, m.rings, eh, &.{}, rows, m.request_cap, null, graphs);
         if (m.prof) {
             m.t_enqueue = m.now() - t0;
-            try m.stream.synchronize();
+            try (blk: { var ts = trace.begin("model.verifyRun.synchronize.site_1752", .wait); defer ts.end(); break :blk m.stream.synchronize(); });
             m.t_forward = m.now() - t0;
-            if (m.timer) |t| try t.finish();
+            if (m.timer) |t| try (blk: { var ts = trace.begin("model.phase_timer.finish.site_3", .wait); defer ts.end(); break :blk t.finish(); });
             if (m.rd.clk != 0) {
                 var h: [1 + 2 * round.Round.max_clocks]u64 = undefined;
                 const d = m.ctx.d;
@@ -1862,10 +1969,12 @@ pub const Model = struct {
             }
             if (n > 0) try dr.absorbMany(e, &m.ch, &m.dpool.?, items[0..n]);
         }
-        try m.stream.synchronize();
+        try (blk: { var ts = trace.begin("model.verifyRun.synchronize.site_1780", .wait); defer ts.end(); break :blk m.stream.synchronize(); });
         if (m.prof) m.t_absorb = m.now() - t1;
         if (m.rs.live and !m.independentPark()) if (m.eh) |*fill_eh| {
             const args = m.rs.args;
+            var ts = trace.begin("model.verifyRun.fill_rehash", .phase);
+            defer ts.end();
             fill_eh.hasher.hashes(m.fill_seq, args.start, args.n, fill_eh.hashes[0 .. args.n * fill_eh.hasher.layers * fill_eh.hasher.cols()]);
         };
     }
@@ -1906,7 +2015,7 @@ pub const Model = struct {
         const d = m.ctx.d;
         if (!selected)
             try m.ops.argmaxRows(m.stream, m.rd.logits, m.vocab, m.cfg.tokenVocab(), R, m.amax);
-        try m.stream.synchronize();
+        try (blk: { var ts = trace.begin("model.roundArgmax.synchronize.site_1824", .wait); defer ts.end(); break :blk m.stream.synchronize(); });
         try d.check(d.api.cuMemcpyDtoH_v2(&m.amax_host, m.amax, R * 4), "cuMemcpyDtoH");
         return m.amax_host[0..R];
     }
@@ -1928,7 +2037,7 @@ pub const Model = struct {
         const vals = m.cand;
         const ids = vals + round.max_rows * sampling.max_candidates * 4;
         const flags = ids + round.max_rows * sampling.max_candidates * 8;
-        try m.stream.synchronize();
+        try (blk: { var ts = trace.begin("model.readCandidates.synchronize.site_1846", .wait); defer ts.end(); break :blk m.stream.synchronize(); });
         try d.check(d.api.cuMemcpyDtoH_v2(&m.cand_flags, flags, R * 4), "cuMemcpyDtoH");
         var good = true;
         for (m.cand_flags[0..R]) |flag| good = good and flag == 0;
@@ -1955,7 +2064,7 @@ pub const Model = struct {
     pub fn roundLogits(m: *Model, R: usize) ![]const f32 {
         try m.greedy_output.requireLogits();
         const d = m.ctx.d;
-        try m.stream.synchronize();
+        try (blk: { var ts = trace.begin("model.roundLogits.synchronize.site_1873", .wait); defer ts.end(); break :blk m.stream.synchronize(); });
         try d.check(d.api.cuMemcpyDtoH_v2(m.logits.ptr, m.rd.logits, R * m.vocab * 4), "cuMemcpyDtoH");
         m.cfg.maskHostLogits(m.logits[0 .. R * m.vocab]);
         return m.logits[0 .. R * m.vocab];
@@ -1967,7 +2076,7 @@ pub const Model = struct {
         try m.greedy_output.requireLogits();
         const d = m.ctx.d;
         const V = m.vocab;
-        try m.stream.synchronize();
+        try (blk: { var ts = trace.begin("model.roundLogitRows.synchronize.site_1885", .wait); defer ts.end(); break :blk m.stream.synchronize(); });
         try d.check(d.api.cuMemcpyDtoH_v2(m.logits[first * V ..].ptr, m.rd.logits + first * V * 4, n * V * 4), "cuMemcpyDtoH");
         m.cfg.maskHostLogits(m.logits[first * V .. (first + n) * V]);
     }
@@ -1975,7 +2084,7 @@ pub const Model = struct {
     /// The prompt's logits on the host (after a fill's last chunk).
     pub fn promptLogitsHost(m: *Model) ![]const f32 {
         const d = m.ctx.d;
-        try m.stream.synchronize();
+        try (blk: { var ts = trace.begin("model.promptLogitsHost.synchronize.site_1893", .wait); defer ts.end(); break :blk m.stream.synchronize(); });
         try d.check(d.api.cuMemcpyDtoH_v2(m.logits.ptr, if (m.penalty_prompt != 0) m.penalty_prompt else m.ch.head_g, m.vocab * 4), "cuMemcpyDtoH");
         m.cfg.maskHostLogits(m.logits[0..m.vocab]);
         return m.logits[0..m.vocab];
@@ -1988,8 +2097,14 @@ pub const Model = struct {
         const dr = &m.dr.?;
         const pool = &m.dpool.?;
         const graphs = dr.graphs;
-        if (m.rs.live) dr.graphs = null;
-        defer dr.graphs = graphs;
+        const mode = if (m.rs.live) m.parkGraphMode() else park_graphs.Mode.normal;
+        if (mode == .eager) dr.graphs = null;
+        if (dr.graphs) |g| g.replay_only = mode == .replay;
+        defer {
+            if (dr.graphs) |g| g.replay_only = false;
+            dr.graphs = graphs;
+        }
+        if (m.rs.live and m.park_graphs and dr.graphs == null) trace.mark("park_graph.draft.eager", 0, 0);
         for (q0, slots) |q, s| pool.absorbed[@intCast(s)] = @intCast(q);
         try dr.pass(&m.eng, &m.ch, pool, tokens, q0, slots, steps, null, keyed);
     }
@@ -2018,6 +2133,7 @@ test "decode greedy head actual Model rejects stale logits and invalid row reads
 
 test "decode greedy head actual Model invalid route resets previous readiness without CUDA" {
     var m: Model = undefined;
+    m.keep_engram = false;
     m.greedy_output = .{ .rows = 16 };
     m.rd.greedy_out = 17;
     m.decode_greedy_head = false;
@@ -2061,6 +2177,7 @@ test "decode greedy head actual Model selected output fences then copies only to
     var ctx: cuda.Context = undefined;
     ctx.d = &driver;
     var m: Model = undefined;
+    m.keep_engram = false;
     m.ctx = &ctx;
     m.stream = .{ .d = &driver, .owner = owner, .handle = null };
     m.amax = 0x12340;
@@ -2075,6 +2192,7 @@ test "decode greedy head actual Model selected output fences then copies only to
 
 test "decode greedy head sampled custody refuses stale logits and resets invalid routes" {
     var m: Model = undefined;
+    m.keep_engram = false;
     m.sample_output = 28;
     m.greedy_output = .{ .rows = 2 };
     m.rd.r = 2;
@@ -2116,6 +2234,7 @@ test "prefill slice resume after park validates exact arguments and rejects repl
     try std.testing.expectEqual(@as(?usize, 3), rs.shared.kv_layer);
     try std.testing.expectEqual(@as(usize, 7), rs.floor);
     var model_: Model = undefined;
+    model_.keep_engram = false;
     model_.rs = .{};
     model_.rs = rs;
     model_.rs.ahead = try std.Thread.spawn(.{}, struct {
@@ -2176,6 +2295,7 @@ test "prefill slice nojoin actual custody leaves both reads live until consumpti
         var current: Gate = .{};
         var next: Gate = .{};
         var m: Model = undefined;
+        m.keep_engram = false;
         m.park_nojoin = true;
         m.rs = .{ .live = true, .ahead = try std.Thread.spawn(.{}, Gate.run, .{&current}) };
         m.ahead = try std.Thread.spawn(.{}, Gate.run, .{&next});
@@ -2198,6 +2318,7 @@ test "prefill slice nojoin actual custody leaves both reads live until consumpti
         var g: Gate = .{};
         g.go.store(true, .release);
         var m: Model = undefined;
+        m.keep_engram = false;
         m.park_nojoin = on;
         m.rs = .{ .live = !on };
         m.ahead = try std.Thread.spawn(.{}, Gate.run, .{&g});
@@ -2208,6 +2329,7 @@ test "prefill slice nojoin actual custody leaves both reads live until consumpti
 
 test "prefill slice nojoin off and empty Engram never allocate a decode host" {
     var m: Model = undefined;
+    m.keep_engram = false;
     m.park_nojoin = false;
     m.rs = .{ .live = true };
     m.park_eh = null;
@@ -2239,4 +2361,256 @@ test "prefill slice checkpoints agree all three ranks and preserve off words" {
         for (words[1..]) |w| checkpointAgreement(words[0], w) catch { mismatch = true; };
         try std.testing.expect(mismatch);
     }
+}
+
+test "prefill slice engram keep clean resume consumes once and decode owns private hashes" {
+    const Fixture = @import("engram_keep_test.zig").Fixture;
+    const f = try Fixture.create();
+    defer f.destroy();
+    for ([_]usize{ 4096, 8192 }) |n| for ([_]bool{ false, true }) |ae| {
+        const before = f.pool.gen;
+        try f.plan(ae, n);
+        try std.testing.expect(f.m.independentPark()); // rs.live is false
+        const decode = (try f.m.roundEngram()).?;
+        try std.testing.expect(decode != &f.m.eh.?);
+        try std.testing.expect(decode.hashes.ptr != f.m.eh.?.hashes.ptr);
+        const dseq = [_]i32{ 6, 5, 4, 3, 2, 1, 0 };
+        // Real hasher and reader, concurrent with the future prompt's worker.
+        for (0..16) |_| for (f.c.engram_layers.slice()) |li| {
+            _ = try prompt.engramRows(decode, li, &dseq, 0, dseq.len, f.c.engram_layers.slice());
+        };
+        f.m.joinAhead(); // the production outer-yield defer
+        try std.testing.expectEqual(before + @as(u64, if (ae) 1 else 2), f.pool.gen);
+        var expected_hashes: [8192 * 2 * 3]i64 = undefined;
+        const h = &f.m.eh.?;
+        h.hasher.hashes(&f.ids, 4, n, expected_hashes[0 .. n * 6]);
+        try std.testing.expectEqualSlices(i64, expected_hashes[0 .. n * 6], h.hashes[0 .. n * 6]);
+        const generation = f.m.retained.generation;
+        try f.m.fillResume(0, 0); // actual model resume, with an empty fake GPU cache
+        try std.testing.expectEqual(generation, f.m.retained.generation);
+        try std.testing.expect(f.m.claimRetained(&f.ids, 4, n));
+        const reads = f.pool.gen;
+        const kept = try f.rows(1, n);
+        try std.testing.expectEqual(reads, f.pool.gen); // no second gather
+        const snapshot = try std.testing.allocator.dupe(u16, kept[0 .. n * 3 * 32]);
+        defer std.testing.allocator.free(snapshot);
+        const fresh = try f.rows(1, n); // single-use consumption forces a fresh read
+        try std.testing.expectEqual(reads + 1, f.pool.gen);
+        try std.testing.expectEqualSlices(u16, snapshot, fresh[0 .. n * 3 * 32]);
+        const next_reads = f.pool.gen;
+        _ = try f.rows(14, n);
+        try std.testing.expectEqual(next_reads + @as(u64, if (ae) 1 else 0), f.pool.gen);
+        // After the claim no pending future key remains. Current chunks use rs.live.
+        try std.testing.expect(f.m.retained.key == null);
+    };
+}
+
+test "prefill slice engram keep mismatches and unsupported modes force a real reread" {
+    const Fixture = @import("engram_keep_test.zig").Fixture;
+    const f = try Fixture.create();
+    defer f.destroy();
+    for (0..8) |case| {
+        try f.plan(false, 32);
+        f.m.joinAhead();
+        const before = f.pool.gen;
+        var n: usize = 32;
+        switch (case) {
+            0 => f.ids[1] = 6, // left halo, same slot/length/start
+            1 => f.m.fill_slot = 1,
+            2 => try f.m.retained.begin(), // same slot reused by even an identical prompt
+            3 => f.m.prefill.ae = true,
+            4 => n = 31,
+            5 => f.m.ch.spans = &.{.{ .at = 4, .len = 2, .row = 0 }},
+            6 => f.m.kvs = @as(shard_ops.KvShard, undefined),
+            7 => f.m.two = @as(prompt2d.Two, undefined),
+            else => unreachable,
+        }
+        try std.testing.expect(!f.m.claimRetained(&f.ids, 4, n));
+        try std.testing.expect(f.m.eh.?.ahead_err == null and !f.m.eh.?.ahead_ready[0]);
+        _ = try f.rows(1, n);
+        try std.testing.expectEqual(before + 1, f.pool.gen);
+        f.ids[1] = 1;
+        f.m.fill_slot = 0;
+        f.m.ch.spans = &.{};
+        f.m.kvs = null;
+        f.m.two = null;
+    }
+    try f.plan(false, 32);
+    f.m.joinAhead();
+    const reads = f.pool.gen;
+    try f.m.fillBegin(0, 0); // actual new-occupant path resets even same slot
+    try std.testing.expect(!f.m.claimRetained(&f.ids, 4, 32));
+    _ = try f.rows(1, 32);
+    try std.testing.expectEqual(reads + 1, f.pool.gen);
+}
+
+test "prefill slice engram keep cancellation joins an in flight real reader before clearing readiness" {
+    const Fixture = @import("engram_keep_test.zig").Fixture;
+    const f = try Fixture.create();
+    defer f.destroy();
+    const Gate = struct {
+        f: *Fixture,
+        entered: std.atomic.Value(bool) = .init(false),
+        go: std.atomic.Value(bool) = .init(false),
+        cancelling: std.atomic.Value(bool) = .init(false),
+        cancelled: std.atomic.Value(bool) = .init(false),
+        fn read(g: *@This()) void {
+            g.entered.store(true, .release);
+            while (!g.go.load(.acquire)) std.Thread.yield() catch {};
+            prompt.engramReadAheadAll(&g.f.m.eh.?, &g.f.c, &g.f.ids, 4, 8192);
+        }
+        fn cancel(g: *@This()) void {
+            g.cancelling.store(true, .release);
+            g.f.m.dropChunk();
+            g.cancelled.store(true, .release);
+        }
+    };
+    var gate: Gate = .{ .f = f };
+    f.m.eh.?.ahead_start = 4;
+    f.m.eh.?.ahead_n = 8192;
+    f.m.retained.key = engram_keep.Key.make(0, f.m.retained.generation, &f.ids, 4, 8192, 4, 3);
+    f.m.ahead = try std.Thread.spawn(.{}, Gate.read, .{&gate});
+    defer gate.go.store(true, .release);
+    while (!gate.entered.load(.acquire)) std.Thread.yield() catch {};
+    const cancel = try std.Thread.spawn(.{}, Gate.cancel, .{&gate});
+    while (!gate.cancelling.load(.acquire)) std.Thread.yield() catch {};
+    const blocked = !gate.cancelled.load(.acquire);
+    gate.go.store(true, .release);
+    cancel.join();
+    try std.testing.expect(blocked);
+    try std.testing.expect(gate.cancelled.load(.acquire));
+    try std.testing.expect(f.m.ahead == null and f.m.retained.key == null);
+    try std.testing.expectEqual(@as([2]bool, .{ false, false }), f.m.eh.?.ahead_ready);
+    const reads = f.pool.gen;
+    _ = try f.rows(1, 8192);
+    try std.testing.expectEqual(reads + 1, f.pool.gen);
+}
+
+test "prefill slice engram keep off retains baseline join reset and zero private allocation" {
+    const Fixture = @import("engram_keep_test.zig").Fixture;
+    const f = try Fixture.create();
+    defer f.destroy();
+    try f.plan(false, 32);
+    f.m.keep_engram = false;
+    f.m.joinParkAhead();
+    try std.testing.expect(f.m.ahead == null);
+    try std.testing.expectEqual(@as(u64, 2), f.pool.gen);
+    try std.testing.expect((try f.m.roundEngram()).? == &f.m.eh.?);
+    try std.testing.expect(f.m.park_eh == null and f.m.park_pool == null);
+    const generation = f.m.retained.generation;
+    try f.m.fillResume(0, 0);
+    try std.testing.expectEqual(generation, f.m.retained.generation);
+    try std.testing.expectEqual(@as([2]bool, .{ false, false }), f.m.eh.?.ahead_ready);
+    _ = try f.rows(1, 32);
+    try std.testing.expectEqual(@as(u64, 3), f.pool.gen);
+    var uninitialized: Model = undefined;
+    uninitialized.keep_engram = false;
+    try std.testing.expect(!uninitialized.claimRetained(undefined, 0, 0));
+}
+
+test "prefill slice engram keep AIO resume consumes without new submissions" {
+    const Fixture = @import("engram_keep_test.zig").Fixture;
+    const f = try Fixture.create();
+    const aio = try engram_aio.Aio.init(std.testing.allocator, std.testing.io, 4096);
+    defer aio.deinit();
+    defer f.destroy();
+    f.m.eh.?.paio = aio;
+    for ([_]usize{ 4096, 8192 }) |n| for ([_]bool{ false, true }) |ae| {
+        try f.plan(ae, n);
+        f.m.joinAhead();
+        try f.m.fillResume(0, 0);
+        try std.testing.expect(f.m.claimRetained(&f.ids, 4, n));
+        const reads = aio.head;
+        const retained = try f.rows(1, n);
+        try std.testing.expectEqual(reads, aio.head);
+        const bytes = try std.testing.allocator.dupe(u16, retained[0 .. n * 3 * 32]);
+        defer std.testing.allocator.free(bytes);
+        const fresh = try f.rows(1, n);
+        try std.testing.expect(aio.head > reads);
+        try std.testing.expectEqualSlices(u16, bytes, fresh[0 .. n * 3 * 32]);
+    };
+}
+
+test "prefill slice engram keep spawn refusal retains the same rows synchronously" {
+    const Fixture = @import("engram_keep_test.zig").Fixture;
+    const f = try Fixture.create();
+    defer f.destroy();
+    for ([_]bool{ false, true }) |ae| {
+        f.m.resetEngramAhead();
+        f.m.prefill.ae = ae;
+        f.m.eh.?.ahead_start = 4;
+        f.m.eh.?.ahead_n = 32;
+        const before = f.pool.gen;
+        f.m.retainAhead(&f.ids, 4, 32); // null handle is the actual spawn-refusal result
+        try std.testing.expectEqual(before + @as(u64, if (ae) 1 else 2), f.pool.gen);
+        try std.testing.expect(f.m.retained.key != null and f.m.ahead == null);
+        try std.testing.expect(f.m.claimRetained(&f.ids, 4, 32));
+        const reads = f.pool.gen;
+        _ = try f.rows(1, 32);
+        try std.testing.expectEqual(reads, f.pool.gen);
+    }
+    var off: Model = undefined;
+    off.keep_engram = false;
+    off.retainAhead(undefined, 0, 0); // no work or other state reads when off
+}
+
+test "prefill slice engram keep retries a failed future read like the yielded reset did" {
+    const Fixture = @import("engram_keep_test.zig").Fixture;
+    const f = try Fixture.create();
+    defer f.destroy();
+    try f.plan(false, 32);
+    f.m.joinAhead();
+    f.m.eh.?.ahead_err = error.InputOutput; // a transient read fault on this rank only
+    try std.testing.expect(!f.m.claimRetained(&f.ids, 4, 32));
+    try std.testing.expect(f.m.eh.?.ahead_err == null and f.m.retained.key == null);
+    const reads = f.pool.gen;
+    _ = try f.rows(1, 32);
+    try std.testing.expectEqual(reads + 1, f.pool.gen);
+}
+
+test "prefill slice engram keep trace drops no rows at a kept resume and leaves them for reuse" {
+    const Fixture = @import("engram_keep_test.zig").Fixture;
+    const a = std.testing.allocator;
+    const f = try Fixture.create();
+    defer f.destroy();
+    const path = try std.fs.path.joinZ(a, &.{ ".zig-cache", "tmp", &f.tmp.sub_path, "trace.jsonl" });
+    defer a.free(path);
+    const t = try trace.Trace.init(a, std.testing.io, path);
+    defer t.deinit();
+    trace.current = t;
+    defer trace.current = null;
+    for ([_]bool{ false, true }) |on| {
+        f.m.keep_engram = on;
+        try f.plan(false, 32);
+        f.m.joinAhead(); // the outer yield
+        t.start();
+        try f.m.fillResume(0, 0);
+        var dropped: usize = 0;
+        for (t.events[0..t.used]) |e| dropped += @intFromBool(std.mem.eql(u8, e.name, "model.resetEngramAhead.dropped_ready"));
+        try std.testing.expectEqual(@as(usize, @intFromBool(!on)), dropped);
+        // openChunk's reuse marker condition (read_ahead_reused) after the claim
+        try std.testing.expectEqual(on, f.m.claimRetained(&f.ids, 4, 32));
+        const eh = &f.m.eh.?;
+        try std.testing.expectEqual(on, f.m.ahead == null and eh.ahead_start == 4 and eh.ahead_n == 32 and eh.ahead_ready[0]);
+        t.finish();
+    }
+}
+
+
+test "prefill slice park graphs model mode preserves off and unvoted fences" {
+    var m: Model = undefined;
+    m.rs.live = false;
+    try std.testing.expectEqual(park_graphs.Mode.normal, m.parkGraphMode());
+    m.rs.live = true;
+    m.park_graphs = false;
+    try std.testing.expectEqual(park_graphs.Mode.eager, m.parkGraphMode());
+    m.park_graphs = true;
+    m.world = 3;
+    m.gvote = null;
+    try std.testing.expectEqual(park_graphs.Mode.eager, m.parkGraphMode());
+    m.gvote = @as(graph_vote.Control, undefined); // Presence only, mode must never use CUDA or vote.
+    try std.testing.expectEqual(park_graphs.Mode.replay, m.parkGraphMode());
+    m.gvote = null;
+    m.world = 1;
+    try std.testing.expectEqual(park_graphs.Mode.replay, m.parkGraphMode());
 }

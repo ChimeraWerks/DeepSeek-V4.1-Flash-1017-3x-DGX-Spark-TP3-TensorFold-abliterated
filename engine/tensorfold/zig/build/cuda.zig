@@ -129,57 +129,68 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     const ds_tools_step = b.step("dsv41-tools", "DeepSeek follower executable and CPU rank-cache checker");
     const ds_qualify_step = b.step("dsv41-qualify", "DeepSeek GPU load and TP communication qualification tools (build only)");
     const ds_check = b.createModule(.{ .root_source_file = b.path("zig/src/families/dsv41/check_main.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    ds_check.addImport("lanes", mods.lanes);
     ds_check.addImport("dsv41", engines(b, target, optimize, cuda, mods.lanes, mods.nemotron, mods.core).dsv41);
     const ds_check_install = b.addInstallArtifact(b.addExecutable(.{ .name = "tf-dsv41-check", .root_module = ds_check }), .{});
     b.getInstallStep().dependOn(&ds_check_install.step);
     ds_tools_step.dependOn(&ds_check_install.step);
     const ds_load = b.createModule(.{ .root_source_file = b.path("zig/src/families/dsv41/load_main.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    ds_load.addImport("lanes", mods.lanes);
     ds_load.addImport("dsv41", ds_check.import_table.get("dsv41").?);
     ds_load.addImport("cuda", cuda);
     const ds_load_install = b.addInstallArtifact(b.addExecutable(.{ .name = "tf-dsv41-load", .root_module = ds_load }), .{});
     b.getInstallStep().dependOn(&ds_load_install.step);
     ds_qualify_step.dependOn(&ds_load_install.step);
     const ds_comm = b.createModule(.{ .root_source_file = b.path("zig/src/families/dsv41/comm_main.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    ds_comm.addImport("lanes", mods.lanes);
     ds_comm.addImport("dsv41", ds_check.import_table.get("dsv41").?);
     ds_comm.addImport("cuda", cuda);
     const ds_comm_install = b.addInstallArtifact(b.addExecutable(.{ .name = "tf-dsv41-comm", .root_module = ds_comm }), .{});
     b.getInstallStep().dependOn(&ds_comm_install.step);
     ds_qualify_step.dependOn(&ds_comm_install.step);
     const ds_lifecycle = b.createModule(.{ .root_source_file = b.path("zig/src/families/dsv41/rdma_lifecycle_main.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    ds_lifecycle.addImport("lanes", mods.lanes);
     ds_lifecycle.addImport("dsv41", ds_check.import_table.get("dsv41").?);
     ds_lifecycle.addImport("cuda", cuda);
     const ds_lifecycle_install = b.addInstallArtifact(b.addExecutable(.{ .name = "tf-dsv41-rdma-lifecycle", .root_module = ds_lifecycle }), .{});
     b.step("dsv41-lifecycle", "Isolated RDMA/thread/Pillow lifecycle diagnostic, build only").dependOn(&ds_lifecycle_install.step);
     const ds_linear_probe = b.createModule(.{ .root_source_file = b.path("zig/src/families/dsv41/linear_probe_main.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    ds_linear_probe.addImport("lanes", mods.lanes);
     ds_linear_probe.addImport("dsv41", ds_check.import_table.get("dsv41").?);
     ds_linear_probe.addImport("cuda", cuda);
     const ds_linear_install = b.addInstallArtifact(b.addExecutable(.{ .name = "tf-dsv41-linear-probe", .root_module = ds_linear_probe }), .{});
     b.getInstallStep().dependOn(&ds_linear_install.step);
     ds_qualify_step.dependOn(&ds_linear_install.step);
     const ds_layer = b.createModule(.{ .root_source_file = b.path("zig/src/families/dsv41/layer_main.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    ds_layer.addImport("lanes", mods.lanes);
     ds_layer.addImport("dsv41", ds_check.import_table.get("dsv41").?);
     ds_layer.addImport("cuda", cuda);
     b.installArtifact(b.addExecutable(.{ .name = "tf-dsv41-layer", .root_module = ds_layer }));
     // the RDMA ring across real nodes (rdma.zig): rendezvous, gathers at each row count, every float checked
     const ds_rdma = b.createModule(.{ .root_source_file = b.path("zig/src/families/dsv41/rdma_bench_main.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    ds_rdma.addImport("lanes", mods.lanes);
     ds_rdma.addImport("dsv41", ds_check.import_table.get("dsv41").?);
     ds_rdma.addImport("cuda", cuda);
     b.installArtifact(b.addExecutable(.{ .name = "tf-dsv41-rdma-bench", .root_module = ds_rdma }));
     // the Engram reader's buffered, O_DIRECT and AIO paths on the real tables, every byte compared
     const ds_engram = b.createModule(.{ .root_source_file = b.path("zig/src/families/dsv41/engram_check_main.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    ds_engram.addImport("lanes", mods.lanes);
     ds_engram.addImport("dsv41", ds_check.import_table.get("dsv41").?);
     b.installArtifact(b.addExecutable(.{ .name = "tf-dsv41-engram-check", .root_module = ds_engram }));
     // the vision tower's input of each image as the served lane makes it (picture.zig), by sha256 against the fixtures
     const ds_picture = b.createModule(.{ .root_source_file = b.path("zig/src/families/dsv41/picture_main.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    ds_picture.addImport("lanes", mods.lanes);
     ds_picture.addImport("dsv41", ds_check.import_table.get("dsv41").?);
     b.installArtifact(b.addExecutable(.{ .name = "tf-dsv41-picture", .root_module = ds_picture }));
     // the vision tower on recorded patches, each step's bytes against the served lane's (vit.zig)
     const ds_vit = b.createModule(.{ .root_source_file = b.path("zig/src/families/dsv41/vit_main.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    ds_vit.addImport("lanes", mods.lanes);
     ds_vit.addImport("dsv41", ds_check.import_table.get("dsv41").?);
     ds_vit.addImport("cuda", cuda);
     b.installArtifact(b.addExecutable(.{ .name = "tf-dsv41-vit", .root_module = ds_vit }));
     // the 2D split's decode-size exchanges over the RDMA rings on four nodes, word for word against Comm2D's layout
     const ds_ring2d = b.createModule(.{ .root_source_file = b.path("zig/src/families/dsv41/ring2d_check_main.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    ds_ring2d.addImport("lanes", mods.lanes);
     ds_ring2d.addImport("dsv41", ds_check.import_table.get("dsv41").?);
     ds_ring2d.addImport("cuda", cuda);
     b.installArtifact(b.addExecutable(.{ .name = "tf-dsv41-ring2d-check", .root_module = ds_ring2d }));
@@ -193,6 +204,7 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     ds_tools_step.dependOn(&ds_lanes_install.step);
     // the GLM port's spill block staging kernel (dsv41_port.cu) against its CPU reference, one GPU
     const ds_port = b.createModule(.{ .root_source_file = b.path("zig/src/families/dsv41/port_main.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    ds_port.addImport("lanes", mods.lanes);
     ds_port.addImport("cuda", cuda);
     b.installArtifact(b.addExecutable(.{ .name = "tf-dsv41-port", .root_module = ds_port }));
     _ = nativeServer(b, target, optimize, cuda, mods.lanes, mods.nemotron, mods.core, mods.tokenizer, build_options, true);
@@ -254,6 +266,7 @@ pub fn hostTests(b: *std.Build, draft_ids: *std.Build.Module, step: *std.Build.S
     draft_cal_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = mods.lanes })).step);
     draft_cal_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{"draft settings"} })).step);
     const audit = b.createModule(.{ .root_source_file = b.path("zig/src/families/dsv41/aot_check_main.zig"), .target = host, .optimize = .debug, .link_libc = true });
+    audit.addImport("lanes", mods.lanes);
     audit.addImport("cuda", cuda);
     audit.addImport("dsv41", eng.dsv41);
     const audit_run = b.addRunArtifact(b.addExecutable(.{ .name = "tf-dsv41-aot-check", .root_module = audit }));
@@ -262,6 +275,7 @@ pub fn hostTests(b: *std.Build, draft_ids: *std.Build.Module, step: *std.Build.S
     if (projection_shapes) |path| audit_run.addArg(path);
     b.step("tp3-aot-check", "CPU-only native launch matrix against aot.json").dependOn(&audit_run.step);
     const cuda_audit = b.createModule(.{ .root_source_file = b.path("zig/src/families/dsv41/cuda_check_main.zig"), .target = host, .optimize = .debug, .link_libc = true });
+    cuda_audit.addImport("lanes", mods.lanes);
     cuda_audit.addImport("cuda", cuda);
     cuda_audit.addImport("dsv41", eng.dsv41);
     const cuda_audit_run = b.addRunArtifact(b.addExecutable(.{ .name = "tf-dsv41-cuda-check", .root_module = cuda_audit }));
@@ -409,6 +423,9 @@ pub fn hostTests(b: *std.Build, draft_ids: *std.Build.Module, step: *std.Build.S
         cache_batch_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m, .filters = &.{ "401a", "cache batch" } })).step);
     }
     b.step("test-decode-greedy-head", "Greedy head policy, wire, readiness and custody CPU tests").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{"decode greedy head"} })).step);
+    const trace_tests = b.step("test-slice-trace", "Opt-in slice trace accounting and disabled-path tests");
+    trace_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = mods.lanes, .filters = &.{"prefill slice trace"} })).step);
+    trace_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = cuda, .filters = &.{"launch"} })).step);
     const slice_tests = b.step("test-prefill-slices", "Yielded layer slices, custody and TP3 frames, CPU only");
     for ([_]*std.Build.Module{ eng.api, eng.dsv41 }) |mod| slice_tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = mod, .filters = &.{"prefill slice"} })).step);
     b.step("test-prefill128", "Laky 1.2.8 affected prefill checks, CPU only").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = eng.dsv41, .filters = &.{ "prefill128" } })).step);
