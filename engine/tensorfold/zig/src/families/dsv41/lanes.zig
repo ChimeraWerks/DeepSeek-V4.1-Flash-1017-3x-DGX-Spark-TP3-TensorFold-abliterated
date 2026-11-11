@@ -129,6 +129,36 @@ fn openChunkAllows(kind: Kind) bool {
     };
 }
 
+test "prefill slice parks by work: full chunks at every slice, short prompts once their work adds up" {
+    var work: usize = 0;
+    // a full 8,192-row chunk at two-layer slices is due at every slice boundary
+    for (0..9) |_| { try std.testing.expect(Lanes.parkDue(&work, 2, 8192, 2, 8192)); work = 0; }
+    // a 39-row prompt (20 layers at two-layer slices) counts 1,024 rows a layer: it yields once, after 16 layers
+    var parks: usize = 0;
+    for (0..10) |_| { if (Lanes.parkDue(&work, 2, 39, 2, 8192)) { parks += 1; work = 0; } }
+    try std.testing.expectEqual(@as(usize, 1), parks);
+    try std.testing.expectEqual(@as(usize, 4096), work);
+    // the work carries across prompts: three more short prompts in a row yield four times
+    parks = 0;
+    for (0..30) |_| { if (Lanes.parkDue(&work, 2, 39, 2, 8192)) { parks += 1; work = 0; } }
+    try std.testing.expectEqual(@as(usize, 4), parks);
+    // a 2,048-row chunk parks every eight layers; a 5,424-row tail chunk at every slice (two would pass the cap);
+    // five-layer slices keep their own threshold
+    work = 0;
+    parks = 0;
+    for (0..10) |_| { if (Lanes.parkDue(&work, 2, 2048, 2, 8192)) { parks += 1; work = 0; } }
+    try std.testing.expectEqual(@as(usize, 2), parks);
+    work = 0;
+    try std.testing.expect(Lanes.parkDue(&work, 2, 5424, 2, 8192));
+    work = 0;
+    try std.testing.expect(!Lanes.parkDue(&work, 2, 4096, 2, 8192));
+    try std.testing.expect(Lanes.parkDue(&work, 2, 4096, 2, 8192));
+    work = 0;
+    try std.testing.expect(Lanes.parkDue(&work, 5, 8192, 5, 8192));
+    work = std.math.maxInt(usize) - 1;
+    try std.testing.expect(Lanes.parkDue(&work, 2, 8192, 2, 8192)); // saturates
+}
+
 test "keyed draft pass frame is admitted while a prefill slice chunk is open" {
     for ([_]Kind{ .fill_slice, .verify, .verify_penalties, .pass, .pass_keyed, .logprobs }) |k| try std.testing.expect(openChunkAllows(k));
     for ([_]Kind{ .fill_begin, .fill_chunk, .snap_save, .snap_restore, .snap_drop, .fill_images, .done, .rank_wire, .rdma_idle, .idle_move, .fill_resume, .graph_vote_agree, .snap_drop_many, .prompt_penalties, .engram_drop }) |k| try std.testing.expect(!openChunkAllows(k));
@@ -739,6 +769,8 @@ pub const Lanes = struct {
     penalty_disabled: bool = false,
     clean_round_timing: bool = false,
     prefill_yield: bool = false, // TF_DS_PREFILL_YIELD=1; otherwise the whole prompt remains one host call
+    park_by_work: bool = false, // TF_DS_PARK_BY_WORK=1: slice parks are spaced by prompt work done (parkDue), not by every slice
+    park_work: usize = 0, // row-layers of prompt work since the last decode round (rank 0 only, never on the wire)
     cancel_checkpoints: bool = false,
 
     spill: ?*SpillTier = null, // --spill-dir/--spill-gib: the spill tier (native.zig opens it; null: off, nothing changes)
@@ -767,6 +799,7 @@ pub const Lanes = struct {
             if (m.pgraphs) |*g| g.telemetry.timing = ln.clean_round_timing;
             ln.rdma_park = idle_protocol.enabled(getenv("TF_DS_RDMA_PARK"));
             if (std.c.getenv("TF_DS_PREFILL_YIELD")) |v| ln.prefill_yield = std.mem.eql(u8, std.mem.span(v), "1");
+            if (std.c.getenv("TF_DS_PARK_BY_WORK")) |v| ln.park_by_work = std.mem.eql(u8, std.mem.span(v), "1");
             if (std.c.getenv("TF_KV_PRESSURE_PLANNER")) |v| ln.pressure_planner = v[0] == '1';
         if (std.c.getenv("TF_KV_SHORT_REUSE")) |v| ln.short_reuse = std.mem.eql(u8, std.mem.span(v), "1");
         if (std.c.getenv("TF_KV_CONTINUATION_DONOR")) |v| ln.continuation_donors = std.mem.eql(u8, std.mem.span(v), "1");
@@ -1540,6 +1573,21 @@ pub const Lanes = struct {
         }
     }
 
+    /// TF_DS_PARK_BY_WORK: a prompt chunk stops for a decode round only when its next slice would take the work
+    /// since the last round past a full slice at the row cap (slice_layers layers of compute_rows rows). A full chunk parks at every slice as
+    /// before; a short prompt beside running replies no longer stops at each of its slice boundaries, and several
+    /// short prompts in a row still park once their work adds up. A layer counts at least park_floor_rows rows, its
+    /// fixed cost: on the three Sparks a 40-token prompt's 20 layers take about 0.2 s beside running replies, what
+    /// two full 8,192-row layers do, so a short prompt yields once on the way (a 256-row floor ran it straight
+    /// through and paused the running replies 0.25 s).
+    pub const park_floor_rows: usize = 1024;
+    pub fn parkDue(work: *usize, layers: usize, rows: usize, slice_layers: usize, cap_rows: usize) bool {
+        const inc = layers *| @max(rows, park_floor_rows);
+        work.* +|= inc;
+        // due when one more slice like this one would pass a full slice of work: no pause outlasts a full chunk's
+        return work.* +| inc > slice_layers *| @max(cap_rows, park_floor_rows);
+    }
+
     fn fillSliced(self: *Lanes, s: *lanes.Stream, seq: []const i32, args: model.SliceArgs) !bool {
         const m = self.m;
         var lo: usize = 0;
@@ -1561,8 +1609,11 @@ pub const Lanes = struct {
                 if (b.timed and b.wanted(b.ptr)) { var ts = trace.begin("lanes.fillSliced.chunk_end_synchronize", .wait); defer ts.end(); try m.stream.synchronize(); }
                 return end == .head;
             }
+            // Rank 0 alone decides a park; the followers only see the slices and the park's rounds in order.
+            const due = !self.park_by_work or parkDue(&self.park_work, hi - lo, args.n + args.replay, m.prefill.slice_layers, m.compute_rows);
             lo = hi;
-            if (b.wanted(b.ptr)) {
+            if (due and b.wanted(b.ptr)) {
+                self.park_work = 0;
                 var park_trace = trace.begin("lanes.fillSliced.park", .park);
                 defer park_trace.end();
                 { var ts = trace.begin("lanes.fillSliced.pre_park_join", .wait); defer ts.end(); m.joinParkAhead(); } // opt-in parks leave prompt hash/reader custody alone
@@ -1794,6 +1845,7 @@ pub const Lanes = struct {
     /// row drawn at its keyed position.
     fn verifyFn(ptr: *anyopaque, windows: []const be.Window, out: []be.Verified) anyerror!void {
         const self = of(ptr);
+        self.park_work = 0; // the replies just got a round
         const m = self.m;
         const gpa = self.gpa;
         if (windows.len > max_streams) return error.WindowTooWide;
