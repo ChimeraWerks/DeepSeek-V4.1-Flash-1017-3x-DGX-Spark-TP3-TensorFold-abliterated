@@ -1547,9 +1547,14 @@ pub const LaneHost = struct {
         const key = keyOf(r);
         const now = std.Io.Clock.awake.now(h.io).toNanoseconds();
         const decoding = h.core.runnableCount() > 0;
-        defer if (!h.broken()) h.share.stepped(@intCast(@max(0, std.Io.Clock.awake.now(h.io).toNanoseconds() - now)), decoding);
+        // Only a disk attempt is tier work that owes decode its share. A lookup that finds the prompt in memory (or
+        // nowhere) costs microseconds; charging it put the next admission behind a whole decode round, so cached
+        // requests arriving together joined one a round and greedy replies of 6 to 16 ran 16 to 25% slower (2026-11-11).
+        var tier_work = false;
+        defer if (tier_work and !h.broken()) h.share.stepped(@intCast(@max(0, std.Io.Clock.awake.now(h.io).toNanoseconds() - now)), decoding);
         const probe = store.probeMedia(key, r.chunks, r.images.len > 0, tierMedia(r));
         if (!job.tried_disk) if (probe.durable) |p| {
+            tier_work = true;
             job.tried_disk = true;
             h.lock();
             const room = h.loading.ensureUnusedCapacity(h.gpa, 1);
@@ -2828,13 +2833,14 @@ const AggregateDebtTier = struct {
     complete: bool = false,
     trip_on_maintain: bool = false,
     tripped: bool = false,
+    durable: bool = true, // false: the tier holds no point, as for a prompt only in memory
 
     fn of(p: *anyopaque) *@This() { return @ptrCast(@alignCast(p)); }
     fn bytes(_: *anyopaque, _: u32) u64 { return 1; }
     fn save(p: *anyopaque, _: ?*anyopaque, _: u32) !pc.Saved { return p; }
     fn restore(_: *anyopaque, _: ?*anyopaque, _: pc.Saved) !void {}
     fn drop(_: *anyopaque, _: pc.Saved) void {}
-    fn lookup(_: *anyopaque, _: *const pc.Want) ?pc.Point { return .{ .id = 9, .at = 1, .tokens = 1 }; }
+    fn lookup(p: *anyopaque, _: *const pc.Want) ?pc.Point { return if (of(p).durable) .{ .id = 9, .at = 1, .tokens = 1 } else null; }
     fn begin(p: *anyopaque, point: *const pc.Point) !u64 { of(p).begins += 1; return point.id; }
     fn poll(p: *anyopaque, id: u64, _: u64) pc.Poll {
         const x = of(p);
@@ -2923,6 +2929,41 @@ test "aggregate tier debt offers decode before restore admission poll and pump" 
     try std.testing.expectEqual(@as(usize, 1), x.cancels);
     try std.testing.expectEqual(@as(usize, 0), x.polls);
     try std.testing.expectEqual(@as(usize, 0), x.pumps);
+}
+
+test "a cache lookup with no disk attempt leaves no decode debt" {
+    const gpa = std.testing.allocator;
+    var cfg = try lanes.Config.init(gpa, .{ .exact_width = 8, .hidden_rows = true }, 8, 7);
+    defer cfg.deinit(gpa);
+    var target: lanes.fake.Fake = .{ .gpa = gpa, .prefill_chunks = 4 };
+    defer target.deinit();
+    var clock: lanes.fake.FixedClock = .{};
+    var core = lanes.Engine.init(gpa, &cfg, target.stepped(), clock.clock());
+    defer core.deinit();
+    var host = LaneHost.init(gpa, std.testing.io, &core, .{ .lanes = 4 });
+    defer host.stop();
+    var x: AggregateDebtTier = .{ .host = &host, .writes_pending = false, .durable = false };
+    var store = x.cache();
+    defer store.deinit();
+    host.cache = &store;
+    var decoder = try lanes.Stream.init(gpa, .{ .id = "decode", .prompt = &.{ 2, 7, 1, 8 }, .max_new = 8 });
+    defer decoder.deinit(gpa);
+    try core.addStream(&decoder);
+    defer core.discard(&decoder);
+    const req: Request = .{ .prompt = &.{ 1, 2, 3 }, .max_tokens = 1 };
+    try host.engine().submit(93, &req, .{ .ctx = &x, .event = AggregateDebtTier.event });
+    defer {
+        host.engine().cancel(93);
+        host.takeCancels();
+    }
+    host.share = .{ .p = 0.5, .debt_ns = 0 };
+    const job = host.queued.items[0];
+    // A decoder is runnable and the lookup finds no durable point: the request is admitted with no debt, so the
+    // next cached request in the same burst is not held behind a decode round.
+    try std.testing.expect(!host.park(job));
+    try std.testing.expectEqual(@as(i64, 0), host.share.debt_ns);
+    try std.testing.expectEqual(@as(usize, 0), x.begins);
+    try std.testing.expect(host.tierWorkAllowed());
 }
 
 test "aggregate tier poll debits before another restore or pump quantum" {
