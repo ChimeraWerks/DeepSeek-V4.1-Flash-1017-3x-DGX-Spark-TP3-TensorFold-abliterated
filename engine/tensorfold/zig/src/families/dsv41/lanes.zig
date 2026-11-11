@@ -133,13 +133,15 @@ test "prefill slice parks by work: full chunks at every slice, short prompts onc
     var work: usize = 0;
     // a full 8,192-row chunk at two-layer slices is due at every slice boundary
     for (0..9) |_| { try std.testing.expect(Lanes.parkDue(&work, 2, 8192, 2, 8192)); work = 0; }
-    // a 39-row prompt (20 layers) counts 256 rows a layer: 5,120 of the 16,384 needed, so it never parks alone
-    for (0..10) |_| try std.testing.expect(!Lanes.parkDue(&work, 2, 39, 2, 8192));
-    try std.testing.expectEqual(@as(usize, 5120), work);
-    // the work carries across prompts: the fourth short prompt in a row reaches the threshold
+    // a 39-row prompt (20 layers at two-layer slices) counts 1,024 rows a layer: it yields once, after 16 layers
     var parks: usize = 0;
-    for (0..30) |_| { if (Lanes.parkDue(&work, 2, 39, 2, 8192)) { parks += 1; work = 0; } }
+    for (0..10) |_| { if (Lanes.parkDue(&work, 2, 39, 2, 8192)) { parks += 1; work = 0; } }
     try std.testing.expectEqual(@as(usize, 1), parks);
+    try std.testing.expectEqual(@as(usize, 4096), work);
+    // the work carries across prompts: three more short prompts in a row yield four times
+    parks = 0;
+    for (0..30) |_| { if (Lanes.parkDue(&work, 2, 39, 2, 8192)) { parks += 1; work = 0; } }
+    try std.testing.expectEqual(@as(usize, 4), parks);
     // a 2,048-row chunk parks every eight layers; a 5,424-row tail chunk at every slice (two would pass the cap);
     // five-layer slices keep their own threshold
     work = 0;
@@ -1574,9 +1576,11 @@ pub const Lanes = struct {
     /// TF_DS_PARK_BY_WORK: a prompt chunk stops for a decode round only when its next slice would take the work
     /// since the last round past a full slice at the row cap (slice_layers layers of compute_rows rows). A full chunk parks at every slice as
     /// before; a short prompt beside running replies no longer stops at each of its slice boundaries, and several
-    /// short prompts in a row still park once their work adds up. A layer counts at least park_floor_rows rows,
-    /// its fixed cost.
-    pub const park_floor_rows: usize = 256;
+    /// short prompts in a row still park once their work adds up. A layer counts at least park_floor_rows rows, its
+    /// fixed cost: on the three Sparks a 40-token prompt's 20 layers take about 0.2 s beside running replies, what
+    /// two full 8,192-row layers do, so a short prompt yields once on the way (a 256-row floor ran it straight
+    /// through and paused the running replies 0.25 s).
+    pub const park_floor_rows: usize = 1024;
     pub fn parkDue(work: *usize, layers: usize, rows: usize, slice_layers: usize, cap_rows: usize) bool {
         const inc = layers *| @max(rows, park_floor_rows);
         work.* +|= inc;
