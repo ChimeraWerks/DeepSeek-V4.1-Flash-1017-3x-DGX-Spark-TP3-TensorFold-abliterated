@@ -129,7 +129,79 @@ Ranked pieces worth taking into TensorFold:
 3. **Learned verify gate** (`DSGB10_CF_MLP`): +1.1% chat, same outputs at the shipped alpha.
 4. **Lossless exponent-coded LM head**: 0.35-0.38 ms a step at 1-16 rows.
 
+## Our prefill split
+
+Measured 2026-11-13 on the three Sparks: production build `77e26ab` with production flags, rank 0
+under `nsys launch` (CUDA trace only), one cold 32,768-token prompt after warmup and one uncached 8K
+prompt. Under nsys the 32K first token took 8.93 s (about 3,670 tok/s against 3,816 on sparkDash).
+The engine cut the prompt into chunks of 8,192, 8,192, 8,192, 6,144 and 1,920 rows (from the
+sparse-attention launch grids), then replayed 128 rows through the decoder. The table is the mean of
+the 60 encoder layers (layers 0-19 of the first three chunks) that ran 8,192 rows. Kernels are
+grouped with the stage regexes of the 2026-10-29 profile (`~/AI/quant-lab/prefill-profile-20261029/
+classify.py`). Script, trace and log: `~/AI/quant-lab/prof-prefill-20261113/` (`classify2.py`,
+`split.txt`).
+
+- Every kernel runs on one CUDA stream, so nothing overlaps. GPU busy is 97.7% of the 8.87 s window
+  (kernel sum 8.66 s). Host gaps are not the problem.
+- Per 8,192-row layer: 104.8 ms mean, 98.7 ms median. The three chunks agree (104.7, 104.3,
+  105.3 ms).
+- Layers 1 and 14 (the Engram layers) cost 140 and 164 ms: each adds about 25 ms of all-gather and
+  14 ms of dense GEMM. Engram's own kernels are 0.2 ms.
+
+| Group (per 8,192-row layer, rank 0) | ms | Share | Main kernels (ms) |
+| --- | ---: | ---: | --- |
+| EXL3 experts | 45.4 | 43.4% | routed gate-up 15.5, routed down 8.5, routed input rotation 7.5, down combine 6.4, shared expert 5.2, gate-up epilogue 2.0 |
+| Attention projections (dense EXL3) | 18.2 | 17.4% | `_gemm` 14.5, input rotation + unpack + glinear 3.7 |
+| Sparse attention and indexer | 14.0 | 13.3% | sparse attention 11.8, indexer score + top-k 1.3, rope and KV norm 0.8 |
+| Collectives (NCCL send/recv all-gather, `TF_DS_DIRECT_GATHER`) | 13.2 | 12.6% | all exposed; about 10 ms on a plain layer, 35 ms on layers 1 and 14 |
+| Engram | 0.2 | 0.2% | gate and pool; its extra all-gather and GEMM are counted above |
+| Other | 13.8 | 13.1% | hyper-connections 7.7, fp32/bf16 casts 4.1, fp32 SIMT sgemm 1.5, norms 0.5 |
+| Total | 104.8 | 100% | |
+
+Two numbers for the transfer-overlap port:
+
+- (a) Exposed NCCL all-gather: 12.6% of GPU time, 13.2 ms per 8,192-row layer, with 0% overlap
+  (one stream).
+- (b) Routed experts plus dense EXL3: 58.4 ms, 55.8% (routed 40.2 ms + dense 18.2 ms). With the
+  shared expert, 63.6 ms, 60.7%.
+
+Beside the two earlier splits:
+
+| Split | Ours 2026-11-13 (`77e26ab`, 8,192 rows) | Ours 2026-10-29 (`ee903f5`, 2,048 rows) | dsgx10 (4 ranks, 8,192 rows) |
+| --- | ---: | ---: | ---: |
+| Routed + shared experts (old regex) | 43.4% | 33% | FFN 26.8 ms: routed up 8.45, down + combine reduce-scatter 13.2, shared 1.26 |
+| Dense EXL3 linears / attention projections | 17.4% | 14% | wq_b 1.15, wo_a 1.80, wo_b 2.59 ms |
+| Attention + indexer | 13.3% | 12% | sparse attention 4.79 ms (attention total 14.2) |
+| NCCL all-gather, exposed | 12.6% (bf16 wire) | 24% (fp32) | 4.11 ms exposed collectives |
+| Hyper-connections | 7.3% | 13% | not itemised |
+| Per layer per rank | 104.8 ms | not per layer | 42.9 ms |
+
+Derived (our arithmetic): at TP3 their per-rank work would be 4/3 larger, 42.9 x 4/3 = 57.2 ms per
+layer, against our 104.8 ms. That is 1.83x, which matches the measured 2.0x per-box prefill gap.
+Scaling each of their groups by 4/3 splits our extra 47.6 ms like this:
+
+| Where our extra time goes (derived, per layer) | Ours ms | Theirs x 4/3 ms | Extra ms |
+| --- | ---: | ---: | ---: |
+| Routed gate-up incl. input rotation and epilogue | 25.1 | 11.3 | 13.8 |
+| Routed down + combine (theirs includes the reduce-scatter) | 14.9 | 17.6 | -2.7 |
+| Shared expert | 5.2 | 1.7 | 3.5 |
+| Attention projections + sparse attention + indexer | 32.2 | 18.9 | 13.3 |
+| Exposed collectives | 13.2 | 5.5 | 7.7 |
+| Hyper-connections, casts, sgemm, norms | 13.8 | 2.5 (their unitemised remainder) | 11.3 |
+
+The columns do not sum exactly to 104.8 and 57.2: their FFN has 3.9 ms they do not itemise, and their
+4.11 ms of exposed collectives may sit inside their attention and FFN rows. Inside the attention row,
+dense projections are about +5.7 ms (ours 18.2 against their 12.5 attention outside sparse
+attention) and sparse attention plus indexer about +7.6 ms (14.0 against 6.4).
+
+**Verdict: the gap is mostly kernels and data movement, with the EXL3 format as the largest single
+part.** The EXL3-bound kernels (expert and dense GEMMs with in-kernel decode, plus their input
+rotations) account for about 20 of the 47.6 extra ms (experts +14.6, dense projections +5.7). The
+other ~27 ms is format-independent: exposed all-gather +7.7, sparse attention and indexer +7.6, and
+hyper-connections, casts and fp32 sgemm +11.3.
+
 ## Next step
 
-Profile one 8192-row prefill chunk per kernel on the three Sparks (attention, experts, collectives)
-and put it beside their 42.9 ms split. That decides item 1.
+Port the transfer overlap first: 13.2 ms per layer of all-gather runs on the compute stream with
+nothing beside it. Then the routed gate-up path (15.5 ms GEMM + 7.5 ms rotation against their
+11.3 ms) decides whether a native FP4 expert format is worth the abliteration rework.
