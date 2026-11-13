@@ -200,8 +200,65 @@ rotations) account for about 20 of the 47.6 extra ms (experts +14.6, dense proje
 other ~27 ms is format-independent: exposed all-gather +7.7, sparse attention and indexer +7.6, and
 hyper-connections, casts and fp32 sgemm +11.3.
 
+## Overlap A/B
+
+Measured 2026-11-13 on the three Sparks. The build is branch `worktree-agent-a3eff015cfe875ed2` at
+`b6b5a43` (`dab3227` + `b6b5a43`, not on main), cross-built with production 77e26ab's exact recipe
+(native `fb126ac3...`). It ran with production's flags, plus `TF_DS_PREFILL_OVERLAP=1` on every rank
+for ON. With the flag on, four prefill transfers run in 1,024-row pieces on a high-priority comm
+stream: attention wo_b scatter, FFN X gather, Engram scatter, attention X gather. OFF and ON used the
+same binary, one after the other on the same day. Scripts, logs and traces:
+`~/AI/quant-lab/overlap-ab-20261113/`.
+
+The first build of the branch (native `08483564...`) could not start under production's flags:
+rank 0 refused with `NoLogprobKernel`. It had been built with an older fatbin set and without
+`-Dkeyed_draft`, `-Dpenalties` or `-Dreply_logprobs`. It was rebuilt before any measurement.
+
+Identity: no mismatch anywhere.
+
+| Check | OFF | ON |
+| --- | --- | --- |
+| 24 short fixed replies (greedy and seeded, thinking on and off) against production | identical | identical |
+| 2 long fixed replies (8K, 30K prompts) against production | identical | identical |
+| 2 fresh long replies (8K, 30K prompts no cache held), ON against OFF | - | identical |
+| Seeded keyed replies (top_k 0 and 20, repeated) | - | identical |
+| 4 replies alone and beside a cold 30K prompt, against production | - | identical |
+
+Speed, cold prompts (one 8K warm-up first, then 3 runs each at 8K and 32K, 1 at 128K):
+
+| | OFF | ON | ON vs OFF |
+| --- | ---: | ---: | ---: |
+| 8,012 tokens, mean TTFT | 2.406 s (3,330 tok/s) | 2.440 s (3,284 tok/s) | -1.4% (one 2.515 s run; median level) |
+| 32,768 tokens, mean TTFT | 8.931 s (3,669 tok/s) | 8.938 s (3,666 tok/s) | -0.1% |
+| 131,072 tokens, one run | 35.89 s (3,652 tok/s) | 36.19 s (3,622 tok/s) | -0.8% |
+| Decode at 1 / 4 requests (best of two) | 58.9 / 124.0 tok/s | 59.3 / 125.0 tok/s | +0.7% / +0.8% |
+| Burst probe, mean first token at 8 requests | 1,034 ms | 1,009 ms | level |
+| Mixed load, 30K prompt beside a reply: TTFT / reply rate | 18.10 s / 29.4 tok/s | 18.18 s / 29.5 tok/s | level |
+
+Per 8,192-row layer on rank 0, from a cold 32K nsys capture with the flag on (`classify3.py`, the same
+regexes; OFF is the morning's production capture, which runs the same code as flag-off):
+
+| Per layer | OFF | ON |
+| --- | ---: | ---: |
+| Layer wall, mean / median | 107.9 / 99.7 ms | 108.5 / 98.3 ms |
+| Compute kernels | 91.5 ms | 95.5 ms |
+| NCCL send/recv kernels (all streams) | 13.2 ms | 19.0 ms |
+| NCCL exposed (no compute kernel beside it) | 13.2 ms (12.2% of wall) | 10.4 ms (9.6%) |
+| Dense EXL3 `_gemm` | 14.5 ms (780 launches a prompt) | about 16.8 ms (1,374 launches; 1,158 against 1,342 ms a prompt) |
+
+**Verdict: bit-identical, and no prefill gain (-0.1% at 32K, within noise).** The overlap hides 2.8 ms
+of exposed transfer per layer, but loses it again in three places:
+- 1,024-row pieces split each dense GEMM into smaller launches, about +2.3 ms.
+- Transfers running beside compute take longer: NCCL kernel time rose from 13.2 to 19.0 ms.
+- Compute kernels slow by about 1% while NCCL kernels share the GPU.
+
+About 30% of the NCCL time (442 of 1,567 ms over the prompt) still runs on the compute stream: those
+collectives are not among the four overlapped.
+
 ## Next step
 
-Port the transfer overlap first: 13.2 ms per layer of all-gather runs on the compute stream with
-nothing beside it. Then the routed gate-up path (15.5 ms GEMM + 7.5 ms rotation against their
+The transfer overlap as built (1,024-row pieces on a side stream) does not pay: see Overlap A/B. Any
+next overlap attempt has to hide transfers without splitting the dense GEMMs, and should cover the
+collectives still on the compute stream. dsgx10 does this by fusing the combine into the
+reduce-scatter. Then the routed gate-up path (15.5 ms GEMM + 7.5 ms rotation against their
 11.3 ms) decides whether a native FP4 expert format is worth the abliteration rework.
